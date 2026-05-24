@@ -1,0 +1,16 @@
+build/
+cmake-build-*/
+.DS_Store
+.idea/
+.cache/
+compile_commands.json
+*.swp
+*.swo
+
+# VSCode: commit shared workspace configs, ignore personal/runtime files
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/c_cpp_properties.json

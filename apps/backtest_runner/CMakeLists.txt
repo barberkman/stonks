@@ -1,0 +1,2 @@
+add_executable(backtest_runner main.cpp)
+target_link_libraries(backtest_runner PRIVATE stonks_core)
