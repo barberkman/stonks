@@ -8,5 +8,6 @@
     "cmake.buildBeforeRun": true,
     "files.associations": {
         "*.h": "cpp"
-    }
+    },
+    "C_Cpp.intelliSenseEngine": "disabled"
 }
