@@ -44,6 +44,29 @@
             },
             "dependsOn": ["CMake: build"],
             "problemMatcher": []
+        },
+        {
+            "label": "CMake: configure (linux-debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["--preset", "linux-debug"],
+            "problemMatcher": []
+        },
+        {
+            "label": "CMake: build (linux-debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["--build", "--preset", "linux-debug"],
+            "dependsOn": ["CMake: configure (linux-debug)"],
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "CTest: run (linux-debug)",
+            "type": "shell",
+            "command": "ctest",
+            "args": ["--preset", "linux-debug"],
+            "dependsOn": ["CMake: build (linux-debug)"],
+            "problemMatcher": []
         }
     ]
 }

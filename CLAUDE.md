@@ -12,6 +12,20 @@ ctest --test-dir build --output-on-failure
 
 VSCode: F5 builds and launches the debugger (requires CodeLLDB extension).
 
+### Linux (Ubuntu / WSL)
+
+Prerequisites: `sudo apt install cmake gdb` (build-essential ships gcc/g++/make).
+
+Use the `linux-debug` / `linux-release` presets — they build into `build/linux-debug/` and `build/linux-release/`:
+
+```sh
+cmake --preset linux-debug
+cmake --build --preset linux-debug
+ctest --preset linux-debug
+```
+
+VSCode launch configs `Linux: Debug backtest_runner (gdb)` and `Linux: Debug core_tests (gdb)` use cppdbg/gdb against the `linux-debug` preset's build dir; they need the `ms-vscode.cpptools` extension.
+
 ## Structure
 
 - `include/stonks/<module>/` — public headers, all under the `stonks::` namespace (sub-namespaces match folders, e.g. `stonks::core`).

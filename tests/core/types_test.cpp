@@ -4,8 +4,8 @@
 
 namespace stonks::core {
 
-TEST(SideTest, BuyAndSellAreDistinct) {
-    EXPECT_NE(Side::Buy, Side::Sell);
+TEST(OrderSideTest, BuyAndSellAreDistinct) {
+    EXPECT_NE(OrderSide::Buy, OrderSide::Sell);
 }
 
 }

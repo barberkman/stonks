@@ -26,6 +26,40 @@
             "program": "${command:cmake.launchTargetPath}",
             "args": [],
             "cwd": "${command:cmake.launchTargetDirectory}"
+        },
+        {
+            "name": "Linux: Debug backtest_runner (gdb)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/linux-debug/apps/backtest_runner/backtest_runner",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "CMake: build (linux-debug)"
+        },
+        {
+            "name": "Linux: Debug core_tests (gdb)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/linux-debug/tests/core_tests",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "CMake: build (linux-debug)"
         }
     ]
 }
