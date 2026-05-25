@@ -1,24 +1,21 @@
 #pragma once
 
 #include <concepts>
-#include <utility>
-
-#include "stonks/core/types.h"
 
 namespace stonks::core {
 
 class Context;
 
-template <class S>
-concept HasOnStart = requires(S strategy, Context& context) { strategy.on_start(context); };
+template <class StrategyT>
+concept HasOnStart = requires(StrategyT strategy, Context& context) { strategy.on_start(context); };
 
-template <class S>
-concept HasOnStop = requires(S strategy, Context& context) { strategy.on_stop(context); };
+template <class StrategyT>
+concept HasOnStop = requires(StrategyT strategy, Context& context) { strategy.on_stop(context); };
 
-template <class S>
-concept HasOnKLine = requires(S strategy, Context& context) { strategy.on_kline(context); };
+template <class StrategyT>
+concept HasOnKLine = requires(StrategyT strategy, Context& context) { strategy.on_kline(context); };
 
-template <class S>
-concept Strategy = std::movable<S> && HasOnKLine<S>;
+template <class StrategyT>
+concept Strategy = std::movable<StrategyT> && HasOnKLine<StrategyT>;
 
 }
