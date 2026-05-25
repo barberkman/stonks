@@ -56,4 +56,4 @@ private:
     Clock m_clock;
 };
 
-}
+} // namespace stonks::core

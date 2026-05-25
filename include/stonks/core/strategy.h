@@ -18,4 +18,4 @@ concept HasOnKLine = requires(StrategyT strategy, Context& context) { strategy.o
 template <class StrategyT>
 concept Strategy = std::movable<StrategyT> && HasOnKLine<StrategyT>;
 
-}
+} // namespace stonks::core

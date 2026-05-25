@@ -24,4 +24,4 @@ private:
     Timestamp m_timestamp{};
 };
 
-}
+} // namespace stonks::core
