@@ -6,6 +6,7 @@ add_executable(core_tests
     core/determinism_test.cpp
     core/order_factory_test.cpp
     core/backtestbroker_test.cpp
+    core/scenarios_test.cpp
 )
 
 target_link_libraries(core_tests PRIVATE
