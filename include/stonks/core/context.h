@@ -1,33 +1,53 @@
 #pragma once
 
-#include <concepts>
+#include <iostream>
 #include <vector>
 
+#include "stonks/core/broker.h"
+#include "stonks/core/clock.h"
+#include "stonks/core/datafeed.h"
 #include "stonks/core/types.h"
 
 namespace stonks::core {
 
-template <class ContextT>
-concept ContextHasNow = requires(const ContextT& context) {
-    { context.now() } -> std::convertible_to<Timestamp>;
-};
+template<Broker BrokerT, DataFeed DataFeedT>
+class Context
+{
+public:
+    explicit Context(const BrokerT& broker, const DataFeedT& dataFeed, const Clock& clock)
+    : m_broker{ broker },
+    m_dataFeed{ dataFeed },
+    m_clock{ clock }
+    {}
 
-template <class ContextT>
-concept ContextHasCash = requires(const ContextT& context) {
-    { context.cash() } -> std::convertible_to<Balance>;
-};
+    Timestamp now() const
+    {
+        std::cout << "Context::now" << std::endl;
+        return m_clock.now();
+    }
 
-template <class ContextT>
-concept ContextHasEquity = requires(const ContextT& context) {
-    { context.equity() } -> std::convertible_to<Balance>;
-};
+    Balance cash() const
+    {
+        std::cout << "Context::cash" << std::endl;
+        return m_broker.cash();
+    }
 
-template <class ContextT>
-concept ContextHasKLine = requires(const ContextT& context, int count) {
-    { context.kline(count) } -> std::same_as<std::vector<KLine>>;
-};
+    Balance equity() const
+    {
+        std::cout << "Context::equity" << std::endl;
+        return m_broker.equity();
+    }
 
-template <class ContextT>
-concept Context = std::movable<ContextT> && ContextHasNow<ContextT> && ContextHasCash<ContextT> && ContextHasEquity<ContextT> && ContextHasKLine<ContextT>;
+    std::vector<KLine> kline(int count)
+    {
+        std::cout << "Context::kline: " << count << std::endl;
+        return m_dataFeed.kline(count);
+    }
+
+private:
+    const BrokerT& m_broker;
+    const DataFeedT& m_dataFeed;
+    const Clock& m_clock;
+};
 
 } // namespace stonks::core

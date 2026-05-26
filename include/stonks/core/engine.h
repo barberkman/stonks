@@ -4,29 +4,32 @@
 #include <iostream>
 #include <optional>
 
+#include "stonks/core/context.h"
 #include "stonks/core/strategy.h"
 #include "stonks/core/datafeed.h"
 #include "stonks/core/broker.h"
-#include "stonks/core/context.h"
 #include "stonks/core/clock.h"
 #include "stonks/core/types.h"
 
 namespace stonks::core {
 
-template <Strategy StrategyT, DataFeed DataFeedT, Broker BrokerT, Context ContextT>
+template <class StrategyT, DataFeed DataFeedT, Broker BrokerT>
+    requires Strategy<StrategyT, Context<BrokerT, DataFeedT>>
 class Engine {
 public:
-    Engine(StrategyT strategy, DataFeedT dataFeed, BrokerT broker, ContextT context)
+    Engine(StrategyT strategy, DataFeedT dataFeed, BrokerT broker)
     : m_strategy{ std::move(strategy) },
     m_dataFeed{ std::move(dataFeed) },
-    m_broker{ std::move(broker) },
-    m_context{ std::move(context) }
+    m_broker{ std::move(broker) }
     {}
 
     void run()
     {
+        using ContextT = Context<BrokerT, DataFeedT>;
+        ContextT context{ m_broker, m_dataFeed, m_clock };
+
         // Start the strategy (optional)
-        if constexpr (StrategyHasOnStart<StrategyT, ContextT>) { m_strategy.on_start(m_context); }
+        if constexpr (HasOnStart<StrategyT, ContextT>) { m_strategy.on_start(context); }
 
         // Main loop
         std::cout << "Entering engine's main loop" << std::endl;
@@ -40,21 +43,20 @@ public:
                 m_clock.advance(*next_timestamp);
 
                 // Call strategy
-                if constexpr (StrategyHasOnKLine<StrategyT, ContextT>) { m_strategy.on_kline(m_context); }
+                m_strategy.on_kline(context);
             } catch (const std::exception& ex) {
                 std::cout << "Main loop exception: " << ex.what() << std::endl;
             }
         }
 
         // Stop the strategy (optional)
-        if constexpr (StrategyHasOnStop<StrategyT, ContextT>) { m_strategy.on_stop(m_context); }
+        if constexpr (HasOnStop<StrategyT, ContextT>) { m_strategy.on_stop(context); }
     }
 
 private:
     StrategyT m_strategy;
     DataFeedT m_dataFeed;
     BrokerT m_broker;
-    ContextT m_context;
     Clock m_clock;
 };
 
