@@ -173,6 +173,85 @@ TEST(BacktestBroker, InsufficientCashBuyStaysQueuedUntilAffordable)
     EXPECT_DOUBLE_EQ(broker.cash(), 10.0);
 }
 
+TEST(BacktestBroker, TradesStartEmpty)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    EXPECT_TRUE(broker.trades().empty());
+}
+
+TEST(BacktestBroker, SuccessfulFillAppendsOneTrade)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    const auto order = order_at(1000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Buy, .quantity = Quantity{ 2.0 },
+        });
+    });
+    broker.place_order(order);
+    broker.on_tick(bar(2000, 110.0, 115.0, 105.0, 112.0));
+
+    ASSERT_EQ(broker.trades().size(), 1u);
+    const auto& t = broker.trades().front();
+    EXPECT_EQ(t.id, TradeID{ 1 });
+    EXPECT_EQ(t.order_id, order.id);
+    EXPECT_EQ(t.timestamp, Timestamp::from_millis(2000));
+    EXPECT_EQ(t.symbol, "X");
+    EXPECT_EQ(t.side, OrderSide::Buy);
+    EXPECT_DOUBLE_EQ(t.quantity, 2.0);
+    EXPECT_DOUBLE_EQ(t.price, 110.0);
+}
+
+TEST(BacktestBroker, TradeIdsStrictlyIncrease)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    broker.place_order(order_at(1000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 },
+        });
+    }));
+    broker.on_tick(bar(2000, 110.0, 115.0, 105.0, 112.0));
+
+    broker.place_order(order_at(2000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 },
+        });
+    }));
+    broker.on_tick(bar(3000, 115.0, 120.0, 110.0, 118.0));
+
+    ASSERT_EQ(broker.trades().size(), 2u);
+    EXPECT_EQ(broker.trades()[0].id, TradeID{ 1 });
+    EXPECT_EQ(broker.trades()[1].id, TradeID{ 2 });
+}
+
+TEST(BacktestBroker, SkippedFillsDoNotAdvanceTradeId)
+{
+    BacktestBroker broker{ Balance{ 50.0 } };   // not enough for first attempt
+
+    // Place a buy that won't fill on the next bar (cash too low).
+    broker.place_order(order_at(1000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 },
+        });
+    }));
+    broker.on_tick(bar(2000, 100.0, 100.0, 100.0, 100.0));   // skipped, cash too low
+    EXPECT_TRUE(broker.trades().empty());
+
+    // Place a limit buy that won't fill (limit not crossed).
+    broker.place_order(order_at(2000, [](auto& ctx) {
+        return ctx.make_limit_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Buy,
+            .quantity = Quantity{ 1.0 }, .price = Price{ 30.0 },
+        });
+    }));
+    broker.on_tick(bar(3000, 100.0, 100.0, 100.0, 100.0));   // skipped, limit not crossed
+    EXPECT_TRUE(broker.trades().empty());
+
+    // Finally fill the queued market buy on a bar where price is affordable.
+    broker.on_tick(bar(4000, 40.0, 40.0, 40.0, 40.0));
+    ASSERT_EQ(broker.trades().size(), 1u);
+    EXPECT_EQ(broker.trades().front().id, TradeID{ 1 });   // first trade id, counter not advanced by skips
+}
+
 TEST(BacktestBroker, EquityTracksLastClosePerSymbol)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };

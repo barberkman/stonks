@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <compare>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
@@ -18,6 +17,7 @@ using Quantity = double;
 
 using Symbol = std::string;
 using OrderID = std::uint64_t;
+using TradeID = std::uint64_t;
 
 enum class OrderSide : std::uint8_t
 {
@@ -85,6 +85,19 @@ private:
     {}
 
     template <class BrokerT, class DataFeedT> friend class Context;
+};
+
+struct Trade
+{
+    TradeID id;
+    OrderID order_id;
+    Timestamp timestamp;
+    Symbol symbol;
+    OrderSide side;
+    Quantity quantity;
+    Price price;
+
+    auto operator<=>(const Trade&) const = default;
 };
 
 struct MarketOrderParams

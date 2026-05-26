@@ -12,9 +12,11 @@ namespace stonks::core::test {
 struct StubBroker
 {
     std::vector<Order>* placed{ nullptr };
+    std::vector<Trade> m_trades;
 
     Balance cash() const { return {}; }
     Balance equity() const { return {}; }
+    const std::vector<Trade>& trades() const { return m_trades; }
     bool place_order(const Order& o)
     {
         if (placed) { placed->push_back(o); }

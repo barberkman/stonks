@@ -1,6 +1,7 @@
 #pragma once
 
 #include <concepts>
+#include <vector>
 
 #include "stonks/core/types.h"
 
@@ -22,12 +23,21 @@ concept HasPlaceOrder = requires(BrokerT& broker, const Order& order) {
 };
 
 template <class BrokerT>
+concept HasOnTickBar = requires(BrokerT& broker, const KLine& bar) {
+    { broker.on_tick(bar) } -> std::same_as<void>;
+};
+
+template <class BrokerT>
+concept HasTrades = requires(const BrokerT& broker) {
+    { broker.trades() } -> std::convertible_to<std::vector<Trade>>;
+};
+
+template <class BrokerT>
 concept Broker = std::movable<BrokerT>
     && HasCash<BrokerT>
     && HasEquity<BrokerT>
     && HasPlaceOrder<BrokerT>
-    && requires(BrokerT& broker, const KLine& bar) {
-        { broker.on_tick(bar) } -> std::same_as<void>;
-    };
+    && HasOnTickBar<BrokerT>
+    && HasTrades<BrokerT>;
 
 } // namespace stonks::core
