@@ -39,6 +39,8 @@ public:
         std::size_t bar_count = 0;
         std::optional<Timestamp> first_ts;
         Timestamp last_ts{};
+        Balance peak_equity = starting_cash;
+        double max_drawdown_pct = 0.0;
 
         while (auto ts = m_dataFeed.next_timestamp()) {
             m_clock.set(*ts);
@@ -46,20 +48,29 @@ public:
             last_ts = *ts;
             ++bar_count;
             m_broker.on_tick(m_dataFeed.current_kline());
+
+            const Balance current_equity = m_broker.equity();
+            if (current_equity > peak_equity) { peak_equity = current_equity; }
+            if (peak_equity > 0.0) {
+                const double dd = (peak_equity - current_equity) / peak_equity * 100.0;
+                if (dd > max_drawdown_pct) { max_drawdown_pct = dd; }
+            }
+
             m_strategy.on_tick(context);
             m_dataFeed.advance();
         }
 
         if constexpr (HasOnStop<StrategyT, ContextT>) { m_strategy.on_stop(context); }
 
-        print_report(starting_cash, bar_count, first_ts, last_ts);
+        print_report(starting_cash, bar_count, first_ts, last_ts, max_drawdown_pct);
     }
 
 private:
     void print_report(Balance starting_cash,
                       std::size_t bar_count,
                       std::optional<Timestamp> first_ts,
-                      Timestamp last_ts) const
+                      Timestamp last_ts,
+                      double max_drawdown_pct) const
     {
         const auto& trades = m_broker.trades();
         Balance notional = 0.0;
@@ -89,6 +100,7 @@ private:
             const double pct = (ending_equity - starting_cash) / starting_cash * 100.0;
             os << "Return:          " << pct << " %\n";
         }
+        os << "Max drawdown:    " << max_drawdown_pct << " %\n";
 
         os.copyfmt(old_state);
     }
