@@ -4,16 +4,16 @@
 #include "stonks/broker/backtestbroker.h"
 #include "stonks/datafeed/klinefeed.h"
 
-#include "strategies/placeholderstrategy.h"
+#include "strategies/ema50strategy.h"
 
 int main() {
     std::cout << "stonks app v0.0.1\n";
 
     stonks::core::Engine engine
     {
-        PlaceholderStrategy{},
+        EMA50Strategy{},
         stonks::datafeed::KLineFeed{ "app/data/BTCUSDT_1d.parquet" },
-        stonks::broker::BacktestBroker{ 100'000.0 }
+        stonks::broker::BacktestBroker{ 1000.0 }
     };
     engine.run();
 
