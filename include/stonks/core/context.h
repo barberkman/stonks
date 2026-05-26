@@ -22,25 +22,21 @@ public:
 
     Timestamp now() const
     {
-        std::cout << "Context::now" << std::endl;
         return m_clock.now();
     }
 
     Balance cash() const
     {
-        std::cout << "Context::cash" << std::endl;
         return m_broker.cash();
     }
 
     Balance equity() const
     {
-        std::cout << "Context::equity" << std::endl;
         return m_broker.equity();
     }
 
     std::vector<KLine> kline(int count)
     {
-        std::cout << "Context::kline: " << count << std::endl;
         return m_dataFeed.kline(count);
     }
 
