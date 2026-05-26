@@ -7,16 +7,16 @@
 namespace stonks::core {
 
 template <class BrokerT>
-concept HasCash = requires(const BrokerT& broker) { 
+concept BrokerHasCash = requires(const BrokerT& broker) {
     { broker.cash() } -> std::convertible_to<Balance>;
 };
 
 template <class BrokerT>
-concept HasEquity = requires(const BrokerT& broker) { 
+concept BrokerHasEquity = requires(const BrokerT& broker) {
     { broker.equity() } -> std::convertible_to<Balance>;
 };
 
 template <class BrokerT>
-concept Broker = std::movable<BrokerT> && HasCash<BrokerT> && HasEquity<BrokerT>;
+concept Broker = std::movable<BrokerT> && BrokerHasCash<BrokerT> && BrokerHasEquity<BrokerT>;
 
 } // namespace stonks::core

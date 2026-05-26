@@ -8,9 +8,26 @@
 
 struct PlaceholderStrategy 
 {
-    void on_start(stonks::core::Context&) { std::cout << "on_start\n"; }
-    void on_kline(stonks::core::Context&) { std::cout << "on_kline\n"; }
-    void on_stop(stonks::core::Context&)  { std::cout << "on_stop\n";  }
+    void on_start(stonks::core::Context auto& context) 
+    { 
+        std::cout << "on_start\n"; 
+        context.cash();
+        context.equity();
+    }
+
+    void on_kline(stonks::core::Context auto& context) 
+    { 
+        std::cout << "on_kline\n"; 
+        context.now();
+        context.kline(100);
+    }
+    
+    void on_stop(stonks::core::Context auto& context)  
+    { 
+        std::cout << "on_stop\n";  
+        context.cash();
+        context.equity();
+    }
 };
 
 class KLineFeed
@@ -50,6 +67,34 @@ public:
     }
 };
 
+class Context
+{
+public:
+    stonks::core::Timestamp now() const
+    {
+        std::cout << "Context::now" << std::endl;
+        return stonks::core::Timestamp{};
+    }
+
+    stonks::core::Balance cash() const
+    {
+        std::cout << "Context::cash" << std::endl;
+        return stonks::core::Balance{};
+    }
+
+    stonks::core::Balance equity() const
+    {
+        std::cout << "Context::equity" << std::endl;
+        return stonks::core::Balance{};
+    }
+
+    std::vector<stonks::core::KLine> kline(int count) const
+    {
+        std::cout << "Context::kline: " << count << std::endl;
+        return std::vector<stonks::core::KLine>{};
+    }
+};
+
 int main() {
     std::cout << "stonks backtest_runner v0.0.1\n";
 
@@ -57,7 +102,8 @@ int main() {
     { 
         PlaceholderStrategy{}, 
         KLineFeed{},
-        Broker{}
+        Broker{},
+        Context{}
     };
     engine.run();
     

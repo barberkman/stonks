@@ -8,11 +8,11 @@
 namespace stonks::core {
 
 template <class DataFeedT>
-concept HasPeek = requires(const DataFeedT& dataFeed, Timestamp now) {
+concept DataFeedHasPeek = requires(const DataFeedT& dataFeed, Timestamp now) {
     { dataFeed.peek(now) } -> std::convertible_to<std::optional<Timestamp>>;
 };
 
 template <class DataFeedT>
-concept DataFeed = std::movable<DataFeedT> && HasPeek<DataFeedT>;
+concept DataFeed = std::movable<DataFeedT> && DataFeedHasPeek<DataFeedT>;
 
 } // namespace stonks::core
