@@ -103,6 +103,11 @@ void KLineFeed::advance()
     if (m_cursor < m_klines.size()) { ++m_cursor; }
 }
 
+core::KLine KLineFeed::current_kline() const
+{
+    return m_klines[m_cursor];
+}
+
 std::vector<core::KLine> KLineFeed::klines(
     core::Timestamp start,
     core::Timestamp end) const

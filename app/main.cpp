@@ -13,7 +13,7 @@ int main() {
     {
         PlaceholderStrategy{},
         stonks::datafeed::KLineFeed{ "app/data/BTCUSDT_1d.parquet" },
-        stonks::broker::BacktestBroker{}
+        stonks::broker::BacktestBroker{ 100'000.0 }
     };
     engine.run();
 

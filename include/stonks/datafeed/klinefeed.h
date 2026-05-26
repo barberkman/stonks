@@ -19,6 +19,8 @@ public:
     std::optional<core::Timestamp> next_timestamp() const;
     void advance();
 
+    core::KLine current_kline() const;
+
     std::vector<core::KLine> klines(
         core::Timestamp start,
         core::Timestamp end) const;

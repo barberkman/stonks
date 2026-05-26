@@ -20,6 +20,7 @@ struct StubBroker
         if (placed) { placed->push_back(o); }
         return true;
     }
+    void on_tick(const KLine&) {}
 };
 
 struct StubFeed
@@ -35,6 +36,8 @@ struct StubFeed
     }
 
     void advance() { if (cursor < bars.size()) { ++cursor; } }
+
+    KLine current_kline() const { return bars[cursor]; }
 
     std::vector<KLine> klines(Timestamp start, Timestamp end) const
     {

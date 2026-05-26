@@ -2,6 +2,7 @@
 
 #include <concepts>
 #include <optional>
+#include <vector>
 
 #include "stonks/core/types.h"
 
@@ -23,9 +24,21 @@ concept HasResolution = requires(const DataFeedT& dataFeed) {
 };
 
 template <class DataFeedT>
+concept HasCurrentKLine = requires(const DataFeedT& dataFeed) {
+    { dataFeed.current_kline() } -> std::convertible_to<KLine>;
+};
+
+template <class DataFeedT>
+concept HasKLines = requires(const DataFeedT& dataFeed, Timestamp start, Timestamp end) {
+    { dataFeed.klines(start, end) } -> std::convertible_to<std::vector<KLine>>;
+};
+
+template <class DataFeedT>
 concept DataFeed = std::movable<DataFeedT>
     && HasNextTimestamp<DataFeedT>
     && HasAdvance<DataFeedT>
-    && HasResolution<DataFeedT>;
+    && HasResolution<DataFeedT>
+    && HasCurrentKLine<DataFeedT>
+    && HasKLines<DataFeedT>;
 
 } // namespace stonks::core

@@ -33,6 +33,7 @@ public:
 
         while (auto ts = m_dataFeed.next_timestamp()) {
             m_clock.set(*ts);
+            m_broker.on_tick(m_dataFeed.current_kline());
             m_strategy.on_tick(context);
             m_dataFeed.advance();
         }
