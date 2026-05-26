@@ -1,4 +1,4 @@
-#include "klinefeed.h"
+#include "stonks/datafeed/klinefeed.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -41,8 +41,10 @@ std::shared_ptr<arrow::ChunkedArray> column_as(
 
 } // namespace
 
+namespace stonks::datafeed {
+
 KLineFeed::KLineFeed(std::filesystem::path parquet_path,
-                     stonks::core::Timestamp::duration resolution)
+                     core::Timestamp::duration resolution)
 : m_resolution{ resolution }
 {
     auto infile = unwrap_or_throw(
@@ -77,8 +79,8 @@ KLineFeed::KLineFeed(std::filesystem::path parquet_path,
 
         const int64_t rows = ts.length();
         for (int64_t i = 0; i < rows; ++i) {
-            m_klines.push_back(stonks::core::KLine{
-                stonks::core::Timestamp::from_millis(ts.Value(i)),
+            m_klines.push_back(core::KLine{
+                core::Timestamp::from_millis(ts.Value(i)),
                 std::string{ symbol.GetView(i) },
                 open.Value(i),
                 high.Value(i),
@@ -90,7 +92,7 @@ KLineFeed::KLineFeed(std::filesystem::path parquet_path,
     }
 }
 
-std::optional<stonks::core::Timestamp> KLineFeed::next_timestamp() const
+std::optional<core::Timestamp> KLineFeed::next_timestamp() const
 {
     if (m_cursor >= m_klines.size()) { return std::nullopt; }
     return m_klines[m_cursor].timestamp;
@@ -101,14 +103,16 @@ void KLineFeed::advance()
     if (m_cursor < m_klines.size()) { ++m_cursor; }
 }
 
-std::vector<stonks::core::KLine> KLineFeed::klines(
-    stonks::core::Timestamp start,
-    stonks::core::Timestamp end) const
+std::vector<core::KLine> KLineFeed::klines(
+    core::Timestamp start,
+    core::Timestamp end) const
 {
     if (end < start) { return {}; }
     auto lo = std::lower_bound(m_klines.begin(), m_klines.end(), start,
-        [](const stonks::core::KLine& k, stonks::core::Timestamp t) { return k.timestamp < t; });
+        [](const core::KLine& k, core::Timestamp t) { return k.timestamp < t; });
     auto hi = std::upper_bound(m_klines.begin(), m_klines.end(), end,
-        [](stonks::core::Timestamp t, const stonks::core::KLine& k) { return t < k.timestamp; });
-    return std::vector<stonks::core::KLine>(lo, hi);
+        [](core::Timestamp t, const core::KLine& k) { return t < k.timestamp; });
+    return std::vector<core::KLine>(lo, hi);
 }
+
+} // namespace stonks::datafeed

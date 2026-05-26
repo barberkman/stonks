@@ -19,7 +19,9 @@ endif()
 include(cmake/Dependencies.cmake)
 
 add_subdirectory(src/core)
-add_subdirectory(apps/backtest_runner)
+add_subdirectory(src/broker)
+add_subdirectory(src/datafeed)
+add_subdirectory(app)
 
 if(STONKS_BUILD_TESTS)
     enable_testing()

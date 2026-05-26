@@ -4,9 +4,8 @@
 find_package(Arrow REQUIRED QUIET)
 find_package(Parquet REQUIRED QUIET)
 
-add_executable(backtest_runner main.cpp datafeeds/klinefeed.cpp)
-target_link_libraries(backtest_runner PRIVATE
-    stonks_core
-    Arrow::arrow_shared
-    Parquet::parquet_shared
+add_library(stonks_datafeed STATIC klinefeed.cpp)
+target_link_libraries(stonks_datafeed
+    PUBLIC stonks_core
+    PRIVATE Arrow::arrow_shared Parquet::parquet_shared
 )

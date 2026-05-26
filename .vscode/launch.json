@@ -2,10 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug backtest_runner",
+            "name": "Debug app",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/apps/backtest_runner/backtest_runner",
+            "program": "${workspaceFolder}/build/app/app",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
@@ -28,10 +28,10 @@
             "cwd": "${command:cmake.launchTargetDirectory}"
         },
         {
-            "name": "Linux: Debug backtest_runner (gdb)",
+            "name": "Linux: Debug app (gdb)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/linux-debug/apps/backtest_runner/backtest_runner",
+            "program": "${workspaceFolder}/build/linux-debug/app/app",
             "args": [],
             "cwd": "${workspaceFolder}",
             "MIMode": "gdb",

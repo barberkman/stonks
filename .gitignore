@@ -7,7 +7,7 @@ compile_commands.json
 *.swp
 *.swo
 
-apps/backtest_runner/data/
+app/data/
 
 # VSCode: commit shared workspace configs, ignore personal/runtime files
 .vscode/*
