@@ -1,7 +1,5 @@
 #pragma once
 
-#include <iostream>
-
 #include "stonks/core/types.h"
 
 namespace stonks::core {
@@ -9,16 +7,9 @@ namespace stonks::core {
 class Clock
 {
 public:
-    Timestamp now() const 
-    {
-        return m_timestamp;
-    }
+    Timestamp now() const { return m_timestamp; }
 
-    void advance(Timestamp timestamp)
-    {
-        std::cout << "Clock::advance: time advance request to: " << timestamp << std::endl;
-        m_timestamp = timestamp;
-    }
+    void set(Timestamp timestamp) { m_timestamp = timestamp; }
 
 private:
     Timestamp m_timestamp{};

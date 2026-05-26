@@ -12,7 +12,7 @@ TEST(OrderSideTest, BuyAndSellAreDistinct) {
 
 TEST(TimestampTest, FormatsAsIso8601Utc) {
     std::ostringstream oss;
-    oss << Timestamp{1700000000123};
+    oss << Timestamp::from_millis(1700000000123);
     EXPECT_EQ(oss.str(), "2023-11-14T22:13:20.123Z");
 }
 

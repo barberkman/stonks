@@ -38,3 +38,26 @@ VSCode launch configs `Linux: Debug backtest_runner (gdb)` and `Linux: Debug cor
 ## CMake
 
 When adding/removing/renaming source files, update the relevant CMakeLists.txt automatically. The user should never need to edit CMake files. Also update .clangd if new include paths are needed (e.g., adding a new core lib dependency).
+
+## Style
+
+- Use a single space between tokens in declarations and assignments — do not column-align across consecutive lines. Examples:
+  - `using Price = double;` not `using Price    = double;`
+  - `Timestamp timestamp;` next to `Symbol symbol;`, not `Symbol    symbol;`
+  - `const auto a = foo();` and `const auto longer_name = foo();` — leave them ragged.
+- Normal indentation (function bodies, multi-line argument continuations, initializer lists) is unaffected; the rule is specifically about padding identifiers/operators with extra spaces to make adjacent lines line up.
+- Prefer brace-initialization `Type{ value }` over `Type(value)` for object construction, including member initializer lists and throw expressions. Function calls keep `(...)`. Cases where `{}` would change semantics (e.g. `std::vector(n, val)` vs `std::vector{ n, val }`) stay as `()`.
+- Put a space inside non-empty braces: `id{ id_ }`, `Order{ ... }`, `std::chrono::days{ 1 }` — not `id{id_}`. Empty braces stay tight: `{}`, `Timestamp{}`, `int* tick_count{};`.
+
+## Naming
+
+- Acronyms in identifiers are fully uppercase, not camel-cased: `OrderID`, `URL`, `HTTPClient` — not `OrderId`, `Url`, `HttpClient`. Words that look like acronyms but aren't (e.g. `KLine` — the K isn't an abbreviation) keep title-case.
+
+## Tests
+
+Claude owns the test suite. The user will not write or modify tests — that's Claude's responsibility. After every behavior change, ensure the suite is adequate:
+
+- Cover the new behavior and the invariants the change relies on (no-lookahead, determinism, order-stamping, etc.).
+- Update or extend existing tests when behavior shifts; don't leave a behavior change without a test that would have caught a regression.
+- Add new test files under `tests/<module>/` and wire them into the relevant `CMakeLists.txt` — the user should never have to edit test build files either.
+- If a behavior is genuinely untestable (e.g. UI, real network), say so explicitly rather than silently skipping.

@@ -11,9 +11,9 @@ template <class StrategyT, class ContextT>
 concept HasOnStop = requires(StrategyT strategy, ContextT& context) { strategy.on_stop(context); };
 
 template <class StrategyT, class ContextT>
-concept HasOnKLine = requires(StrategyT strategy, ContextT& context) { strategy.on_kline(context); };
+concept HasOnTick = requires(StrategyT strategy, ContextT& context) { strategy.on_tick(context); };
 
 template <class StrategyT, class ContextT>
-concept Strategy = std::movable<StrategyT> && HasOnKLine<StrategyT, ContextT>;
+concept Strategy = std::movable<StrategyT> && HasOnTick<StrategyT, ContextT>;
 
 } // namespace stonks::core

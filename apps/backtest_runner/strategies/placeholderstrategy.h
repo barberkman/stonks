@@ -6,21 +6,19 @@ struct PlaceholderStrategy
 {
     void on_start(auto& context)
     {
-        std::cout << "on_start\n";
         context.cash();
         context.equity();
     }
 
-    void on_kline(auto& context)
+    void on_tick(auto& context)
     {
         auto now = context.now();
-        std::cout << "Strategy now: " << now << std::endl;
-        context.klines(100);
+        auto klines = context.klines(100);
+        std::cout << "PlaceholderStrategy::tick: " << now << "\t" << klines.front().symbol << std::endl;
     }
 
     void on_stop(auto& context)
     {
-        std::cout << "on_stop\n";
         context.cash();
         context.equity();
     }

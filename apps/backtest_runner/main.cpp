@@ -12,7 +12,7 @@ int main() {
     stonks::core::Engine engine
     {
         PlaceholderStrategy{},
-        KLineFeed{"apps/backtest_runner/data/BTCUSDT_1d.parquet"},
+        KLineFeed{ "apps/backtest_runner/data/BTCUSDT_1d.parquet" },
         BacktestBroker{}
     };
     engine.run();

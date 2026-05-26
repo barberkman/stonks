@@ -1,26 +1,27 @@
 #pragma once
 
-#include <exception>
-#include <iostream>
 #include <optional>
+#include <utility>
 
-#include "stonks/core/context.h"
-#include "stonks/core/strategy.h"
-#include "stonks/core/datafeed.h"
 #include "stonks/core/broker.h"
 #include "stonks/core/clock.h"
+#include "stonks/core/context.h"
+#include "stonks/core/datafeed.h"
+#include "stonks/core/strategy.h"
 #include "stonks/core/types.h"
 
 namespace stonks::core {
 
 template <class StrategyT, DataFeed DataFeedT, Broker BrokerT>
-    requires Strategy<StrategyT, Context<BrokerT, DataFeedT>>
-class Engine {
+class Engine
+{
+    static_assert(Strategy<StrategyT, Context<BrokerT, DataFeedT>>);
+
 public:
     Engine(StrategyT strategy, DataFeedT dataFeed, BrokerT broker)
     : m_strategy{ std::move(strategy) },
-    m_dataFeed{ std::move(dataFeed) },
-    m_broker{ std::move(broker) }
+      m_dataFeed{ std::move(dataFeed) },
+      m_broker{ std::move(broker) }
     {}
 
     void run()
@@ -28,28 +29,14 @@ public:
         using ContextT = Context<BrokerT, DataFeedT>;
         ContextT context{ m_broker, m_dataFeed, m_clock };
 
-        // Start the strategy (optional)
         if constexpr (HasOnStart<StrategyT, ContextT>) { m_strategy.on_start(context); }
 
-        // Main loop
-        std::cout << "Entering engine's main loop" << std::endl;
-        while (true) {
-            try {
-                std::cout << "\n";
-
-                // Advance time
-                std::optional<Timestamp> next_timestamp = m_dataFeed.peek(m_clock.now());
-                if (!next_timestamp) { break; }
-                m_clock.advance(*next_timestamp);
-
-                // Call strategy
-                m_strategy.on_kline(context);
-            } catch (const std::exception& ex) {
-                std::cout << "Main loop exception: " << ex.what() << std::endl;
-            }
+        while (auto ts = m_dataFeed.next_timestamp()) {
+            m_clock.set(*ts);
+            m_strategy.on_tick(context);
+            m_dataFeed.advance();
         }
 
-        // Stop the strategy (optional)
         if constexpr (HasOnStop<StrategyT, ContextT>) { m_strategy.on_stop(context); }
     }
 

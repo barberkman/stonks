@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <ostream>
 #include <string>
+#include <utility>
 
 namespace stonks::core {
 
@@ -13,29 +14,39 @@ using Price = double;
 using Volume = double;
 using Balance = double;
 using Quantity = double;
-using Symbol = std::string;
 
-enum class OrderSide : uint8_t
+using Symbol = std::string;
+using OrderID = std::uint64_t;
+
+enum class OrderSide : std::uint8_t
 {
     Buy,
     Sell,
 };
 
-enum class OrderType : uint8_t
+enum class TimeInForce : std::uint8_t
 {
-    MARKET,
-    LIMIT
-};
-
-enum class TimeInForce : uint8_t 
-{ 
-    GTC
+    GTC,
 };
 
 struct Timestamp
 {
-    std::int64_t ms{};
-    auto operator<=>(const Timestamp&) const = default;
+    using clock = std::chrono::system_clock;
+    using duration = std::chrono::milliseconds;
+    using time_point = std::chrono::sys_time<duration>;
+
+    time_point value{};
+
+    constexpr auto operator<=>(const Timestamp&) const = default;
+
+    constexpr Timestamp operator+(duration d) const { return { value + d }; }
+    constexpr Timestamp operator-(duration d) const { return { value - d }; }
+    constexpr duration operator-(Timestamp other) const { return value - other.value; }
+
+    static constexpr Timestamp from_millis(std::int64_t ms)
+    {
+        return Timestamp{ time_point{ duration{ ms } } };
+    }
 };
 
 struct KLine
@@ -48,22 +59,31 @@ struct KLine
 
 struct Order
 {
+    OrderID id;
     Timestamp timestamp;
     Symbol symbol;
-    OrderType type;
     OrderSide side;
     Price price;
     Quantity quantity;
     TimeInForce time_in_force;
+
+    auto operator<=>(const Order&) const = default;
+
+private:
+    Order(OrderID id_, Timestamp ts, Symbol sym, OrderSide s, Price p, Quantity q, TimeInForce tif)
+    : id{ id_ }, timestamp{ ts }, symbol{ std::move(sym) }, side{ s }, price{ p }, quantity{ q }, time_in_force{ tif }
+    {}
+
+    template <class BrokerT, class DataFeedT> friend class Context;
 };
 
 inline std::ostream& operator<<(std::ostream& os, Timestamp ts)
 {
     using namespace std::chrono;
-    const sys_time<milliseconds> tp{milliseconds{ts.ms}};
+    const auto& tp = ts.value;
     const auto day_point = floor<days>(tp);
-    const year_month_day ymd{day_point};
-    const hh_mm_ss<milliseconds> tod{tp - day_point};
+    const year_month_day ymd{ day_point };
+    const hh_mm_ss<milliseconds> tod{ tp - day_point };
 
     char buf[32];
     std::snprintf(buf, sizeof(buf),

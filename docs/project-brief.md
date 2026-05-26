@@ -135,9 +135,9 @@ A single backtest run should be single-threaded and fully deterministic. I do no
 concurrency inside one run; instead, parallelism should come from running many
 independent backtests at the same time, one per processor core. Determinism is
 important: the same inputs must always produce exactly the same results, so that
-debugging and regression testing are reliable. To support this, money, prices, and time
-should be represented with integers rather than floating-point values, which avoids
-rounding drift and keeps results reproducible.
+debugging and regression testing are reliable. Money, prices, and quantities are
+floating-point. Time is kept integral via `std::chrono`-based types so that timestamp
+arithmetic stays exact and reproducible.
 
 ## How I want it built
 
