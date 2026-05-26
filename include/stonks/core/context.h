@@ -47,16 +47,31 @@ public:
         return klines(start, end);
     }
 
-    Order make_order(Symbol symbol, OrderSide side, Quantity quantity, Price price, TimeInForce tif)
+    Order make_market_order(MarketOrderParams params)
     {
         return Order{
             OrderID{ m_next_order_id++ },
             m_clock.now(),
-            std::move(symbol),
-            side,
-            price,
-            quantity,
-            tif
+            std::move(params.symbol),
+            params.side,
+            OrderType::Market,
+            std::nullopt,
+            params.quantity,
+            params.time_in_force
+        };
+    }
+
+    Order make_limit_order(LimitOrderParams params)
+    {
+        return Order{
+            OrderID{ m_next_order_id++ },
+            m_clock.now(),
+            std::move(params.symbol),
+            params.side,
+            OrderType::Limit,
+            params.price,
+            params.quantity,
+            params.time_in_force
         };
     }
 

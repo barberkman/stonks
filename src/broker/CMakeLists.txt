@@ -1,2 +1,2 @@
-add_library(stonks_broker INTERFACE)
-target_link_libraries(stonks_broker INTERFACE stonks_core)
+add_library(stonks_broker STATIC backtestbroker.cpp)
+target_link_libraries(stonks_broker PUBLIC stonks_core)

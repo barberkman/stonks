@@ -16,12 +16,12 @@ struct OneOrderPerTick
 {
     void on_tick(auto& context)
     {
-        auto order = context.make_order(
-            Symbol{ "X" },
-            OrderSide::Buy,
-            Quantity{ 1.0 },
-            Price{ 42.0 },
-            TimeInForce::GTC);
+        auto order = context.make_limit_order({
+            .symbol = Symbol{ "X" },
+            .side = OrderSide::Buy,
+            .quantity = Quantity{ 1.0 },
+            .price = Price{ 42.0 },
+        });
         context.place_order(order);
     }
 };

@@ -7,9 +7,9 @@ namespace stonks::broker {
 class BacktestBroker
 {
 public:
-    core::Balance cash() const { return {}; }
-    core::Balance equity() const { return {}; }
-    bool place_order(const core::Order&) { return true; }
+    core::Balance cash() const;
+    core::Balance equity() const;
+    bool place_order(const core::Order& order);
 };
 
 } // namespace stonks::broker

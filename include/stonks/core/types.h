@@ -4,6 +4,7 @@
 #include <compare>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <utility>
@@ -22,6 +23,12 @@ enum class OrderSide : std::uint8_t
 {
     Buy,
     Sell,
+};
+
+enum class OrderType : std::uint8_t
+{
+    Market,
+    Limit,
 };
 
 enum class TimeInForce : std::uint8_t
@@ -63,18 +70,38 @@ struct Order
     Timestamp timestamp;
     Symbol symbol;
     OrderSide side;
-    Price price;
+    OrderType type;
+    std::optional<Price> price;
     Quantity quantity;
     TimeInForce time_in_force;
 
     auto operator<=>(const Order&) const = default;
 
 private:
-    Order(OrderID id_, Timestamp ts, Symbol sym, OrderSide s, Price p, Quantity q, TimeInForce tif)
-    : id{ id_ }, timestamp{ ts }, symbol{ std::move(sym) }, side{ s }, price{ p }, quantity{ q }, time_in_force{ tif }
+    Order(OrderID id_, Timestamp ts, Symbol sym, OrderSide s, OrderType t,
+          std::optional<Price> p, Quantity q, TimeInForce tif)
+    : id{ id_ }, timestamp{ ts }, symbol{ std::move(sym) }, side{ s }, type{ t },
+      price{ p }, quantity{ q }, time_in_force{ tif }
     {}
 
     template <class BrokerT, class DataFeedT> friend class Context;
+};
+
+struct MarketOrderParams
+{
+    Symbol symbol;
+    OrderSide side;
+    Quantity quantity;
+    TimeInForce time_in_force = TimeInForce::GTC;
+};
+
+struct LimitOrderParams
+{
+    Symbol symbol;
+    OrderSide side;
+    Quantity quantity;
+    Price price;
+    TimeInForce time_in_force = TimeInForce::GTC;
 };
 
 inline std::ostream& operator<<(std::ostream& os, Timestamp ts)
