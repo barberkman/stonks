@@ -17,6 +17,11 @@ concept HasEquity = requires(const BrokerT& broker) {
 };
 
 template <class BrokerT>
-concept Broker = std::movable<BrokerT> && HasCash<BrokerT> && HasEquity<BrokerT>;
+concept HasPlaceOrder = requires(BrokerT& broker, const Order& order) {
+    { broker.place_order(order) } -> std::same_as<bool>;
+};
+
+template <class BrokerT>
+concept Broker = std::movable<BrokerT> && HasCash<BrokerT> && HasEquity<BrokerT> && HasPlaceOrder<BrokerT>;
 
 } // namespace stonks::core

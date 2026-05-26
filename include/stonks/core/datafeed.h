@@ -14,11 +14,11 @@ concept HasPeek = requires(const DataFeedT& dataFeed, Timestamp now) {
 };
 
 template <class DataFeedT>
-concept HasKLine = requires(const DataFeedT& dataFeed, int count) {
-    { dataFeed.kline(count) } -> std::same_as<std::vector<KLine>>;
+concept HasKLines = requires(const DataFeedT& dataFeed, int count) {
+    { dataFeed.klines(count) } -> std::same_as<std::vector<KLine>>;
 };
 
 template <class DataFeedT>
-concept DataFeed = std::movable<DataFeedT> && HasPeek<DataFeedT> && HasKLine<DataFeedT>;
+concept DataFeed = std::movable<DataFeedT> && HasPeek<DataFeedT> && HasKLines<DataFeedT>;
 
 } // namespace stonks::core

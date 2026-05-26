@@ -2,7 +2,7 @@
 
 #include "stonks/core/engine.h"
 
-#include "brokers/broker.h"
+#include "brokers/backtestbroker.h"
 #include "datafeeds/klinefeed.h"
 #include "strategies/placeholderstrategy.h"
 
@@ -13,7 +13,7 @@ int main() {
     {
         PlaceholderStrategy{},
         KLineFeed{"apps/backtest_runner/data/BTCUSDT_1d.parquet"},
-        Broker{}
+        BacktestBroker{}
     };
     engine.run();
 

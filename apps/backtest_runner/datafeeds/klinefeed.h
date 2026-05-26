@@ -13,7 +13,7 @@ public:
 
     std::optional<stonks::core::Timestamp> peek(stonks::core::Timestamp current) const;
 
-    std::vector<stonks::core::KLine> kline(int count) const;
+    std::vector<stonks::core::KLine> klines(int count) const;
 
 private:
     std::vector<stonks::core::KLine> m_klines;

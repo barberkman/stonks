@@ -15,7 +15,7 @@ struct PlaceholderStrategy
     {
         auto now = context.now();
         std::cout << "Strategy now: " << now << std::endl;
-        context.kline(100);
+        context.klines(100);
     }
 
     void on_stop(auto& context)

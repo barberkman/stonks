@@ -95,7 +95,7 @@ std::optional<stonks::core::Timestamp> KLineFeed::peek(stonks::core::Timestamp c
     return std::nullopt;
 }
 
-std::vector<stonks::core::KLine> KLineFeed::kline(int /*count*/) const
+std::vector<stonks::core::KLine> KLineFeed::klines(int /*count*/) const
 {
     return m_klines;
 }
