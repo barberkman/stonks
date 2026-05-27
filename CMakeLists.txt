@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(STONKS_BUILD_TESTS "Build unit tests" ON)
+option(STONKS_PYTHON "Build embedded Python support (requires CPython 3.10+ headers; Linux/macOS)" ON)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     add_compile_options(-Wall -Wextra -Wpedantic)
@@ -21,6 +22,9 @@ include(cmake/Dependencies.cmake)
 add_subdirectory(src/core)
 add_subdirectory(src/broker)
 add_subdirectory(src/datafeed)
+if(STONKS_PYTHON)
+    add_subdirectory(src/python)
+endif()
 add_subdirectory(app)
 
 if(STONKS_BUILD_TESTS)

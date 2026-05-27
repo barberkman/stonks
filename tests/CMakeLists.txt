@@ -16,3 +16,7 @@ target_link_libraries(core_tests PRIVATE
 )
 
 gtest_discover_tests(core_tests)
+
+if(STONKS_PYTHON)
+    add_subdirectory(python)
+endif()

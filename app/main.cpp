@@ -4,14 +4,14 @@
 #include "stonks/broker/backtestbroker.h"
 #include "stonks/datafeed/klinefeed.h"
 
-#include "strategies/ema50strategy.h"
+#include "strategies/pythonstrategy.h"
 
 int main() {
     std::cout << "stonks app v0.0.1\n";
 
     stonks::core::Engine engine
     {
-        EMA50Strategy{},
+        PythonStrategy{ "ema_cross", "EMACross" },
         stonks::datafeed::KLineFeed{ "app/data/BTCUSDT_1d.parquet" },
         stonks::broker::BacktestBroker{ 1000.0 }
     };

@@ -4,3 +4,6 @@ target_link_libraries(app PRIVATE
     stonks_broker
     stonks_datafeed
 )
+if(STONKS_PYTHON)
+    target_link_libraries(app PRIVATE stonks_python)
+endif()

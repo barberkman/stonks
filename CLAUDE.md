@@ -53,6 +53,25 @@ When adding/removing/renaming source files, update the relevant CMakeLists.txt a
 
 - Acronyms in identifiers are fully uppercase, not camel-cased: `OrderID`, `URL`, `HTTPClient` — not `OrderId`, `Url`, `HttpClient`. Words that look like acronyms but aren't (e.g. `KLine` — the K isn't an abbreviation) keep title-case.
 
+## Python strategies
+
+Strategies can be authored in Python and run inside the same C++ engine via `PythonStrategy` (`app/strategies/pythonstrategy.h`). Conventions:
+
+- `python/` — framework package (`stonks`): bindings, base class, `FakeContext`.
+- `app/python/` — this app's Python content: strategies + venv. Sibling to `app/strategies/` and `app/data/`.
+- `PythonStrategy` defaults `STONKS_VENV=app/python/.venv` and `STONKS_PYTHONPATH=app/python` (set with `overwrite=0`), so the sample runs with no env-var setup. Export your own to override.
+
+Build with `-DSTONKS_PYTHON=ON` (default) — requires CPython 3.10+ headers. Full usage is in `python/README.md`.
+
+One-time setup of the app-local venv:
+
+```sh
+python3 -m venv app/python/.venv
+app/python/.venv/bin/pip install -e python/
+```
+
+Smoke: `./build/linux-debug/app/app` (from project root) runs the sample at `app/python/ema_cross.py`.
+
 ## Tests
 
 Claude owns the test suite. The user will not write or modify tests — that's Claude's responsibility. After every behavior change, ensure the suite is adequate:
