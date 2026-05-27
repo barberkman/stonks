@@ -61,7 +61,7 @@ Strategies can be authored in Python and run inside the same C++ engine via `Pyt
 - `app/python/` — this app's Python content: strategies + venv. Sibling to `app/strategies/` and `app/data/`.
 - `PythonStrategy` defaults `STONKS_VENV=app/python/.venv` and `STONKS_PYTHONPATH=app/python` (set with `overwrite=0`), so the sample runs with no env-var setup. Export your own to override.
 
-Build with `-DSTONKS_PYTHON=ON` (default) — requires CPython 3.10+ headers. Full usage is in `python/README.md`.
+Build with `-DSTONKS_PYTHON=ON` (default) — requires CPython 3.10+ headers. Full usage is in `app/python/README.md`.
 
 One-time setup of the app-local venv:
 

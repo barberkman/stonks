@@ -1,14 +1,14 @@
-# stonks (Python)
+# app/python — Python strategies for this app
 
-Python strategy authoring + bindings for the stonks C++ backtest engine.
+This folder holds Python strategies and the venv the embedded interpreter
+runs them in. See `ema_cross.py` for a working example.
 
 ## Layout
 
-- `python/` (this folder) — the framework package: bindings (`_core.so`),
-  `Strategy` base class, `FakeContext` for tests. Generic / reusable.
-- `app/python/` — the **app's** Python area: sample strategy + the venv
-  used at runtime. Sibling of `app/strategies/` (C++ strategies) and
-  `app/data/`.
+- `app/python/` (this folder) — the app's Python area: strategies + the
+  venv. Sibling of `app/strategies/` (C++ strategies) and `app/data/`.
+- `python/` — the framework package: bindings (`_core.so`), `Strategy`
+  base class, `FakeContext` for tests. Generic / reusable across apps.
 
 ## Install
 
@@ -101,7 +101,7 @@ processes `.pth` files so editable installs work. `STONKS_PYTHONPATH`
 ```python
 from stonks import OrderSide
 from stonks.testing import FakeContext, FakeKLine
-from my_strats.ema_cross import EMACross
+from ema_cross import EMACross
 
 def test_buys_on_uptrend():
     bars = [FakeKLine(i, "BTCUSDT", p, p, p, p, 1.0)
@@ -136,8 +136,9 @@ pip install pybind11-stubgen
 pybind11-stubgen stonks._core -o python/
 ```
 
-This emits `python/stonks/_core.pyi`. `python/stonks/` is configured to ship
-`*.pyi` as package data, so editable installs pick it up.
+This emits `python/stonks/_core.pyi` (the framework package directory).
+`python/stonks/` is configured to ship `*.pyi` as package data, so the
+editable install in `app/python/.venv` picks it up.
 
 ## Limitations
 

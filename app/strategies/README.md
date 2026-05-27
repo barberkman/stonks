@@ -111,7 +111,7 @@ The root `/home/baris/stonks/CLAUDE.md` is the source of truth. The points that 
 
 See `placeholderstrategy.h` in this folder for a live example.
 
-Python-authored strategies use `pythonstrategy.h`, which loads a user-supplied Python class by module path. Sample strategies live in `/home/baris/stonks/app/python/`; the venv used at runtime is `/home/baris/stonks/app/python/.venv`. See `/home/baris/stonks/python/README.md` for the Python-side authoring story.
+Python-authored strategies use `pythonstrategy.h`, which loads a user-supplied Python class by module path. Sample strategies live in `/home/baris/stonks/app/python/`; the venv used at runtime is `/home/baris/stonks/app/python/.venv`. See `/home/baris/stonks/app/python/README.md` for the Python-side authoring story.
 
 ## After writing a strategy
 
