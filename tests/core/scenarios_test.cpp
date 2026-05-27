@@ -529,4 +529,25 @@ TEST(Scenario, IdenticalRunsProduceIdenticalTrades)
     EXPECT_DOUBLE_EQ(b1.equity(), b2.equity());
 }
 
+TEST(Scenario, Report_ContainsStrategyTiming)
+{
+    BacktestBroker broker{ Balance{ 1'000.0 } };
+    BrokerSpy spy{ &broker };
+
+    StubFeed feed;
+    feed.bars = {
+        flat(1000, 100.0),
+        flat(2000, 110.0),
+        flat(3000, 120.0),
+    };
+
+    CoutMute mute;
+    Engine engine{ BuyThenSell{ Quantity{ 1.0 } }, std::move(feed), std::move(spy) };
+    engine.run();
+    const std::string report = mute.sink.str();
+
+    EXPECT_NE(report.find("Strategy time:"), std::string::npos);
+    EXPECT_NE(report.find("per bar:"), std::string::npos);
+}
+
 } // namespace stonks::broker

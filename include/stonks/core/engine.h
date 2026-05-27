@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <iomanip>
 #include <iostream>
@@ -33,6 +34,7 @@ public:
         using ContextT = Context<BrokerT, DataFeedT>;
         ContextT context{ m_broker, m_dataFeed, m_clock };
 
+        const auto t0 = std::chrono::steady_clock::now();
         if constexpr (HasOnStart<StrategyT, ContextT>) { m_strategy.on_start(context); }
 
         const Balance starting_cash = m_broker.cash();
@@ -61,8 +63,10 @@ public:
         }
 
         if constexpr (HasOnStop<StrategyT, ContextT>) { m_strategy.on_stop(context); }
+        const auto t1 = std::chrono::steady_clock::now();
+        const std::chrono::nanoseconds strategy_time = t1 - t0;
 
-        print_report(starting_cash, bar_count, first_ts, last_ts, max_drawdown_pct);
+        print_report(starting_cash, bar_count, first_ts, last_ts, max_drawdown_pct, strategy_time);
     }
 
 private:
@@ -70,7 +74,8 @@ private:
                       std::size_t bar_count,
                       std::optional<Timestamp> first_ts,
                       Timestamp last_ts,
-                      double max_drawdown_pct) const
+                      double max_drawdown_pct,
+                      std::chrono::nanoseconds strategy_time) const
     {
         const auto& trades = m_broker.trades();
         Balance notional = 0.0;
@@ -101,6 +106,15 @@ private:
             os << "Return:          " << pct << " %\n";
         }
         os << "Max drawdown:    " << max_drawdown_pct << " %\n";
+
+        const double total_ms = std::chrono::duration<double, std::milli>{ strategy_time }.count();
+        os << "Strategy time:   " << total_ms << " ms\n";
+        if (bar_count > 0) {
+            const double per_bar_us =
+                std::chrono::duration<double, std::micro>{ strategy_time }.count()
+                / static_cast<double>(bar_count);
+            os << "  per bar:       " << per_bar_us << " us\n";
+        }
 
         os.copyfmt(old_state);
     }
