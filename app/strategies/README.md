@@ -109,7 +109,7 @@ The root `/home/baris/stonks/CLAUDE.md` is the source of truth. The points that 
 - **Acronyms uppercase:** `OrderID`, not `OrderId`. (`KLine` is title-case — the K is not an acronym.)
 - C++20; library types are namespaced as `stonks::core::`, `stonks::broker::`, `stonks::datafeed::`.
 
-See `placeholderstrategy.h` in this folder for a live example.
+See `ema50strategy.h` in this folder for a live example.
 
 Python-authored strategies use `pythonstrategy.h`, which loads a user-supplied Python class by module path. Sample strategies live in `/home/baris/stonks/app/python/`; the venv used at runtime is `/home/baris/stonks/app/python/.venv`. See `/home/baris/stonks/app/python/README.md` for the Python-side authoring story.
 

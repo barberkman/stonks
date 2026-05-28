@@ -12,7 +12,8 @@ int main() {
 
     stonks::core::Engine engine
     {
-        PythonStrategy{ "ema50strategy", "EMA50Strategy" },
+        // PythonStrategy{ "ema50strategy", "EMA50Strategy" },
+        EMA50Strategy{},
         stonks::datafeed::KLineFeed{ "app/data/BTCUSDT_1d.parquet" },
         stonks::broker::BacktestBroker{ 1000.0 }
     };

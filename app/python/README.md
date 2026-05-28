@@ -1,7 +1,7 @@
 # app/python — Python strategies for this app
 
 This folder holds Python strategies and the venv the embedded interpreter
-runs them in. See `ema_cross.py` for a working example.
+runs them in. See `ema50strategy.py` for a working example.
 
 ## Layout
 
@@ -32,35 +32,48 @@ app/python/.venv/bin/pip install -e python/
 import stonks
 from stonks import OrderSide
 
-class EMACross(stonks.Strategy):
+class EMA50Strategy(stonks.Strategy):
+    PERIOD = 50
+    ALPHA = 2.0 / (PERIOD + 1)
+
     def on_start(self, ctx):
-        self.short = 12
-        self.long = 26
-        self.holding = False
-        self.symbol = "BTCUSDT"
+        self.states = {}
 
     def on_tick(self, ctx):
-        bars = ctx.klines(self.long + 1)
-        if len(bars) < self.long + 1:
+        # klines() interleaves bars across every symbol the feed surfaces, so a
+        # per-symbol EMA must consume only its own symbol's stream.
+        bars = ctx.klines(1)
+        if not bars:
             return
-        closes = [b.close for b in bars]
-        short_ema = _ema(closes, self.short)
-        long_ema = _ema(closes, self.long)
-        if short_ema > long_ema and not self.holding:
-            ctx.place_market_order(
-                symbol=self.symbol, side=OrderSide.Buy, quantity=0.01)
-            self.holding = True
-        elif short_ema < long_ema and self.holding:
-            ctx.place_market_order(
-                symbol=self.symbol, side=OrderSide.Sell, quantity=0.01)
-            self.holding = False
+        bar = bars[-1]
 
-def _ema(values, period):
-    k = 2 / (period + 1)
-    ema = sum(values[:period]) / period
-    for v in values[period:]:
-        ema = v * k + ema * (1 - k)
-    return ema
+        state = self.states.setdefault(
+            bar.symbol,
+            { "ema": None, "seed_sum": 0.0, "seed_count": 0, "held_quantity": 0.0 },
+        )
+
+        if state["ema"] is None:
+            # Seed the EMA with the SMA of the first PERIOD closes for this symbol.
+            state["seed_sum"] += bar.close
+            state["seed_count"] += 1
+            if state["seed_count"] < self.PERIOD:
+                return
+            state["ema"] = state["seed_sum"] / self.PERIOD
+        else:
+            state["ema"] = self.ALPHA * bar.close + (1.0 - self.ALPHA) * state["ema"]
+
+        # Enter long above the EMA; flat-only means we never short below it.
+        if bar.close > state["ema"] and state["held_quantity"] == 0.0:
+            qty = ctx.cash() / bar.close
+            if qty <= 0.0:
+                return
+            if ctx.place_market_order(symbol=bar.symbol, side=OrderSide.Buy, quantity=qty):
+                state["held_quantity"] = qty
+        elif bar.close < state["ema"] and state["held_quantity"] > 0.0:
+            if ctx.place_market_order(
+                symbol=bar.symbol, side=OrderSide.Sell, quantity=state["held_quantity"]
+            ):
+                state["held_quantity"] = 0.0
 ```
 
 ## Run inside the engine
@@ -70,7 +83,7 @@ Drop your strategy in `app/python/<name>.py` and reference it in `app/main.cpp`:
 ```cpp
 #include "strategies/pythonstrategy.h"
 // ...
-PythonStrategy{ "<name>", "EMACross" },
+PythonStrategy{ "ema50strategy", "EMA50Strategy" },
 ```
 
 Run from the project root:
@@ -101,13 +114,13 @@ processes `.pth` files so editable installs work. `STONKS_PYTHONPATH`
 ```python
 from stonks import OrderSide
 from stonks.testing import FakeContext, FakeKLine
-from ema_cross import EMACross
+from ema50strategy import EMA50Strategy
 
 def test_buys_on_uptrend():
     bars = [FakeKLine(i, "BTCUSDT", p, p, p, p, 1.0)
             for i, p in enumerate(range(100, 160))]
     ctx = FakeContext(bars)
-    s = EMACross()
+    s = EMA50Strategy()
     s.on_start(ctx)
     for _ in bars:
         ctx.advance()
