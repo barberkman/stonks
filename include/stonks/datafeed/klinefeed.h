@@ -27,6 +27,8 @@ public:
 
     core::Timestamp::duration resolution() const { return m_resolution; }
 
+    std::size_t size() const { return m_klines.size(); }
+
 private:
     std::vector<core::KLine> m_klines;
     std::size_t m_cursor{ 0 };

@@ -52,6 +52,8 @@ struct StubFeed
     }
 
     Timestamp::duration resolution() const { return res; }
+
+    std::size_t size() const { return bars.size(); }
 };
 
 inline KLine make_bar(std::int64_t ms, double close)

@@ -7,13 +7,17 @@
 
 // Long-only trend-following strategy, applied independently per symbol: for
 // each symbol the feed surfaces, hold while its close is above its own 50-bar
-// EMA and stay flat otherwise. No shorting and no cross-symbol coupling.
+// EMA and stay flat otherwise. Each entry commits 1% of current account equity,
+// so many symbols can hold a position at once (one per symbol). No shorting and
+// no cross-symbol coupling.
 struct EMA50Strategy
 {
     static constexpr int PERIOD = 50;
     // Standard EMA smoothing factor: 2/(N+1) gives the latest bar a weight that
     // makes the EMA's responsiveness comparable to an N-period SMA.
     static constexpr double ALPHA = 2.0 / (PERIOD + 1);
+    // Fraction of current account equity committed to each new position.
+    static constexpr double POSITION_FRACTION = 0.01;
 
     struct SymbolState
     {
@@ -55,7 +59,7 @@ struct EMA50Strategy
         // Enter long on an upside crossover; flat-only means we never short on the downside.
         if (bar.close > *state.ema && state.held_quantity == 0.0)
         {
-            const auto qty = context.cash() / bar.close;
+            const auto qty = context.equity() * POSITION_FRACTION / bar.close;
             if (qty <= 0.0) return;
             const auto order = context.make_market_order(stonks::core::MarketOrderParams{
                 .symbol = bar.symbol,

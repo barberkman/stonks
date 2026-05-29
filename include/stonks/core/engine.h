@@ -11,6 +11,7 @@
 #include "stonks/core/clock.h"
 #include "stonks/core/context.h"
 #include "stonks/core/datafeed.h"
+#include "stonks/core/progressbar.h"
 #include "stonks/core/strategy.h"
 #include "stonks/core/types.h"
 
@@ -36,6 +37,7 @@ public:
 
         const auto t0 = std::chrono::steady_clock::now();
         if constexpr (HasOnStart<StrategyT, ContextT>) { m_strategy.on_start(context); }
+        std::cout << "Engine::on_start" << std::endl;
 
         const Balance starting_cash = m_broker.cash();
         std::size_t bar_count = 0;
@@ -44,11 +46,16 @@ public:
         Balance peak_equity = starting_cash;
         double max_drawdown_pct = 0.0;
 
+        std::optional<std::size_t> total;
+        if constexpr (HasSize<DataFeedT>) { total = m_dataFeed.size(); }
+        ProgressBar progress{ total };
+
         while (auto ts = m_dataFeed.next_timestamp()) {
             m_clock.set(*ts);
             if (!first_ts) { first_ts = *ts; }
             last_ts = *ts;
             ++bar_count;
+            progress.update(bar_count);
             m_broker.on_tick(m_dataFeed.current_kline());
 
             const Balance current_equity = m_broker.equity();
@@ -61,8 +68,10 @@ public:
             m_strategy.on_tick(context);
             m_dataFeed.advance();
         }
+        progress.finish();
 
         if constexpr (HasOnStop<StrategyT, ContextT>) { m_strategy.on_stop(context); }
+        std::cout << "Engine::on_stop" << std::endl;
         const auto t1 = std::chrono::steady_clock::now();
         const std::chrono::nanoseconds strategy_time = t1 - t0;
 
