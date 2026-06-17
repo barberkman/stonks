@@ -1,5 +1,7 @@
 include(FetchContent)
 
+find_package(Qt6 REQUIRED COMPONENTS Quick)
+
 if(STONKS_BUILD_TESTS)
     FetchContent_Declare(
         googletest

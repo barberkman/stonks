@@ -9,10 +9,12 @@ add_executable(core_tests
     core/scenarios_test.cpp
     core/progressbar_test.cpp
     core/ema50strategy_test.cpp
+    core/cli_test.cpp
 )
 
 target_include_directories(core_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/app
+    ${PROJECT_SOURCE_DIR}/app/src
 )
 
 target_link_libraries(core_tests PRIVATE

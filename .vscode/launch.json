@@ -2,6 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Debug app (GUI)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/app/app",
+            "args": ["--gui"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: build"
+        },
+        {
             "name": "Debug app",
             "type": "lldb",
             "request": "launch",
@@ -42,7 +51,26 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "CMake: build (linux-debug)"
+            "preLaunchTask": "CMake: build (linux-debug)",
+            "visualizerFile": "/home/baris/.config/Code/User/workspaceStorage/41426545544e0dbeb1722223aa55c767/tonka3000.qtvsctools/qt.natvis.xml"
+        },
+        {
+            "name": "Linux: Debug app --gui (gdb)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/linux-debug/app/app",
+            "args": ["--gui"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "CMake: build (linux-debug)",
+            "visualizerFile": "/home/baris/.config/Code/User/workspaceStorage/41426545544e0dbeb1722223aa55c767/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug core_tests (gdb)",
@@ -59,7 +87,8 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "CMake: build (linux-debug)"
+            "preLaunchTask": "CMake: build (linux-debug)",
+            "visualizerFile": "/home/baris/.config/Code/User/workspaceStorage/41426545544e0dbeb1722223aa55c767/tonka3000.qtvsctools/qt.natvis.xml"
         }
     ]
 }

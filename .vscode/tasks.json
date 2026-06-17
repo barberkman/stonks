@@ -9,7 +9,8 @@
                 "-S", ".",
                 "-B", "build",
                 "-DCMAKE_BUILD_TYPE=Debug",
-                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                "-DCMAKE_PREFIX_PATH=/home/baris/Qt/6.10.1/gcc_64"
             ],
             "group": "build",
             "problemMatcher": []

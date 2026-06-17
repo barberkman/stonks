@@ -7,12 +7,19 @@ compile_commands.json
 *.swp
 *.swo
 
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.dmypy.json
+
 app/data/
 app/python/.venv/
-app/python/__pycache__/
 
 python/stonks/_core*.so
-python/stonks/__pycache__/
 python/stonks.egg-info/
 
 # VSCode: commit shared workspace configs, ignore personal/runtime files
