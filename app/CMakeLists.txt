@@ -2,14 +2,12 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(app
     src/main.cpp
-    src/backtest.cpp
 )
 
 qt_add_qml_module(app
     URI Stonks
     VERSION 1.0
-    QML_FILES Main.qml
-    SOURCES src/enginerunner.h
+    QML_FILES main.qml
 )
 
 target_include_directories(app PRIVATE
