@@ -1,8 +1,5 @@
 #pragma once
 
-#include <optional>
-#include <vector>
-
 #include "stonks/core/types.h"
 
 namespace stonks::python {
@@ -11,11 +8,6 @@ namespace stonks::python {
 // Context<Broker, DataFeed> can't be bound directly to pybind11, so the adapter
 // (ContextAdapter) implements this interface for a given Broker/DataFeed combo
 // and the binding only knows about IContext.
-//
-// The klines() overloads in the C++ Context are split into distinct names here
-// because pybind11 binding of virtual overloads differing only in argument
-// count is awkward; the Python __init__.py reassembles them into a single
-// klines(...) dispatcher.
 class IContext
 {
 public:
@@ -25,10 +17,9 @@ public:
     virtual core::Balance cash() const = 0;
     virtual core::Balance equity() const = 0;
 
-    virtual std::vector<core::KLine> klines_count(int count) const = 0;
-    virtual std::vector<core::KLine> klines_range(
-        core::Timestamp start,
-        std::optional<core::Timestamp> end) const = 0;
+    // This tick's window: every symbol that printed at the current timestamp,
+    // each with its last `count` bars (bound to Python as one combined DataFrame).
+    virtual core::MarketWindow history(int count) const = 0;
 
     // make_*_order is intentionally not exposed: Order's constructor is
     // private and friended only to Context, so Python can never hold an

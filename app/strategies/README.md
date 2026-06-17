@@ -40,9 +40,12 @@ struct MyStrategy
 
     void on_tick(auto& context)
     {
-        const auto bars = context.klines(20);
-        if (bars.size() < 20) return;
-        // decide and place orders here
+        // One tick per timestamp: loop the symbols that printed today.
+        for (const auto& s : context.history(20).series) {
+            if (s.bars.size() < 20) continue;       // s.bars is this symbol's last 20 bars
+            const double last_close = s.bars.close.back();
+            // decide and place orders for s.symbol here
+        }
     }
 
     void on_stop(auto& context)
@@ -61,8 +64,7 @@ From `include/stonks/core/context.h`:
 | `now()` | `Timestamp` | current simulation time |
 | `cash()` | `Balance` | available cash |
 | `equity()` | `Balance` | total portfolio value (cash + positions) |
-| `klines(int count)` | `std::vector<KLine>` | last N bars, clamped to `now()` |
-| `klines(Timestamp start, std::optional<Timestamp> end = {})` | `std::vector<KLine>` | range query, clamped to `now()` |
+| `history(int count)` | `MarketWindow` | every symbol that printed at this timestamp, each with its last N bars (incl. today's) as column views; clamped to bars seen so far |
 | `make_market_order(MarketOrderParams)` | `Order` | builds the order — does **not** submit it |
 | `make_limit_order(LimitOrderParams)` | `Order` | builds the order — does **not** submit it |
 | `place_order(const Order&)` | `bool` | submits a built order to the broker |
@@ -73,9 +75,11 @@ Order placement is two-step: `make_*_order(...)` builds the `Order`, then `place
 
 From `include/stonks/core/types.h`, all in `namespace stonks::core`:
 
-- Scalars: `Price`, `Volume`, `Balance`, `Quantity`, `Symbol`, `OrderID`, `TradeID`.
+- Scalars: `Price`, `Volume`, `Balance`, `Quantity`, `Symbol`, `SymbolID`, `OrderID`, `TradeID`.
 - `Timestamp` — has `operator<=>`, arithmetic, and `Timestamp::from_millis(...)`.
 - `KLine { Timestamp timestamp; Symbol symbol; Price open, high, low, close; Volume volume; }`.
+- `SeriesView { std::span<const std::int64_t> timestamp; std::span<const double> open, high, low, close, volume; }` — one symbol's column views into feed storage.
+- `SymbolSeries { std::string_view symbol; SeriesView bars; }` and `MarketWindow { std::vector<SymbolSeries> series; }` — returned by `history()`, one `SymbolSeries` per symbol that printed this tick. Re-query each tick; don't cache a view.
 - `Order` — opaque from the strategy's side after `make_*_order` returns it.
 - Enums: `OrderSide::{ Buy, Sell }`, `OrderType::{ Market, Limit }`, `TimeInForce::{ GTC }`.
 - Param structs:
@@ -96,7 +100,7 @@ context.place_order(order);
 
 ## Fill mechanics & no-lookahead
 
-- **No lookahead.** `context.klines(...)` is automatically clamped to `now()`. You cannot see future bars.
+- **No lookahead.** `context.history(n)` returns only the symbols that printed at `now()`, each with its own bars up to and including `now()`. You cannot see future bars.
 - **Market orders** fill at the next bar's close price when the broker ticks.
 - **Limit orders** fill only if the limit price falls within the bar's `[low, high]` range.
 

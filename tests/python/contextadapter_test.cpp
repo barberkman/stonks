@@ -31,44 +31,34 @@ TEST(ContextAdapter, ForwardsNowCashEquity)
     EXPECT_EQ(adapter.equity(), broker.equity());
 }
 
-TEST(ContextAdapter, KlinesCountForwardsToContext)
+TEST(ContextAdapter, HistoryForwardsToContext)
 {
     StubFeed feed;
-    feed.bars = { make_bar(1000, 100.0), make_bar(2000, 101.0), make_bar(3000, 102.0) };
+    feed.bars = {
+        make_bar(1000, "A", 100.0), make_bar(1000, "B", 200.0),
+        make_bar(2000, "A", 101.0), make_bar(2000, "B", 201.0),
+    };
     StubBroker broker;
     core::Clock clock;
-    clock.set(core::Timestamp::from_millis(3000));
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    const auto adapted = adapter.klines_count(2);
-    const auto direct = ctx.klines(2);
+    feed.advance();   // -> timestamp 2000
 
-    ASSERT_EQ(adapted.size(), direct.size());
-    ASSERT_FALSE(adapted.empty());
-    EXPECT_EQ(adapted.back().close, direct.back().close);
-}
+    const auto direct = ctx.history(2);
+    const auto adapted = adapter.history(2);
 
-TEST(ContextAdapter, KlinesRangeForwardsToContext)
-{
-    StubFeed feed;
-    feed.bars = { make_bar(1000, 100.0), make_bar(2000, 101.0), make_bar(3000, 102.0) };
-    StubBroker broker;
-    core::Clock clock;
-    clock.set(core::Timestamp::from_millis(3000));
-    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
-    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
-
-    const auto adapted = adapter.klines_range(
-        core::Timestamp::from_millis(2000),
-        core::Timestamp::from_millis(3000));
-    const auto direct = ctx.klines(
-        core::Timestamp::from_millis(2000),
-        core::Timestamp::from_millis(3000));
-
-    ASSERT_EQ(adapted.size(), direct.size());
-    ASSERT_FALSE(adapted.empty());
-    EXPECT_EQ(adapted.back().close, direct.back().close);
+    ASSERT_EQ(adapted.series.size(), direct.series.size());
+    ASSERT_EQ(adapted.series.size(), 2u);   // both A and B printed
+    for (std::size_t i = 0; i < adapted.series.size(); ++i) {
+        EXPECT_EQ(adapted.series[i].symbol, direct.series[i].symbol);
+        EXPECT_DOUBLE_EQ(adapted.series[i].bars.close.back(),
+                         direct.series[i].bars.close.back());
+    }
+    EXPECT_EQ(adapted.series[0].symbol, "A");
+    EXPECT_EQ(adapted.series[1].symbol, "B");
+    EXPECT_EQ(adapted.series[0].bars.size(), 2u);             // A's last 2 bars
+    EXPECT_DOUBLE_EQ(adapted.series[0].bars.close.back(), 101.0);
 }
 
 TEST(ContextAdapter, PlaceMarketOrderBuildsAndForwards)

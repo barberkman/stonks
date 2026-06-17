@@ -24,8 +24,7 @@ classDiagram
         +now() Timestamp
         +cash() Balance
         +equity() Balance
-        +klines(count) vector~KLine~
-        +klines(start, end) vector~KLine~
+        +history(count) MarketWindow
         +make_market_order(params) Order
         +make_limit_order(params) Order
         +place_order(order) bool
@@ -45,8 +44,8 @@ classDiagram
         <<concept>>
         +next_timestamp() optional~Timestamp~
         +advance() void
-        +current_kline() KLine
-        +klines(start, end) vector~KLine~
+        +current_bars() vector~KLine~
+        +window(count) MarketWindow
         +resolution() duration
         +size() size_t
     }
@@ -98,6 +97,25 @@ classDiagram
         +close : Price
         +volume : Volume
     }
+    class SeriesView {
+        +timestamp : span~int64~
+        +open : span~double~
+        +high : span~double~
+        +low : span~double~
+        +close : span~double~
+        +volume : span~double~
+        +size() size_t
+    }
+    class SymbolSeries {
+        +symbol : string_view
+        +bars : SeriesView
+    }
+    class MarketWindow {
+        +series : vector~SymbolSeries~
+        +size() size_t
+    }
+    MarketWindow o-- SymbolSeries
+    SymbolSeries o-- SeriesView
     class Order {
         +id : OrderID
         +timestamp : Timestamp
@@ -168,8 +186,7 @@ classDiagram
         +now() Timestamp
         +cash() Balance
         +equity() Balance
-        +klines_count(count) vector~KLine~
-        +klines_range(start, end) vector~KLine~
+        +history(count) MarketWindow
         +place_market_order(params) bool
         +place_limit_order(params) bool
     }
@@ -220,9 +237,10 @@ graph TD
 
 ## 5. Sequence — a full backtest run
 
-Two `on_tick`s per bar, in this order: the **broker's** first (settle the past —
-fill prior orders), then the **strategy's** (decide the future). That ordering is
-what stops an order from filling on the same bar it was placed.
+One strategy tick **per timestamp**: the engine first feeds every symbol's bar
+at that timestamp to the broker (settle the past — fill prior orders, mark
+prices), then calls the strategy **once** (decide the future). That ordering is
+what stops an order from filling on the same timestamp it was placed.
 
 ```mermaid
 sequenceDiagram
@@ -241,18 +259,20 @@ sequenceDiagram
     end
     E->>B: cash() to starting_cash
 
-    loop while next_timestamp() is Some
+    loop one timestamp per iteration
         E->>F: next_timestamp()
         F-->>E: ts
         E->>C: set(ts)
-        E->>F: current_kline()
-        F-->>E: bar
-        E->>B: on_tick(bar)
-        Note over B: fill queued orders, mark last_price
+        E->>F: current_bars()
+        F-->>E: all symbols' bars at ts
+        loop each bar at ts
+            E->>B: on_tick(bar)
+            Note over B: fill queued orders, mark last_price
+        end
         E->>B: equity()
         Note over E: track peak / max drawdown
         E->>S: on_tick(ctx)
-        Note over S,Ctx: strategy reads data, places orders
+        Note over S,Ctx: strategy loops the window, places orders
         E->>F: advance()
     end
 
@@ -282,9 +302,9 @@ sequenceDiagram
         E->>B: on_tick(bar_N)
         Note over B: mark last_price; no order for it yet
         E->>S: on_tick(ctx)
-        S->>Ctx: klines(1)
-        Note over Ctx: range clamped to clock.now() = N
-        Ctx-->>S: bars up to and incl. N (cannot see N+1)
+        S->>Ctx: history(n)
+        Note over Ctx: symbols printing at N, each bounded to <= N
+        Ctx-->>S: MarketWindow (cannot see N+1)
         S->>Ctx: make_market_order(...)
         Note over Ctx: Order.timestamp = now() = N
         S->>Ctx: place_order(order)
@@ -321,10 +341,10 @@ sequenceDiagram
     end
     Note over PS: acquire GIL
     PS->>Py: py_instance.on_tick(adapter)
-    Py->>A: ctx.klines(1)
-    A->>Ctx: klines_count(1)
-    Ctx-->>A: bars (clamped to now)
-    A-->>Py: bars
+    Py->>A: ctx.history(50)
+    A->>Ctx: history(50)
+    Ctx-->>A: MarketWindow (per-symbol spans)
+    A-->>Py: combined numpy columns (one DataFrame)
     Py->>A: ctx.place_market_order(...)
     A->>Ctx: make_market_order + place_order
     Ctx-->>A: bool

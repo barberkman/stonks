@@ -21,6 +21,7 @@ target_link_libraries(python_tests PRIVATE
 target_compile_definitions(python_tests PRIVATE
     STONKS_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
     STONKS_PYTHON_PACKAGE_DIR="${PROJECT_SOURCE_DIR}/python"
+    STONKS_VENV_DIR="${PROJECT_SOURCE_DIR}/app/python/.venv"
 )
 
 gtest_discover_tests(python_tests)

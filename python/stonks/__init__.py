@@ -8,6 +8,7 @@ extension; see python/README.md for the full API and runtime setup.
 from stonks._core import (
     Context,
     KLine,
+    MarketWindow,
     OrderSide,
     OrderType,
     TimeInForce,
@@ -37,6 +38,7 @@ class Strategy:
 __all__ = [
     "Context",
     "KLine",
+    "MarketWindow",
     "OrderSide",
     "OrderType",
     "Strategy",

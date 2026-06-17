@@ -1,12 +1,16 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
 #include <ostream>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace stonks::core {
 
@@ -16,6 +20,7 @@ using Balance = double;
 using Quantity = double;
 
 using Symbol = std::string;
+using SymbolID = std::uint32_t;
 using OrderID = std::uint64_t;
 using TradeID = std::uint64_t;
 
@@ -62,6 +67,35 @@ struct KLine
     Symbol symbol;
     Price open, high, low, close;
     Volume volume;
+};
+
+// Columnar, read-only view of one symbol's contiguous bars. The spans point
+// into storage owned by the feed and stay valid for the current tick; re-query
+// each tick rather than caching a view. The column layout is what lets the
+// Python boundary build numpy arrays cheaply.
+struct SeriesView
+{
+    std::span<const std::int64_t> timestamp;  // ms since epoch
+    std::span<const double> open, high, low, close, volume;
+
+    std::size_t size() const { return timestamp.size(); }
+};
+
+// One symbol's slice within a MarketWindow: its ticker plus its last-n bars.
+struct SymbolSeries
+{
+    std::string_view symbol;   // view into the feed's intern table
+    SeriesView bars;
+};
+
+// What a strategy sees on a tick: every symbol that printed at the current
+// timestamp, each with its own last-n bars (ragged across symbols). Built fresh
+// each tick from the timestamp's rows — re-query each tick.
+struct MarketWindow
+{
+    std::vector<SymbolSeries> series;
+
+    std::size_t size() const { return series.size(); }
 };
 
 struct Order

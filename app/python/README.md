@@ -40,41 +40,41 @@ class EMA50Strategy(stonks.Strategy):
         self.states = {}
 
     def on_tick(self, ctx):
-        # klines() interleaves bars across every symbol the feed surfaces, so a
-        # per-symbol EMA must consume only its own symbol's stream.
-        bars = ctx.klines(1)
-        if not bars:
-            return
-        bar = bars[-1]
+        # One tick per timestamp: loop the symbols that printed today. EMA is
+        # incremental, so history(1) (one bar per symbol) is enough.
+        window = ctx.history(1)
+        for symbol, close in zip(window.symbol, window.close):
+            close = float(close)
+            state = self.states.setdefault(
+                symbol,
+                { "ema": None, "seed_sum": 0.0, "seed_count": 0, "held_quantity": 0.0 },
+            )
 
-        state = self.states.setdefault(
-            bar.symbol,
-            { "ema": None, "seed_sum": 0.0, "seed_count": 0, "held_quantity": 0.0 },
-        )
+            if state["ema"] is None:
+                state["seed_sum"] += close
+                state["seed_count"] += 1
+                if state["seed_count"] < self.PERIOD:
+                    continue
+                state["ema"] = state["seed_sum"] / self.PERIOD
+            else:
+                state["ema"] = self.ALPHA * close + (1.0 - self.ALPHA) * state["ema"]
 
-        if state["ema"] is None:
-            # Seed the EMA with the SMA of the first PERIOD closes for this symbol.
-            state["seed_sum"] += bar.close
-            state["seed_count"] += 1
-            if state["seed_count"] < self.PERIOD:
-                return
-            state["ema"] = state["seed_sum"] / self.PERIOD
-        else:
-            state["ema"] = self.ALPHA * bar.close + (1.0 - self.ALPHA) * state["ema"]
-
-        # Enter long above the EMA; flat-only means we never short below it.
-        if bar.close > state["ema"] and state["held_quantity"] == 0.0:
-            qty = ctx.cash() / bar.close
-            if qty <= 0.0:
-                return
-            if ctx.place_market_order(symbol=bar.symbol, side=OrderSide.Buy, quantity=qty):
-                state["held_quantity"] = qty
-        elif bar.close < state["ema"] and state["held_quantity"] > 0.0:
-            if ctx.place_market_order(
-                symbol=bar.symbol, side=OrderSide.Sell, quantity=state["held_quantity"]
-            ):
-                state["held_quantity"] = 0.0
+            if close > state["ema"] and state["held_quantity"] == 0.0:
+                qty = ctx.cash() / close
+                if qty <= 0.0:
+                    continue
+                if ctx.place_market_order(symbol=symbol, side=OrderSide.Buy, quantity=qty):
+                    state["held_quantity"] = qty
+            elif close < state["ema"] and state["held_quantity"] > 0.0:
+                if ctx.place_market_order(
+                    symbol=symbol, side=OrderSide.Sell, quantity=state["held_quantity"]
+                ):
+                    state["held_quantity"] = 0.0
 ```
+
+A window-based strategy (e.g. an indicator over the last N bars) would instead
+ask for `ctx.history(N)`, build a DataFrame, and `groupby("symbol")` — see the
+Context API section below.
 
 ## Run inside the engine
 
@@ -135,10 +135,30 @@ def test_buys_on_uptrend():
 | `ctx.now()` | `Timestamp` |
 | `ctx.cash()` | `float` |
 | `ctx.equity()` | `float` |
-| `ctx.klines(count: int)` | `list[KLine]` — last N bars, clamped to `now()` |
-| `ctx.klines(start: Timestamp, end: Timestamp = None)` | `list[KLine]` — range query, clamped to `now()` |
+| `ctx.history(count: int)` | `MarketWindow` — every symbol that printed this tick, each with its last N bars, as one combined frame |
 | `ctx.place_market_order(symbol, side, quantity, time_in_force=GTC)` | `bool` |
 | `ctx.place_limit_order(symbol, side, quantity, price, time_in_force=GTC)` | `bool` |
+
+`history(n)` returns a `MarketWindow` — a long frame over every symbol that
+printed at the current timestamp. `.symbol` is a per-row column; `.timestamp` is
+an `int64` numpy array and `.open/.high/.low/.close/.volume` are `float64` numpy
+arrays, all the same length. Build a DataFrame and process symbol by symbol:
+
+```python
+import pandas as pd
+
+w = ctx.history(50)                       # each printing symbol's last 50 bars
+df = pd.DataFrame({
+    "symbol": w.symbol, "timestamp": w.timestamp,
+    "open": w.open, "high": w.high, "low": w.low,
+    "close": w.close, "volume": w.volume,
+})
+for symbol, sub in df.groupby("symbol"):
+    ...                                   # per-symbol logic; cross-symbol if you want
+```
+
+The arrays are valid for the current tick only — re-query each tick rather than
+stashing a view.
 
 ## IDE autocomplete
 

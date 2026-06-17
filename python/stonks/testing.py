@@ -5,8 +5,10 @@ originates from the C++ engine). `FakeContext` mirrors its surface so
 strategies can be exercised without spinning up the C++ binary.
 """
 
-from dataclasses import dataclass, field
-from typing import Any, List, Optional, Union
+from dataclasses import dataclass
+from typing import Any, List, Optional
+
+import numpy as np
 
 from stonks import OrderSide, TimeInForce
 
@@ -26,6 +28,31 @@ class FakeKLine:
     volume: float
 
 
+def _to_ms(ts: Any) -> int:
+    """Normalize a FakeKLine timestamp (int ms or stonks.Timestamp) to int ms."""
+    if hasattr(ts, "to_millis"):
+        return int(ts.to_millis())
+    return int(ts)
+
+
+@dataclass
+class FakeMarketWindow:
+    """Stand-in for the C++-bound MarketWindow returned by Context.history():
+    all printing symbols gathered into one long frame, `symbol` per row. Mirrors
+    the real columns so strategies build a pandas DataFrame unchanged."""
+
+    symbol: List[str]
+    timestamp: "np.ndarray"
+    open: "np.ndarray"
+    high: "np.ndarray"
+    low: "np.ndarray"
+    close: "np.ndarray"
+    volume: "np.ndarray"
+
+    def __len__(self) -> int:
+        return len(self.symbol)
+
+
 @dataclass
 class FakeOrder:
     symbol: str
@@ -38,24 +65,25 @@ class FakeOrder:
 class FakeContext:
     """Drop-in stand-in for `Context` in unit tests.
 
-    Construct with a pre-built list of bars; call `advance()` to step the
-    cursor before each `on_tick`. Placed orders accumulate in `.orders` for
-    test assertions.
+    Construct with a pre-built list of bars (multi-symbol, in time order). Ticks
+    are per timestamp: call `advance()` once per distinct timestamp before each
+    `on_tick`. Placed orders accumulate in `.orders` for test assertions.
     """
 
     def __init__(self, bars: List[FakeKLine], cash: float = 100_000.0):
         self._bars = bars
-        self._cursor = 0
         self._cash = cash
         self.orders: List[FakeOrder] = []
+        self._timestamps = sorted({_to_ms(b.timestamp) for b in bars})
+        self._group = -1   # advance() steps to the first timestamp
 
     def advance(self) -> None:
-        self._cursor += 1
+        self._group += 1
 
-    def now(self) -> Any:
-        if self._cursor == 0:
+    def now(self) -> int:
+        if self._group < 0:
             return 0
-        return self._bars[self._cursor - 1].timestamp
+        return self._timestamps[self._group]
 
     def cash(self) -> float:
         return self._cash
@@ -63,20 +91,32 @@ class FakeContext:
     def equity(self) -> float:
         return self._cash
 
-    def klines(self, *args, **kwargs) -> List[FakeKLine]:
-        if len(args) == 1 and isinstance(args[0], int) and not kwargs:
-            count = args[0]
-            return list(self._bars[max(0, self._cursor - count) : self._cursor])
-        if len(args) >= 1:
-            start = args[0]
-            end = args[1] if len(args) > 1 else kwargs.get("end")
-            return [
-                b
-                for b in self._bars[: self._cursor]
-                if b.timestamp >= start and (end is None or b.timestamp <= end)
+    def history(self, count: int) -> FakeMarketWindow:
+        now_ms = self.now()
+        printers = [b for b in self._bars if _to_ms(b.timestamp) == now_ms]
+
+        symbol: List[str] = []
+        ts, op, hi, lo, cl, vo = [], [], [], [], [], []
+        for pb in printers:
+            hist = [
+                b for b in self._bars
+                if b.symbol == pb.symbol and _to_ms(b.timestamp) <= now_ms
             ]
-        raise TypeError(
-            "klines() expects (count: int) or (start, end=None)"
+            window = hist[-count:] if count > 0 else []
+            for b in window:
+                symbol.append(b.symbol)
+                ts.append(_to_ms(b.timestamp))
+                op.append(b.open); hi.append(b.high); lo.append(b.low)
+                cl.append(b.close); vo.append(b.volume)
+
+        return FakeMarketWindow(
+            symbol=symbol,
+            timestamp=np.array(ts, dtype=np.int64),
+            open=np.array(op, dtype=np.float64),
+            high=np.array(hi, dtype=np.float64),
+            low=np.array(lo, dtype=np.float64),
+            close=np.array(cl, dtype=np.float64),
+            volume=np.array(vo, dtype=np.float64),
         )
 
     def place_market_order(

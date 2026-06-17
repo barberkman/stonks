@@ -8,6 +8,11 @@ version = "0.0.1"
 description = "Python strategy authoring + bindings for the stonks C++ backtest engine"
 requires-python = ">=3.10"
 readme = "README.md"
+# Context.history() returns numpy columns; the FakeContext test double builds them too.
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+test = ["pandas", "pyarrow"]
 
 [tool.setuptools]
 packages = ["stonks"]

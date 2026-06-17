@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -20,6 +21,10 @@ namespace {
 // this; refcounted EmbeddedPython keeps the interpreter alive across tests.
 void ensure_python_setup()
 {
+    // Point the embedded interpreter at the app venv so numpy/pandas (used by
+    // the history-inspecting fixture) are importable; overwrite=0 lets a real
+    // env var win. Must run before the interpreter initializes below.
+    ::setenv("STONKS_VENV", STONKS_VENV_DIR, 0);
     static stonks::python::EmbeddedPython python_handle;
     static const bool paths_added = []() {
         stonks::python::EmbeddedPython::add_sys_path(STONKS_PYTHON_PACKAGE_DIR);
@@ -164,6 +169,37 @@ TEST_F(PythonStrategyTest, PythonCanReadContextStateInOnTick)
     ASSERT_EQ(placed.size(), 1u);
     EXPECT_EQ(placed[0].quantity, 0.0);  // cash() == 0 round-tripped through Python
     EXPECT_EQ(placed[0].side, core::OrderSide::Sell);
+}
+
+TEST_F(PythonStrategyTest, HistoryExposesCombinedMultiSymbolDataFrame)
+{
+    PythonStrategy strat{ "fixturestrats", "HistoryInspector" };
+
+    std::vector<core::Order> placed;
+    StubBroker broker;
+    broker.placed = &placed;
+    StubFeed feed;
+    feed.bars = {
+        core::test::make_bar(1000, "A", 100.0), core::test::make_bar(1000, "B", 200.0),
+        core::test::make_bar(2000, "A", 101.0), core::test::make_bar(2000, "B", 201.0),
+        core::test::make_bar(3000, "A", 102.0), core::test::make_bar(3000, "B", 202.0),
+    };
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+
+    feed.advance();
+    feed.advance();   // -> timestamp 3000
+    clock.set(core::Timestamp::from_millis(3000));
+
+    // The fixture builds a DataFrame, groupby-asserts dtypes/values internally,
+    // and places one buy per symbol; a failure there surfaces as runtime_error.
+    ASSERT_NO_THROW(strat.on_tick(ctx));
+    ASSERT_EQ(placed.size(), 2u);
+    EXPECT_EQ(placed[0].symbol, "A");                 // groupby sorts symbols
+    EXPECT_DOUBLE_EQ(placed[0].quantity, 102.0);
+    EXPECT_EQ(placed[1].symbol, "B");
+    EXPECT_DOUBLE_EQ(placed[1].quantity, 202.0);
+    for (const auto& o : placed) { EXPECT_EQ(o.side, core::OrderSide::Buy); }
 }
 
 } // namespace

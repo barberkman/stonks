@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -32,18 +34,62 @@ struct RecordingBroker
     void on_tick(const KLine&) {}
 };
 
-// Feed double surfacing a single "current" bar. Context::klines(1) returns this
-// bar (its timestamp tracks the clock, so it survives the no-lookahead filter),
-// and the strategy reads klines(1).back().
-struct OneBarFeed
+// Feed double presenting one timestamp's window. The strategy reads it via
+// Context::history(n); set_bars() loads the symbols printing this tick, backed
+// by member columns so the SeriesView spans stay valid for the call.
+struct WindowFeed
 {
-    KLine current{};
     Timestamp::duration res{ std::chrono::milliseconds{ 1000 } };
+
+    std::vector<Symbol> syms;
+    std::vector<std::int64_t> ts;
+    std::vector<double> open, high, low, close, volume;
+
+    void set_bars(const std::vector<KLine>& bars)
+    {
+        syms.clear(); ts.clear(); open.clear(); high.clear();
+        low.clear(); close.clear(); volume.clear();
+        for (const auto& b : bars) {
+            syms.push_back(b.symbol);
+            ts.push_back(b.timestamp.value.time_since_epoch().count());
+            open.push_back(b.open); high.push_back(b.high); low.push_back(b.low);
+            close.push_back(b.close); volume.push_back(b.volume);
+        }
+    }
 
     std::optional<Timestamp> next_timestamp() const { return std::nullopt; }
     void advance() {}
-    KLine current_kline() const { return current; }
-    std::vector<KLine> klines(Timestamp, Timestamp) const { return { current }; }
+
+    std::vector<KLine> current_bars() const
+    {
+        std::vector<KLine> out;
+        for (std::size_t i = 0; i < syms.size(); ++i) {
+            out.push_back(KLine{ Timestamp::from_millis(ts[i]), syms[i],
+                                 open[i], high[i], low[i], close[i], volume[i] });
+        }
+        return out;
+    }
+
+    MarketWindow window(int count) const
+    {
+        MarketWindow w;
+        const std::size_t cnt = (count <= 0) ? 0u : 1u;   // one bar per symbol this tick
+        for (std::size_t i = 0; i < syms.size(); ++i) {
+            w.series.push_back(SymbolSeries{
+                std::string_view{ syms[i] },
+                SeriesView{
+                    std::span<const std::int64_t>{ &ts[i], cnt },
+                    std::span<const double>{ &open[i], cnt },
+                    std::span<const double>{ &high[i], cnt },
+                    std::span<const double>{ &low[i], cnt },
+                    std::span<const double>{ &close[i], cnt },
+                    std::span<const double>{ &volume[i], cnt },
+                },
+            });
+        }
+        return w;
+    }
+
     Timestamp::duration resolution() const { return res; }
 };
 
@@ -65,19 +111,27 @@ KLine make_bar(std::int64_t ms, const Symbol& symbol, double close)
 struct Harness
 {
     RecordingBroker broker;
-    OneBarFeed feed;
+    WindowFeed feed;
     Clock clock;
-    Context<RecordingBroker, OneBarFeed> ctx{ broker, feed, clock };
+    Context<RecordingBroker, WindowFeed> ctx{ broker, feed, clock };
     EMA50Strategy strat;
     std::int64_t t{};
 
-    void tick(const Symbol& symbol, double close, Balance equity)
+    // One timestamp tick with the given printing symbols (their timestamps are
+    // stamped to this tick's clock).
+    void tick_at(std::vector<KLine> bars, Balance equity)
     {
         broker.equity_value = equity;
         t += 1000;
-        feed.current = make_bar(t, symbol, close);
+        for (auto& b : bars) { b.timestamp = Timestamp::from_millis(t); }
+        feed.set_bars(bars);
         clock.set(Timestamp::from_millis(t));
         strat.on_tick(ctx);
+    }
+
+    void tick(const Symbol& symbol, double close, Balance equity)
+    {
+        tick_at({ make_bar(t, symbol, close) }, equity);
     }
 
     // Feed `count` flat bars for one symbol to accumulate EMA seed samples
@@ -179,6 +233,24 @@ TEST(EMA50Strategy, SizingTracksCurrentEquity)
     ASSERT_EQ(h.broker.placed.size(), 2u);
     EXPECT_DOUBLE_EQ(h.broker.placed[0].quantity, 100'000.0 * 0.01 / 101.0);
     EXPECT_DOUBLE_EQ(h.broker.placed[1].quantity, 300'000.0 * 0.01 / 101.0);
+}
+
+TEST(EMA50Strategy, ProcessesEverySymbolPrintingInOneTick)
+{
+    Harness h;
+    // AAA and BBB print together at every timestamp; the strategy must handle
+    // both within a single on_tick (per-timestamp) call.
+    for (int i = 0; i < 49; ++i) {
+        h.tick_at({ make_bar(0, "AAA", 100.0), make_bar(0, "BBB", 200.0) }, EQUITY);
+    }
+    // 50th bar for both: each crosses above its just-seeded EMA in the same tick.
+    h.tick_at({ make_bar(0, "AAA", 101.0), make_bar(0, "BBB", 202.0) }, EQUITY);
+
+    ASSERT_EQ(h.broker.placed.size(), 2u);
+    std::vector<Symbol> syms{ h.broker.placed[0].symbol, h.broker.placed[1].symbol };
+    EXPECT_NE(std::find(syms.begin(), syms.end(), "AAA"), syms.end());
+    EXPECT_NE(std::find(syms.begin(), syms.end(), "BBB"), syms.end());
+    for (const auto& o : h.broker.placed) { EXPECT_EQ(o.side, OrderSide::Buy); }
 }
 
 } // namespace

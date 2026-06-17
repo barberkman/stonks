@@ -53,3 +53,42 @@ class CashAwareStrategy(stonks.Strategy):
         ctx.place_market_order(
             symbol="X", side=OrderSide.Sell, quantity=ctx.cash()
         )
+
+
+class HistoryInspector(stonks.Strategy):
+    """Inspects ctx.history(): builds a pandas DataFrame from the combined
+    multi-symbol window, asserts dtypes and per-symbol groupby contents, and
+    places one buy per symbol encoding its latest close so the C++ side can
+    confirm the round-trip. Any failed assertion surfaces as a
+    std::runtime_error on the C++ side."""
+
+    def on_tick(self, ctx):
+        import numpy as np
+        import pandas as pd
+
+        w = ctx.history(3)
+        assert len(w) == 6, len(w)                       # 2 symbols x 3 bars
+        assert w.timestamp.dtype == np.int64, w.timestamp.dtype
+        assert w.close.dtype == np.float64, w.close.dtype
+
+        df = pd.DataFrame({
+            "symbol": w.symbol,
+            "timestamp": w.timestamp,
+            "open": w.open,
+            "high": w.high,
+            "low": w.low,
+            "close": w.close,
+            "volume": w.volume,
+        })
+        assert df.shape == (6, 7), df.shape
+
+        groups = {sym: sub for sym, sub in df.groupby("symbol")}
+        assert list(groups["A"]["close"]) == [100.0, 101.0, 102.0], list(groups["A"]["close"])
+        assert list(groups["B"]["close"]) == [200.0, 201.0, 202.0], list(groups["B"]["close"])
+
+        for symbol, sub in groups.items():
+            ctx.place_market_order(
+                symbol=symbol,
+                side=OrderSide.Buy,
+                quantity=float(sub["close"].iloc[-1]),
+            )

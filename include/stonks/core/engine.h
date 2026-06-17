@@ -54,9 +54,14 @@ public:
             m_clock.set(*ts);
             if (!first_ts) { first_ts = *ts; }
             last_ts = *ts;
-            ++bar_count;
+
+            // Settle the whole timestamp first: fill/mark every symbol that
+            // printed, before the strategy reacts once for this timestamp.
+            for (const auto& bar : m_dataFeed.current_bars()) {
+                m_broker.on_tick(bar);
+                ++bar_count;
+            }
             progress.update(bar_count);
-            m_broker.on_tick(m_dataFeed.current_kline());
 
             const Balance current_equity = m_broker.equity();
             if (current_equity > peak_equity) { peak_equity = current_equity; }

@@ -1,9 +1,7 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <utility>
-#include <vector>
 
 #include "stonks/core/context.h"
 #include "stonks/core/types.h"
@@ -21,17 +19,7 @@ public:
     core::Balance cash() const override { return m_ctx.cash(); }
     core::Balance equity() const override { return m_ctx.equity(); }
 
-    std::vector<core::KLine> klines_count(int count) const override
-    {
-        return m_ctx.klines(count);
-    }
-
-    std::vector<core::KLine> klines_range(
-        core::Timestamp start,
-        std::optional<core::Timestamp> end) const override
-    {
-        return m_ctx.klines(start, end);
-    }
+    core::MarketWindow history(int count) const override { return m_ctx.history(count); }
 
     bool place_market_order(core::MarketOrderParams params) override
     {

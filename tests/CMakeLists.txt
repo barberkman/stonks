@@ -25,6 +25,20 @@ target_link_libraries(core_tests PRIVATE
 
 gtest_discover_tests(core_tests)
 
+# Datafeed tests link the real KLineFeed (and thus Arrow), kept separate so the
+# stub-only core_tests stay free of that dependency.
+add_executable(datafeed_tests
+    core/klinefeed_test.cpp
+)
+
+target_link_libraries(datafeed_tests PRIVATE
+    stonks_core
+    stonks_datafeed
+    GTest::gtest_main
+)
+
+gtest_discover_tests(datafeed_tests)
+
 if(STONKS_PYTHON)
     add_subdirectory(python)
 endif()

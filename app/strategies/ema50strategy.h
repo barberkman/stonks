@@ -31,53 +31,54 @@ struct EMA50Strategy
 
     void on_tick(auto& context)
     {
-        // klines() interleaves bars across every symbol the feed surfaces, so a
-        // per-symbol EMA must consume only its own symbol's stream. Treat the
-        // latest bar as the one that triggered this tick and route it to its
-        // symbol's state.
-        const auto bars = context.klines(1);
-        if (bars.empty()) return;
-        const auto& bar = bars.back();
+        // One tick per timestamp: loop the symbols that printed today and run the
+        // per-symbol EMA on each. EMA is incremental, so one bar per symbol
+        // suffices; each symbol's stream stays independent via its own state.
+        for (const auto& s : context.history(1).series)
+        {
+            const stonks::core::Symbol symbol{ s.symbol };
+            const double close = s.bars.close.back();
 
-        auto& state = states[bar.symbol];
+            auto& state = states[symbol];
 
-        if (!state.ema)
-        {
-            // Accumulate closes until we have PERIOD samples for this symbol,
-            // then seed the EMA with their SMA — standard bootstrap that avoids
-            // anchoring the recursion to a single bar.
-            state.seed_sum += bar.close;
-            ++state.seed_count;
-            if (state.seed_count < PERIOD) return;
-            state.ema = state.seed_sum / PERIOD;
-        }
-        else
-        {
-            state.ema = ALPHA * bar.close + (1.0 - ALPHA) * (*state.ema);
-        }
+            if (!state.ema)
+            {
+                // Accumulate closes until we have PERIOD samples for this symbol,
+                // then seed the EMA with their SMA — standard bootstrap that avoids
+                // anchoring the recursion to a single bar.
+                state.seed_sum += close;
+                ++state.seed_count;
+                if (state.seed_count < PERIOD) continue;
+                state.ema = state.seed_sum / PERIOD;
+            }
+            else
+            {
+                state.ema = ALPHA * close + (1.0 - ALPHA) * (*state.ema);
+            }
 
-        // Enter long on an upside crossover; flat-only means we never short on the downside.
-        if (bar.close > *state.ema && state.held_quantity == 0.0)
-        {
-            const auto qty = context.equity() * POSITION_FRACTION / bar.close;
-            if (qty <= 0.0) return;
-            const auto order = context.make_market_order(stonks::core::MarketOrderParams{
-                .symbol = bar.symbol,
-                .side = stonks::core::OrderSide::Buy,
-                .quantity = qty,
-                .time_in_force = stonks::core::TimeInForce::GTC,
-            });
-            if (context.place_order(order)) state.held_quantity = qty;
-        }
-        else if (bar.close < *state.ema && state.held_quantity > 0.0)
-        {
-            const auto order = context.make_market_order(stonks::core::MarketOrderParams{
-                .symbol = bar.symbol,
-                .side = stonks::core::OrderSide::Sell,
-                .quantity = state.held_quantity,
-                .time_in_force = stonks::core::TimeInForce::GTC,
-            });
-            if (context.place_order(order)) state.held_quantity = 0.0;
+            // Enter long on an upside crossover; flat-only means we never short on the downside.
+            if (close > *state.ema && state.held_quantity == 0.0)
+            {
+                const auto qty = context.equity() * POSITION_FRACTION / close;
+                if (qty <= 0.0) continue;
+                const auto order = context.make_market_order(stonks::core::MarketOrderParams{
+                    .symbol = symbol,
+                    .side = stonks::core::OrderSide::Buy,
+                    .quantity = qty,
+                    .time_in_force = stonks::core::TimeInForce::GTC,
+                });
+                if (context.place_order(order)) state.held_quantity = qty;
+            }
+            else if (close < *state.ema && state.held_quantity > 0.0)
+            {
+                const auto order = context.make_market_order(stonks::core::MarketOrderParams{
+                    .symbol = symbol,
+                    .side = stonks::core::OrderSide::Sell,
+                    .quantity = state.held_quantity,
+                    .time_in_force = stonks::core::TimeInForce::GTC,
+                });
+                if (context.place_order(order)) state.held_quantity = 0.0;
+            }
         }
     }
 };
