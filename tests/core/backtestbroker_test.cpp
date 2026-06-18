@@ -270,6 +270,42 @@ TEST(BacktestBroker, EquityTracksLastClosePerSymbol)
     EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0 - 220.0 + 2.0 * 130.0);
 }
 
+TEST(BacktestBroker, StaleMarkToMarketWhenHeldSymbolStopsPrinting)
+{
+    // A held symbol that stops printing keeps contributing to equity at its
+    // last-seen close — m_last_price is never decayed or invalidated. The
+    // instrumented full-data run confirmed this affects real ending equity
+    // (a held symbol whose last bar was ~18 days before the run ended still
+    // marked at that stale close). This pins the documented behavior.
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+
+    const auto flat_sym = [](std::int64_t ms, const char* sym, Price p) {
+        return KLine{ Timestamp::from_millis(ms), Symbol{ sym }, p, p, p, p, Volume{ 1.0 } };
+    };
+
+    broker.place_order(order_at(1000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "A" }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 },
+        });
+    }));
+    broker.place_order(order_at(1000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "B" }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 },
+        });
+    }));
+
+    broker.on_tick(flat_sym(2000, "A", 100.0));   // fill A @100
+    broker.on_tick(flat_sym(2000, "B", 50.0));    // fill B @50
+    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 150.0);
+    EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0);  // 9850 + 100 + 50
+
+    // B never prints again; A keeps printing. B's contribution stays frozen at 50.
+    broker.on_tick(flat_sym(3000, "A", 200.0));
+    broker.on_tick(flat_sym(4000, "A", 300.0));
+
+    EXPECT_DOUBLE_EQ(broker.equity(), (10'000.0 - 150.0) + 300.0 + 50.0);
+}
+
 TEST(BacktestBroker, OrdersStartEmpty)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };

@@ -8,6 +8,7 @@
 #include <ostream>
 #include <span>
 
+#include "stonks/core/log.h"
 #include "stonks/core/types.h"
 
 // External backtest reporter. The engine keeps the run history (trades, orders,
@@ -48,6 +49,10 @@ struct ReportMetrics
 
 inline ReportMetrics compute_metrics(const ReportInput& in)
 {
+    STONKS_LOG("report", "compute_metrics: bars={} trades={} orders={} equity_points={} starting_cash={:.4f}",
+        in.bars_processed, in.trades.size(), in.orders.size(),
+        in.equity_curve.size(), in.starting_cash);
+
     core::Balance notional = 0.0;
     for (const auto& t : in.trades) { notional += t.quantity * t.price; }
 
@@ -67,12 +72,20 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
     if (!in.equity_curve.empty()) {
         first_ts = in.equity_curve.front().timestamp;
         last_ts = in.equity_curve.back().timestamp;
+    } else {
+        STONKS_LOG("report", "equity_curve empty -> time range suppressed");
     }
 
     std::optional<double> return_pct;
     if (in.starting_cash != 0.0) {
         return_pct = (in.ending_equity - in.starting_cash) / in.starting_cash * 100.0;
+    } else {
+        STONKS_LOG("report", "starting_cash==0 -> return % suppressed");
     }
+
+    STONKS_LOG("report",
+        "metrics: notional={:.4f} max_dd={:.4f}% return={:.4f}% ending_cash={:.4f} ending_equity={:.4f}",
+        notional, max_drawdown_pct, return_pct.value_or(0.0), in.ending_cash, in.ending_equity);
 
     return ReportMetrics{
         in.bars_processed,

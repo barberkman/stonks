@@ -7,6 +7,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/operators.h>
 
+#include "stonks/core/log.h"
 #include "stonks/core/types.h"
 #include "stonks/python/icontext.h"
 
@@ -32,6 +33,10 @@ PyMarketWindow gather(const core::MarketWindow& win)
 {
     py::ssize_t total = 0;
     for (const auto& s : win.series) { total += static_cast<py::ssize_t>(s.bars.size()); }
+
+    // GIL is held here (entered in PythonStrategy::invoke). Aggregate counts only
+    // — never log per element, and never touch py::object values.
+    STONKS_LOG("py", "gather series={} rows={}", win.series.size(), total);
 
     py::array_t<std::int64_t> timestamp(total);
     py::array_t<double> open(total), high(total), low(total), close(total), volume(total);
@@ -147,12 +152,16 @@ PYBIND11_MODULE(_core, m)
                 core::OrderSide side,
                 core::Quantity quantity,
                 core::TimeInForce time_in_force) {
-                 return self.place_market_order(core::MarketOrderParams{
+                 STONKS_LOG("py", "place_market_order sym={} side={} qty={:.6f}",
+                     symbol, side == core::OrderSide::Buy ? "Buy" : "Sell", quantity);
+                 const bool ok = self.place_market_order(core::MarketOrderParams{
                      std::move(symbol),
                      side,
                      quantity,
                      time_in_force,
                  });
+                 STONKS_LOG("py", "place_market_order -> {}", ok);
+                 return ok;
              },
              py::arg("symbol"),
              py::arg("side"),
@@ -165,13 +174,17 @@ PYBIND11_MODULE(_core, m)
                 core::Quantity quantity,
                 core::Price price,
                 core::TimeInForce time_in_force) {
-                 return self.place_limit_order(core::LimitOrderParams{
+                 STONKS_LOG("py", "place_limit_order sym={} side={} qty={:.6f} price={:.4f}",
+                     symbol, side == core::OrderSide::Buy ? "Buy" : "Sell", quantity, price);
+                 const bool ok = self.place_limit_order(core::LimitOrderParams{
                      std::move(symbol),
                      side,
                      quantity,
                      price,
                      time_in_force,
                  });
+                 STONKS_LOG("py", "place_limit_order -> {}", ok);
+                 return ok;
              },
              py::arg("symbol"),
              py::arg("side"),

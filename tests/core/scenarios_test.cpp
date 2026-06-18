@@ -10,6 +10,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -257,6 +258,22 @@ struct LifecycleSpy
     void on_start(auto&) { ++(*starts); }
     void on_tick(auto&) { ++(*ticks); }
     void on_stop(auto&) { ++(*stops); }
+};
+
+// Buys one share of every symbol that printed, on every tick. Used to assert the
+// no-lookahead property over a multi-bar, multi-symbol run.
+struct BuyEachPrinterEveryTick
+{
+    void on_tick(auto& ctx)
+    {
+        for (const auto& s : ctx.history(1).series) {
+            ctx.place_order(ctx.make_market_order({
+                .symbol = Symbol{ s.symbol },
+                .side = OrderSide::Buy,
+                .quantity = Quantity{ 1.0 },
+            }));
+        }
+    }
 };
 
 } // namespace
@@ -581,6 +598,46 @@ TEST(Scenario, Report_DerivesMetricsFromEngineData)
     EXPECT_NE(report.find("Orders placed:"), std::string::npos);
     EXPECT_NE(report.find("Elapsed:"), std::string::npos);
     EXPECT_NE(report.find("per bar:"), std::string::npos);
+}
+
+TEST(Scenario, NoLookahead_EveryFillIsStrictlyAfterItsPlacement_MultiSymbol)
+{
+    // The end-to-end no-lookahead invariant: across a multi-bar, multi-symbol
+    // run, no trade may fill at or before the timestamp its order was placed on.
+    // Ample cash so nothing lingers on funds — we are isolating the time gate.
+    BacktestBroker broker{ Balance{ 1'000'000.0 } };
+    BrokerSpy spy{ &broker };
+
+    StubFeed feed;
+    feed.bars = {
+        bar(1000, Symbol{ "A" }, 10.0, 11.0, 9.0, 10.0),
+        bar(1000, Symbol{ "B" }, 20.0, 21.0, 19.0, 20.0),
+        bar(2000, Symbol{ "A" }, 12.0, 13.0, 11.0, 12.0),
+        bar(2000, Symbol{ "B" }, 22.0, 23.0, 21.0, 22.0),
+        bar(3000, Symbol{ "A" }, 14.0, 15.0, 13.0, 14.0),
+        bar(3000, Symbol{ "B" }, 24.0, 25.0, 23.0, 24.0),
+    };
+
+    CoutMute mute;
+    Engine engine{ BuyEachPrinterEveryTick{}, std::move(feed), std::move(spy) };
+    engine.run();
+
+    ASSERT_FALSE(broker.trades().empty());
+
+    std::unordered_map<OrderID, Timestamp> placed_at;
+    for (const auto& o : broker.orders()) { placed_at[o.id] = o.timestamp; }
+
+    for (const auto& t : broker.trades()) {
+        ASSERT_TRUE(placed_at.contains(t.order_id));
+        EXPECT_GT(t.timestamp, placed_at[t.order_id])
+            << "order " << t.order_id << " filled at or before the bar it was placed on";
+    }
+
+    // Sanity: an order placed at ts=1000 fills at the next bar's open (ts=2000),
+    // never the same bar.
+    const auto& first = broker.trades().front();
+    EXPECT_EQ(first.timestamp, Timestamp::from_millis(2000));
+    EXPECT_DOUBLE_EQ(first.price, 12.0);   // A's ts=2000 open
 }
 
 } // namespace stonks::broker
