@@ -5,9 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -15,6 +17,7 @@
 #include "stonks/core/engine.h"
 #include "stonks/core/types.h"
 
+#include "src/report.h"
 #include "test_stubs.h"
 
 namespace stonks::broker {
@@ -31,6 +34,7 @@ struct BrokerSpy
     Balance cash() const { return impl->cash(); }
     Balance equity() const { return impl->equity(); }
     const std::vector<Trade>& trades() const { return impl->trades(); }
+    const std::vector<Order>& orders() const { return impl->orders(); }
     bool place_order(const Order& o) { return impl->place_order(o); }
     void on_tick(const KLine& bar) { impl->on_tick(bar); }
 };
@@ -529,24 +533,53 @@ TEST(Scenario, IdenticalRunsProduceIdenticalTrades)
     EXPECT_DOUBLE_EQ(b1.equity(), b2.equity());
 }
 
-TEST(Scenario, Report_ContainsStrategyTiming)
+// The engine keeps the run history; the external reporter derives metrics from
+// it. This exercises the whole path: scripted run -> engine accessors ->
+// compute_metrics, including the order log (which only a real run can populate,
+// since Order's constructor is private to Context).
+TEST(Scenario, Report_DerivesMetricsFromEngineData)
 {
     BacktestBroker broker{ Balance{ 1'000.0 } };
     BrokerSpy spy{ &broker };
 
     StubFeed feed;
     feed.bars = {
-        flat(1000, 100.0),
-        flat(2000, 110.0),
-        flat(3000, 120.0),
+        flat(1000, 100.0),   // tick 0: buy placed, no fill yet
+        flat(2000, 110.0),   // buy fills @110; tick 1: sell placed
+        flat(3000, 120.0),   // sell fills @120
     };
 
-    CoutMute mute;
     Engine engine{ BuyThenSell{ Quantity{ 1.0 } }, std::move(feed), std::move(spy) };
     engine.run();
-    const std::string report = mute.sink.str();
 
-    EXPECT_NE(report.find("Strategy time:"), std::string::npos);
+    const auto metrics = stonks::app::compute_metrics(stonks::app::ReportInput{
+        .starting_cash = 1'000.0,
+        .bars_processed = engine.bars_processed(),
+        .trades = engine.trades(),
+        .orders = engine.orders(),
+        .equity_curve = engine.equity_curve(),
+        .ending_cash = engine.cash(),
+        .ending_equity = engine.equity(),
+        .elapsed = std::chrono::milliseconds{ 5 },
+    });
+
+    EXPECT_EQ(metrics.bars_processed, 3u);
+    EXPECT_EQ(metrics.orders_placed, 2u);          // buy + sell, both recorded
+    EXPECT_EQ(metrics.trade_count, 2u);            // both fill
+    EXPECT_DOUBLE_EQ(metrics.notional, 110.0 + 120.0);
+    EXPECT_DOUBLE_EQ(metrics.ending_cash, 1'000.0 - 110.0 + 120.0);
+    ASSERT_TRUE(metrics.return_pct.has_value());
+    EXPECT_DOUBLE_EQ(*metrics.return_pct, 1.0);    // (1010 - 1000) / 1000
+    ASSERT_TRUE(metrics.first_ts.has_value());
+    EXPECT_EQ(*metrics.first_ts, Timestamp::from_millis(1000));
+    EXPECT_EQ(*metrics.last_ts, Timestamp::from_millis(3000));
+
+    std::ostringstream os;
+    stonks::app::print_report(os, metrics);
+    const std::string report = os.str();
+    EXPECT_NE(report.find("=== Backtest report ==="), std::string::npos);
+    EXPECT_NE(report.find("Orders placed:"), std::string::npos);
+    EXPECT_NE(report.find("Elapsed:"), std::string::npos);
     EXPECT_NE(report.find("per bar:"), std::string::npos);
 }
 

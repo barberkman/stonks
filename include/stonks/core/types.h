@@ -134,6 +134,17 @@ struct Trade
     auto operator<=>(const Trade&) const = default;
 };
 
+// One sample of account equity at a given timestamp. The engine records one per
+// timestamp (the equity curve); the reporter derives drawdown and the time
+// range from it.
+struct EquityPoint
+{
+    Timestamp timestamp;
+    Balance equity;
+
+    auto operator<=>(const EquityPoint&) const = default;
+};
+
 struct MarketOrderParams
 {
     Symbol symbol;

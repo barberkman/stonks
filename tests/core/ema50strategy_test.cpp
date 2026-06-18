@@ -30,6 +30,7 @@ struct RecordingBroker
     Balance cash() const { return equity_value; }
     Balance equity() const { return equity_value; }
     const std::vector<Trade>& trades() const { return m_trades; }
+    const std::vector<Order>& orders() const { return placed; }
     bool place_order(const Order& o) { placed.push_back(o); return true; }
     void on_tick(const KLine&) {}
 };

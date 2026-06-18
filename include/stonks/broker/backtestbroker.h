@@ -15,6 +15,7 @@ public:
     core::Balance cash() const;
     core::Balance equity() const;
     const std::vector<core::Trade>& trades() const;
+    const std::vector<core::Order>& orders() const;
 
     bool place_order(const core::Order& order);
     void on_tick(const core::KLine& bar);
@@ -26,6 +27,7 @@ private:
     std::unordered_map<core::Symbol, core::Quantity> m_positions;
     std::unordered_map<core::Symbol, core::Price> m_last_price;
     std::vector<core::Order> m_open_orders;
+    std::vector<core::Order> m_order_log;
     std::vector<core::Trade> m_trades;
     core::TradeID m_next_trade_id{ 1 };
 };

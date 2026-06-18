@@ -33,11 +33,17 @@ concept HasTrades = requires(const BrokerT& broker) {
 };
 
 template <class BrokerT>
+concept HasOrders = requires(const BrokerT& broker) {
+    { broker.orders() } -> std::convertible_to<std::vector<Order>>;
+};
+
+template <class BrokerT>
 concept Broker = std::movable<BrokerT>
     && HasCash<BrokerT>
     && HasEquity<BrokerT>
     && HasPlaceOrder<BrokerT>
     && HasOnTickBar<BrokerT>
-    && HasTrades<BrokerT>;
+    && HasTrades<BrokerT>
+    && HasOrders<BrokerT>;
 
 } // namespace stonks::core

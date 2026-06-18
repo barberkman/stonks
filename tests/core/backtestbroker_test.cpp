@@ -270,4 +270,37 @@ TEST(BacktestBroker, EquityTracksLastClosePerSymbol)
     EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0 - 220.0 + 2.0 * 130.0);
 }
 
+TEST(BacktestBroker, OrdersStartEmpty)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    EXPECT_TRUE(broker.orders().empty());
+}
+
+TEST(BacktestBroker, OrderLogRecordsEachPlacementRegardlessOfFill)
+{
+    BacktestBroker broker{ Balance{ 50.0 } };   // too little to fill the buy
+
+    const auto buy = order_at(1000, [](auto& ctx) {
+        return ctx.make_market_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 },
+        });
+    });
+    const auto sell = order_at(1000, [](auto& ctx) {
+        return ctx.make_limit_order({
+            .symbol = Symbol{ "X" }, .side = OrderSide::Sell,
+            .quantity = Quantity{ 1.0 }, .price = Price{ 999.0 },
+        });
+    });
+    broker.place_order(buy);
+    broker.place_order(sell);
+
+    // A bar that fills neither (buy unaffordable, sell limit not reached).
+    broker.on_tick(bar(2000, 100.0, 100.0, 100.0, 100.0));
+
+    ASSERT_EQ(broker.orders().size(), 2u);
+    EXPECT_EQ(broker.orders()[0], buy);
+    EXPECT_EQ(broker.orders()[1], sell);
+    EXPECT_TRUE(broker.trades().empty());   // the log captures intent, not just fills
+}
+
 } // namespace stonks::broker

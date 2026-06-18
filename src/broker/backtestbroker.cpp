@@ -24,8 +24,11 @@ core::Balance BacktestBroker::equity() const
 
 const std::vector<core::Trade>& BacktestBroker::trades() const { return m_trades; }
 
+const std::vector<core::Order>& BacktestBroker::orders() const { return m_order_log; }
+
 bool BacktestBroker::place_order(const core::Order& order)
 {
+    m_order_log.push_back(order);
     m_open_orders.push_back(order);
     return true;
 }

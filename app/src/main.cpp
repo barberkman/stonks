@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <string_view>
 
@@ -10,6 +11,7 @@
 #include "stonks/broker/backtestbroker.h"
 #include "stonks/datafeed/klinefeed.h"
 
+#include "report.h"
 #include "strategies/ema50strategy.h"
 
 namespace stonks::app {
@@ -19,14 +21,29 @@ namespace stonks::app {
 void run_backtest() {
     std::cout << "--- EMA50Strategy ---" << std::endl;
 
+    constexpr stonks::core::Balance starting_cash = 1000.0;
     stonks::core::Engine engine
     {
         // PythonStrategy{ "ema50strategy", "EMA50Strategy" },
         EMA50Strategy{},
         stonks::datafeed::KLineFeed{ "app/data/us_1d_filtered.parquet" },
-        stonks::broker::BacktestBroker{ 1000.0 }
+        stonks::broker::BacktestBroker{ starting_cash }
     };
+
+    const auto t0 = std::chrono::steady_clock::now();
     engine.run();
+    const std::chrono::nanoseconds elapsed = std::chrono::steady_clock::now() - t0;
+
+    print_report(std::cout, compute_metrics(ReportInput{
+        starting_cash,
+        engine.bars_processed(),
+        engine.trades(),
+        engine.orders(),
+        engine.equity_curve(),
+        engine.cash(),
+        engine.equity(),
+        elapsed,
+    }));
 }
 
 // QML-exposed handle that runs the backtest when the Run button is clicked.

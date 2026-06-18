@@ -19,10 +19,12 @@ struct StubBroker
 {
     std::vector<Order>* placed{ nullptr };
     std::vector<Trade> m_trades;
+    std::vector<Order> m_orders;
 
     Balance cash() const { return {}; }
     Balance equity() const { return {}; }
     const std::vector<Trade>& trades() const { return m_trades; }
+    const std::vector<Order>& orders() const { return m_orders; }
     bool place_order(const Order& o)
     {
         if (placed) { placed->push_back(o); }
