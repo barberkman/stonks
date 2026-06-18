@@ -7,11 +7,11 @@ Versatile C++20 backtesting and live-trading system.
 Requires Qt 6 (point `CMAKE_PREFIX_PATH` at your Qt install). Run from the project root (the sample data path is relative):
 
 ```sh
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/home/baris/Qt/6.10.1/gcc_64 && cmake --build build && ./build/app/app
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/home/baris/Qt/6.10.1/gcc_64 && cmake --build build && ./build/app/app
 ```
 
 ```sh
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/home/baris/Qt/6.10.1/gcc_64 && cmake --build build && ./build/app/app --gui
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/home/baris/Qt/6.10.1/gcc_64 && cmake --build build && ./build/app/app --gui
 ```
 
 ## Test

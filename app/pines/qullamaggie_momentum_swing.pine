@@ -1,0 +1,430 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════
+//  QULLAMAGGIE MOMENTUM SWING — ENTRY/EXIT ARROWS  (v11: + ENTRY/EXIT/SELL VALUE LINES)
+//
+//  Triangle arrows pinned to exact prices just off each candle:
+//    ▲ Buy BO   — breakout above the pivot high of a tight flag/base
+//    ▲ Buy ORB  — opening-range breakout (high of first N bars of a session)
+//    ▲ Buy EP   — episodic pivot: gap on volume with a strong close
+//    ▼ Short BO — breakDOWN below the pivot low of a base in a downtrend (mirror)
+//    ▼ Sell / ▼ Exit — long partial / long exit
+//    ▲ Cover    — short partial cover / short exit
+//    ▼ Short / ▲ Cover — parabolic "first red bar" short (separate, off by default)
+//
+//  v11 CHANGES — ENTRY / EXIT / SELL VALUE LINES + NAME
+//    - Renamed the on-chart indicator to "Qullamaggie MOMENTUM SWING" (no timeframe
+//      text in the legend). The "5m" you saw was the old shorttitle.
+//    - While a position is open, three horizontal levels are drawn in the same
+//      step-line style as the resting-order lines:
+//        Entry (blue), Exit/stop (red), Sell/target (orange).
+//      The Exit line tracks the LIVE stop, so it steps up to breakeven after a partial.
+//    - At each entry bar a small price tag prints the ACTUAL value of each level:
+//        "Entry 152.34", longs "Exit"/"Sell", shorts "Cover"/"Target".
+//      These are kept for every trade (TradingView retains the most recent ~500
+//      labels, shared with the arrows — oldest tags/arrows drop off first).
+//    - Applies to both longs and short breakouts/parabolic shorts.
+//
+//  v10 (retained): SHORT BREAKOUTS — a resting SELL-STOP parked at the base LOW,
+//      armed only in a downtrend, mirroring the long breakout. Off by default.
+//  v9  (retained): looser arming gates — MA gate tolerates a pullback under the
+//      10-SMA, volume-contraction filter off by default, min base age 3 bars.
+//  v8  (retained): breakout entry modelled as a resting buy-stop at the pivot.
+//  v7  (retained): optional break-bar volume gate; Opening Range Breakout.
+//  v6  (retained): defaults recalibrated for intraday bars.
+//  v5  (retained): timeframe-agnostic — no request.security, no hardcoded "D".
+//  v4  (retained): force_overlay on every drawing; absolute-price label anchors.
+//
+//  IF ARROWS EVER MISBEHAVE: remove EVERY old copy from the chart legend /
+//  Object Tree (old copies keep drawing), then add this version once.
+//
+//  The script tracks ONE long and ONE short hypothetical position internally so
+//  it knows where the exits land. TradingView keeps the last 500 labels.
+//  For study purposes only — not financial advice.
+// ════════════════════════════════════════════════════════════════════════════
+indicator("Qullamaggie MOMENTUM SWING", shorttitle="qullamaggie_momentum_swing", overlay=true, max_labels_count=500)
+
+// ─── Inputs ──────────────────────────────────────────────────────────────────
+grpU = "Universe & trend filters"
+minPrice   = input.float(5.0,      "Minimum price ($)",                  minval=0.0,           group=grpU)
+minAvgVol  = input.float(0.0,      "Minimum 20-bar avg volume (shares)", minval=0.0,           group=grpU, tooltip="Averages per-bar volume over 20 chart bars. 0 = disabled. PER bar and symbol-dependent — raise it for a liquidity floor.")
+adrLen     = input.int(20,         "ADR length (bars)",                  minval=5,             group=grpU)
+minAdr     = input.float(0.1,      "Minimum ADR / avg bar range (%)",    minval=0.0, step=0.1, group=grpU, tooltip="ADR here = average per-bar range %.")
+momLen     = input.int(24,         "Momentum lookback (bars)",           minval=5,             group=grpU, tooltip="Counted in chart bars.")
+minGain    = input.float(0.5,      "Minimum gain over lookback (%)",     minval=0.0, step=0.1, group=grpU, tooltip="Longs require up >= this over the window; short breakouts require down >= this.")
+requireMAs = input.bool(true,      "Require trend (close vs 20 SMA and 10 SMA vs 20 SMA)",     group=grpU, tooltip="Trend gate. Longs: close > 20-SMA & 10>20. Shorts: close < 20-SMA & 10<20. Tolerates a counter-move under/over the 10-SMA so bases still arm.")
+
+grpB = "Setup 1 — momentum breakout (long)"
+enableBO    = input.bool(true,  "Enable breakout signals",                                       group=grpB)
+baseMaxLen  = input.int(40,     "Max base lookback (bars)",               minval=10, maxval=80,  group=grpB, tooltip="Window for the pivot.")
+minBaseDays = input.int(3,      "Min bars since the base high/low",        minval=2,  maxval=60,  group=grpB, tooltip="Bars of digestion before the order arms. Lower = faster breaks (more noise).")
+maxDepth    = input.float(40.0, "Max retracement inside the base (%)",     minval=5.0, maxval=60.0, group=grpB)
+useVolDry   = input.bool(false, "Require volume contraction in the base",                        group=grpB, tooltip="OFF by default: in an active trend recent volume is usually HIGHER than the longer average, which rejects most bases.")
+volDryRatio = input.float(1.0,  "5-bar avg vol < ratio x 50-bar avg vol", minval=0.1, maxval=1.5, step=0.05, group=grpB)
+bufTicks    = input.int(1,      "Entry buffer beyond pivot (ticks)",       minval=0,             group=grpB)
+entryMode   = input.string("Stop @ pivot (catch the break)", "Breakout entry", options=["Stop @ pivot (catch the break)", "Wait for bar close"], group=grpB, tooltip="STOP: a resting order at the pivot fills the instant price trades through it. CLOSE: only enter if the bar CLOSES beyond the pivot.")
+boOrderBars = input.int(10,     "Resting order good for N bars",          minval=1,              group=grpB, tooltip="How long the order sits at the pivot before it's cancelled if price never reaches it.")
+showOrderLvl= input.bool(true,  "Plot the live resting order levels",                            group=grpB)
+useBOVol    = input.bool(true,  "Require volume expansion on the break bar",                     group=grpB, tooltip="Real breaks come on rising volume. Applies to long and short breakouts. Disable for more signals.")
+boVolMult   = input.float(1.3,  "Break-bar volume >= x 50-bar avg",       minval=1.0, step=0.1,  group=grpB)
+
+grpO = "Setup 1b — opening range breakout (intraday, long)"
+enableORB   = input.bool(false, "Enable opening range breakout",                                 group=grpO, tooltip="Break of the high of the first N bars of each regular session. Intraday charts only.")
+orbBars     = input.int(1,      "Opening range length (bars from open)",  minval=1, maxval=12,   group=grpO, tooltip="1 = first bar, 3 = first three bars, etc.")
+
+grpSB = "Setup 1c — short breakout (breakdown)"
+enableShortBO = input.bool(false, "Enable short breakout (breakdown) signals",                   group=grpSB, tooltip="Mirror of the long breakout: a resting SELL-STOP parked at the base LOW in a downtrend, filled on a break below it. Same management as longs (partial at R / N bars, breakeven, trail-MA cover). Reuses all Setup-1 knobs.")
+
+grpE = "Setup 2 — episodic pivot (gap bar, long)"
+enableEP    = input.bool(true, "Enable EP signals",                                  group=grpE)
+epMinGap    = input.float(0.5, "Minimum gap up (%)",                     minval=0.1, group=grpE, tooltip="Gap = this bar's open vs the PREVIOUS bar's close. Mostly fires at the session open.")
+epVolMult   = input.float(1.3, "Bar volume >= multiple of 50-bar avg",   minval=1.0, step=0.1, group=grpE)
+epStrongCls = input.bool(true, "Require strong close (close > open, upper half of range)", group=grpE)
+
+grpS = "Setup 3 — parabolic short (separate track)"
+enableShort = input.bool(false, "Enable parabolic short signals (first red bar)",     group=grpS)
+psLookback  = input.int(10,     "Run-up lookback (bars)",                 minval=3,  group=grpS)
+psMinGain   = input.float(8.0,  "Minimum run-up over lookback (%)",       minval=1.0, step=0.5, group=grpS)
+psStreak    = input.int(3,      "Min consecutive up-closes before reversal", minval=2, group=grpS)
+psStopLb    = input.int(3,      "Stop above highest high of last N bars", minval=1,  group=grpS)
+psMaxHold   = input.int(5,      "Max holding period (bars)",              minval=1,  group=grpS)
+
+grpR = "Initial stop"
+adrStopMult = input.float(1.0, "Max initial stop distance (x ADR)", minval=0.25, maxval=3.0, step=0.25, group=grpR, tooltip="Stop distance as a multiple of the avg bar range, for both longs and short breakouts.")
+useLodStop  = input.bool(true, "Tighten stop to entry-bar extreme if closer",                 group=grpR, tooltip="Longs: tighten to the entry-bar low. Short breakouts: tighten to the entry-bar high.")
+
+grpX = "Trade management (longs and short breakouts)"
+partialRR   = input.float(2.0, "Partial profit target (R multiple)",  minval=0.5, step=0.5, group=grpX)
+partialDays = input.int(6,     "...or take partial after N bars",     minval=1,             group=grpX)
+moveBE      = input.bool(true, "Move stop to breakeven after partial",                      group=grpX)
+trailType   = input.string("EMA", "Trailing MA type", options=["SMA", "EMA"],               group=grpX)
+trailLen    = input.int(20,    "Trailing MA length (10 aggressive / 20 standard)", minval=2, group=grpX)
+
+// ─── Core calculations ───────────────────────────────────────────────────────
+sma10    = ta.sma(close, 10)
+sma20    = ta.sma(close, 20)
+emaTrail = ta.ema(close, trailLen)
+smaTrail = ta.sma(close, trailLen)
+trailMA  = trailType == "EMA" ? emaTrail : smaTrail
+
+adrPct   = ta.sma(100 * (high / low - 1), adrLen)
+avgVol5  = ta.sma(volume, 5)
+avgVol20 = ta.sma(volume, 20)
+avgVol50 = ta.sma(volume, 50)
+gainPct  = 100 * (close / close[momLen] - 1)
+labPad   = nz(ta.atr(14), high - low) * 0.5
+
+liqOK      = close >= minPrice and avgVol20 >= minAvgVol
+adrOK      = adrPct >= minAdr
+volDryOK   = not useVolDry or avgVol5 < volDryRatio * avgVol50
+maOKup     = not requireMAs or (close > sma20 and sma10 > sma20)   // tolerates a pullback under the 10-SMA
+maOKdn     = not requireMAs or (close < sma20 and sma10 < sma20)   // tolerates a bounce over the 10-SMA
+trendUpOK  = gainPct >= minGain and maOKup
+trendDnOK  = gainPct <= -minGain and maOKdn
+universeUp = liqOK and adrOK and trendUpOK
+universeDn = liqOK and adrOK and trendDnOK
+waitClose  = entryMode == "Wait for bar close"
+
+// ─── Position state (signals only) ───────────────────────────────────────────
+var bool   inLong       = false
+var float  entryPx      = na
+var float  stopPx       = na
+var float  targetPx     = na
+var int    entryBar     = na
+var bool   partialDone  = false
+
+var bool   inShort      = false
+var string shortType    = na      // "PARA" or "BO"
+var float  sEntryPx     = na
+var float  sStopPx      = na
+var float  sTargetPx    = na
+var int    sEntryBar    = na
+var bool   sPartialDone = false
+
+// ─── Long base / setup ───────────────────────────────────────────────────────
+baseHigh   = ta.highest(high, baseMaxLen)
+sincePk    = -nz(ta.highestbars(high, baseMaxLen))
+pullLow    = ta.lowest(low, math.max(sincePk, 1))
+retracePct = 100 * (baseHigh - pullLow) / baseHigh
+flagUpOK   = sincePk >= minBaseDays and retracePct <= maxDepth and volDryOK
+entryLevel = baseHigh + bufTicks * syminfo.mintick
+boSetup    = enableBO and universeUp and flagUpOK and not inLong and not inShort
+
+// ─── Short base / setup (mirror) ─────────────────────────────────────────────
+baseLow      = ta.lowest(low, baseMaxLen)
+sinceTr      = -nz(ta.lowestbars(low, baseMaxLen))
+bounceHigh   = ta.highest(high, math.max(sinceTr, 1))
+retraceUpPct = 100 * (bounceHigh - baseLow) / baseLow
+flagDnOK     = sinceTr >= minBaseDays and retraceUpPct <= maxDepth and volDryOK
+entryLevelDn = baseLow - bufTicks * syminfo.mintick
+soSetup      = enableShortBO and universeDn and flagDnOK and not inLong and not inShort
+
+// ─── Episodic pivot (long) ───────────────────────────────────────────────────
+epGap    = 100 * (open / close[1] - 1)
+epVolOK  = volume >= epVolMult * avgVol50[1]
+epClsOK  = not epStrongCls or (close > open and close >= (high + low) / 2)
+epRiskPS = close - low
+epWithin = epRiskPS > 0 and epRiskPS <= adrStopMult * adrPct / 100 * close
+epSetup  = enableEP and liqOK and epGap >= epMinGap and epVolOK and epClsOK and epWithin and not inLong and not inShort
+
+// ─── Parabolic short (separate) ──────────────────────────────────────────────
+var int upStk = 0
+upStk := close > close[1] ? upStk + 1 : 0
+psRunup  = 100 * (ta.highest(high, psLookback) / ta.lowest(low, psLookback) - 1)
+psStopLv = ta.highest(high, psStopLb) + bufTicks * syminfo.mintick
+frd      = close < close[1] and upStk[1] >= psStreak
+psSetup  = enableShort and liqOK and psRunup >= psMinGain and frd and not boSetup and not epSetup and not soSetup and not inLong and not inShort
+
+// ─── Opening range breakout (intraday, long) ─────────────────────────────────
+var float orHigh   = na
+var int   orCount  = 0
+var bool  orbTaken = false
+if session.isfirstbar_regular
+    orHigh   := high
+    orCount  := 1
+    orbTaken := false
+else if orCount < orbBars
+    orHigh   := math.max(orHigh, high)
+    orCount  := orCount + 1
+barsIntoSession = ta.barssince(session.isfirstbar_regular)
+orbActive = enableORB and universeUp and not na(orHigh) and barsIntoSession >= orbBars and not orbTaken and not inLong and not inShort
+orbLevel  = nz(orHigh) + bufTicks * syminfo.mintick
+
+// ─── Resting long order (parked at the pivot high) ───────────────────────────
+var bool  boArmed    = false
+var float boOrderPx  = na
+var int   boArmedBar = na
+if boSetup
+    boArmed    := true
+    boOrderPx  := entryLevel
+    boArmedBar := bar_index
+if boArmed and bar_index - boArmedBar > boOrderBars
+    boArmed   := false
+    boOrderPx := na
+
+// ─── Resting short order (parked at the base low) ────────────────────────────
+var bool  soArmed    = false
+var float soOrderPx  = na
+var int   soArmedBar = na
+if soSetup
+    soArmed    := true
+    soOrderPx  := entryLevelDn
+    soArmedBar := bar_index
+if soArmed and bar_index - soArmedBar > boOrderBars
+    soArmed   := false
+    soOrderPx := na
+
+// ─── Arrow helper: absolute price anchors, forced onto the main pane ─────────
+f_arrow(_buy, _txt, _col) =>
+    label.new(bar_index, _buy ? low - labPad : high + labPad, _txt,
+         yloc=yloc.price, force_overlay=true,
+         style=_buy ? label.style_triangleup : label.style_triangledown,
+         color=color.new(_col, 0), textcolor=color.new(_col, 0), size=size.small)
+
+// ─── Value tags: print the actual entry / exit / sell prices at the entry bar ─
+f_valueLabels(_ePx, _sPx, _tPx, _long) =>
+    sWord = _long ? "Exit" : "Cover"
+    tWord = _long ? "Sell" : "Target"
+    label.new(bar_index, _ePx, "Entry " + str.tostring(_ePx, format.mintick),
+         yloc=yloc.price, style=label.style_label_left, force_overlay=true,
+         color=color.new(color.blue, 100),   textcolor=color.blue,   size=size.small)
+    label.new(bar_index, _sPx, sWord + " " + str.tostring(_sPx, format.mintick),
+         yloc=yloc.price, style=label.style_label_left, force_overlay=true,
+         color=color.new(color.red, 100),    textcolor=color.red,    size=size.small)
+    if not na(_tPx)
+        label.new(bar_index, _tPx, tWord + " " + str.tostring(_tPx, format.mintick),
+             yloc=yloc.price, style=label.style_label_left, force_overlay=true,
+             color=color.new(color.orange, 100), textcolor=color.orange, size=size.small)
+
+// per-bar event flags (for alerts)
+bool sigBuyBO   = false
+bool sigBuyORB  = false
+bool sigBuyEP   = false
+bool sigPartial = false
+bool sigExit    = false
+bool sigShort   = false
+bool sigCover   = false
+bool sigShortBO = false
+bool sigCoverBO = false
+bool exitedNow  = false
+
+// ─── Long exit management (confirmed bars only) ──────────────────────────────
+bool closeLongNow = false
+if inLong and barstate.isconfirmed and bar_index > entryBar
+    if low <= stopPx
+        f_arrow(false, "Exit", color.red)
+        sigExit      := true
+        closeLongNow := true
+    else
+        if not partialDone and (high >= targetPx or bar_index - entryBar >= partialDays)
+            f_arrow(false, "Sell", color.orange)
+            partialDone := true
+            if moveBE
+                stopPx := math.max(stopPx, entryPx)
+            sigPartial := true
+        if partialDone and close < trailMA
+            f_arrow(false, "Exit", color.red)
+            sigExit      := true
+            closeLongNow := true
+if closeLongNow
+    inLong      := false
+    entryPx     := na
+    stopPx      := na
+    targetPx    := na
+    entryBar    := na
+    partialDone := false
+    exitedNow   := true
+
+// ─── Short exit management (confirmed bars only) ─────────────────────────────
+bool closeShortNow = false
+if inShort and barstate.isconfirmed and bar_index > sEntryBar
+    if shortType == "PARA"
+        if high >= sStopPx or close > close[1] or bar_index - sEntryBar >= psMaxHold
+            f_arrow(true, "Cover", color.teal)
+            sigCover      := true
+            closeShortNow := true
+    else
+        if high >= sStopPx
+            f_arrow(true, "Cover", color.red)
+            sigCoverBO    := true
+            closeShortNow := true
+        else
+            if not sPartialDone and (low <= sTargetPx or bar_index - sEntryBar >= partialDays)
+                f_arrow(true, "Cover", color.orange)
+                sPartialDone := true
+                if moveBE
+                    sStopPx := math.min(sStopPx, sEntryPx)
+                sigPartial := true
+            if sPartialDone and close > trailMA
+                f_arrow(true, "Cover", color.red)
+                sigCoverBO    := true
+                closeShortNow := true
+if closeShortNow
+    inShort      := false
+    shortType    := na
+    sEntryPx     := na
+    sStopPx      := na
+    sTargetPx    := na
+    sEntryBar    := na
+    sPartialDone := false
+    exitedNow    := true
+
+// ─── Entries (confirmed bars, no same-bar exit-and-reenter) ──────────────────
+canEnter   = not inLong and not inShort and not exitedNow and barstate.isconfirmed
+volBreakOK = not useBOVol or volume >= boVolMult * avgVol50[1]
+
+boBreak  = waitClose ? close >= boOrderPx : high >= boOrderPx
+boFill   = canEnter and boArmed and not na(boOrderPx) and boBreak and volBreakOK
+orbBreak = waitClose ? close >= orbLevel : high >= orbLevel
+orbFill  = canEnter and orbActive and orbBreak and volBreakOK and not boFill
+soBreak  = waitClose ? close <= soOrderPx : low <= soOrderPx
+soFill   = canEnter and soArmed and not na(soOrderPx) and soBreak and volBreakOK
+
+longTrig  = boFill or orbFill
+longLevel = boFill ? boOrderPx : orbLevel
+longTxt   = boFill ? "Buy BO" : "Buy ORB"
+longCol   = boFill ? color.green : color.lime
+
+if longTrig
+    inLong  := true
+    entryPx := math.max(open, longLevel)                 // resting order fills at the level, or at the open if gapped through
+    float adrStopPx = entryPx * (1 - adrStopMult * adrPct / 100)
+    stopPx  := useLodStop ? math.max(adrStopPx, low) : adrStopPx
+    stopPx  := math.min(stopPx, entryPx * 0.999)
+    targetPx    := entryPx + partialRR * (entryPx - stopPx)
+    entryBar    := bar_index
+    partialDone := false
+    if boFill
+        sigBuyBO := true
+        boArmed  := false
+    else
+        sigBuyORB := true
+        orbTaken  := true
+    f_arrow(true, longTxt, longCol)
+    f_valueLabels(entryPx, stopPx, targetPx, true)
+    if close < stopPx                                    // filled then collapsed below the stop same bar — bail
+        f_arrow(false, "Exit", color.red)
+        sigExit     := true
+        inLong      := false
+        entryPx     := na
+        stopPx      := na
+        targetPx    := na
+        entryBar    := na
+        partialDone := false
+else if soFill
+    inShort   := true
+    shortType := "BO"
+    sEntryPx  := math.min(open, soOrderPx)               // resting sell-stop fills at the level, or at the open if gapped through
+    float adrStopPxS = sEntryPx * (1 + adrStopMult * adrPct / 100)
+    sStopPx   := useLodStop ? math.min(adrStopPxS, high) : adrStopPxS
+    sStopPx   := math.max(sStopPx, sEntryPx * 1.001)
+    sTargetPx := sEntryPx - partialRR * (sStopPx - sEntryPx)
+    sEntryBar := bar_index
+    sPartialDone := false
+    soArmed   := false
+    sigShortBO := true
+    f_arrow(false, "Short BO", color.fuchsia)
+    f_valueLabels(sEntryPx, sStopPx, sTargetPx, false)
+    if close > sStopPx                                   // filled then snapped back above the stop same bar — bail
+        f_arrow(true, "Cover", color.red)
+        sigCoverBO   := true
+        inShort      := false
+        shortType    := na
+        sEntryPx     := na
+        sStopPx      := na
+        sTargetPx    := na
+        sEntryBar    := na
+        sPartialDone := false
+else if canEnter and epSetup
+    inLong  := true
+    entryPx := close
+    float adrStopPx = entryPx * (1 - adrStopMult * adrPct / 100)
+    stopPx  := useLodStop ? math.max(adrStopPx, low) : adrStopPx
+    stopPx  := math.min(stopPx, entryPx * 0.999)
+    targetPx    := entryPx + partialRR * (entryPx - stopPx)
+    entryBar    := bar_index
+    partialDone := false
+    sigBuyEP    := true
+    f_arrow(true, "Buy EP", color.aqua)
+    f_valueLabels(entryPx, stopPx, targetPx, true)
+else if canEnter and psSetup
+    inShort   := true
+    shortType := "PARA"
+    sEntryPx  := close
+    sStopPx   := psStopLv
+    sEntryBar := bar_index
+    sPartialDone := false
+    sigShort  := true
+    f_arrow(false, "Short", color.maroon)
+    f_valueLabels(sEntryPx, sStopPx, sTargetPx, false)
+
+// ─── Visualize the live resting orders ───────────────────────────────────────
+plotBOlvl  = showOrderLvl and boArmed   ? boOrderPx : na
+plotORBlvl = showOrderLvl and orbActive ? orbLevel  : na
+plotSOlvl  = showOrderLvl and soArmed   ? soOrderPx : na
+plot(plotBOlvl,  "Resting BO buy-stop",     color=color.new(color.green, 0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(plotORBlvl, "Resting ORB level",       color=color.new(color.lime,  0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(plotSOlvl,  "Resting short sell-stop", color=color.new(color.red,   0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+
+// ─── Entry / exit / sell value lines (active trade; mirrors the breakout lines) ─
+valEntry  = inLong ? entryPx  : inShort ? sEntryPx  : na
+valStop   = inLong ? stopPx   : inShort ? sStopPx   : na
+valTarget = inLong ? targetPx : inShort ? sTargetPx : na
+plot(valEntry,  "Entry level",         color=color.new(color.blue,   0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(valStop,   "Exit / stop level",   color=color.new(color.red,    0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(valTarget, "Sell / target level", color=color.new(color.orange, 0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+
+// ─── Scale anchor ────────────────────────────────────────────────────────────
+plot(close, "Scale anchor", color=color.new(color.gray, 100), editable=false, display=display.pane, force_overlay=true)
+
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+alertcondition(boSetup,    "QM: long order armed",   "Resting buy-stop parked at the pivot high")
+alertcondition(soSetup,    "QM: short order armed",  "Resting sell-stop parked at the base low")
+alertcondition(sigBuyBO,   "QM: BUY breakout",       "Resting buy-stop filled — price broke above the pivot")
+alertcondition(sigBuyORB,  "QM: BUY opening range",  "Price broke above the opening-range high")
+alertcondition(sigBuyEP,   "QM: BUY episodic pivot", "Gap + volume episodic pivot — entry at the close")
+alertcondition(sigShortBO, "QM: SHORT breakdown",    "Resting sell-stop filled — price broke below the base low")
+alertcondition(sigCoverBO, "QM: cover short break",  "Short breakdown covered — stop, target/time, or close back above the trail MA")
+alertcondition(sigPartial, "QM: partial profit",     "Partial point — stop moves to breakeven")
+alertcondition(sigExit,    "QM: exit long",          "Long exit — stop hit or close below the trail MA")
+alertcondition(sigShort,   "QM: SHORT first red bar","Parabolic short trigger (first red bar)")
+alertcondition(sigCover,   "QM: cover parabolic",    "Parabolic short covered — stop, bounce or time")
