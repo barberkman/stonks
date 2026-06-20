@@ -587,6 +587,10 @@ TEST(Scenario, Report_DerivesMetricsFromEngineData)
     EXPECT_DOUBLE_EQ(metrics.ending_cash, 1'000.0 - 110.0 + 120.0);
     ASSERT_TRUE(metrics.return_pct.has_value());
     EXPECT_DOUBLE_EQ(*metrics.return_pct, 1.0);    // (1010 - 1000) / 1000
+    EXPECT_EQ(metrics.closed_trades, 1u);          // buy@110 -> sell@120 round trip
+    EXPECT_EQ(metrics.winning_trades, 1u);         // closed +10
+    ASSERT_TRUE(metrics.win_rate_pct.has_value());
+    EXPECT_DOUBLE_EQ(*metrics.win_rate_pct, 100.0);
     ASSERT_TRUE(metrics.first_ts.has_value());
     EXPECT_EQ(*metrics.first_ts, Timestamp::from_millis(1000));
     EXPECT_EQ(*metrics.last_ts, Timestamp::from_millis(3000));
@@ -596,6 +600,7 @@ TEST(Scenario, Report_DerivesMetricsFromEngineData)
     const std::string report = os.str();
     EXPECT_NE(report.find("=== Backtest report ==="), std::string::npos);
     EXPECT_NE(report.find("Orders placed:"), std::string::npos);
+    EXPECT_NE(report.find("Win rate:        100.00 % (1/1)"), std::string::npos);
     EXPECT_NE(report.find("Elapsed:"), std::string::npos);
     EXPECT_NE(report.find("per bar:"), std::string::npos);
 }

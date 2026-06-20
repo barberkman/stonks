@@ -1,12 +1,15 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <iomanip>
 #include <ios>
 #include <optional>
 #include <ostream>
 #include <span>
+#include <unordered_map>
 
 #include "stonks/core/log.h"
 #include "stonks/core/types.h"
@@ -39,6 +42,9 @@ struct ReportMetrics
     std::size_t trade_count;
     std::size_t orders_placed;
     core::Balance notional;
+    std::size_t closed_trades;            // round-trip positions reconstructed from fills
+    std::size_t winning_trades;           // closed trades with realized P&L > 0
+    std::optional<double> win_rate_pct;   // nullopt when nothing closed
     core::Balance starting_cash;
     core::Balance ending_cash;
     core::Balance ending_equity;
@@ -55,6 +61,69 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
 
     core::Balance notional = 0.0;
     for (const auto& t : in.trades) { notional += t.quantity * t.price; }
+
+    // Win rate over *closed* round-trip positions reconstructed from the fill
+    // stream. Per symbol we carry a signed position (+long/-short), its
+    // average entry, and the realized P&L accumulated over the current open
+    // cycle. A fill in the same direction scales in (updates the average); an
+    // opposing fill realizes P&L on the closed quantity (long: exit-entry,
+    // short: entry-exit). The cycle is counted as one closed trade when the
+    // position returns to flat (a win when its realized P&L > 0), and any
+    // overshoot opens a fresh position. Positions still open at run end
+    // contribute no closed trade.
+    struct OpenPosition
+    {
+        core::Quantity qty = 0.0;
+        core::Price avg_price = 0.0;
+        core::Balance realized = 0.0;
+    };
+    std::unordered_map<core::Symbol, OpenPosition> positions;
+    std::size_t closed_trades = 0;
+    std::size_t winning_trades = 0;
+    for (const auto& t : in.trades) {
+        const double fill = (t.side == core::OrderSide::Buy ? t.quantity : -t.quantity);
+        auto& pos = positions[t.symbol];
+
+        if (pos.qty == 0.0) {
+            pos.qty = fill;
+            pos.avg_price = t.price;
+            continue;
+        }
+
+        if ((pos.qty > 0.0) == (fill > 0.0)) {
+            // Scaling in: blend the average entry.
+            const double prev = std::abs(pos.qty);
+            const double add = std::abs(fill);
+            pos.avg_price = (pos.avg_price * prev + t.price * add) / (prev + add);
+            pos.qty += fill;
+            continue;
+        }
+
+        // Opposing fill: close against the open position.
+        const double closing = std::min(std::abs(fill), std::abs(pos.qty));
+        pos.realized += (pos.qty > 0.0 ? (t.price - pos.avg_price) : (pos.avg_price - t.price)) * closing;
+        pos.qty += (pos.qty > 0.0 ? -closing : closing);
+
+        if (pos.qty == 0.0) {
+            ++closed_trades;
+            if (pos.realized > 0.0) { ++winning_trades; }
+            pos.realized = 0.0;
+            pos.avg_price = 0.0;
+
+            const double leftover = std::abs(fill) - closing;
+            if (leftover > 0.0) {   // fill flips the position past flat
+                pos.qty = (fill > 0.0 ? leftover : -leftover);
+                pos.avg_price = t.price;
+            }
+        }
+    }
+
+    std::optional<double> win_rate_pct;
+    if (closed_trades != 0) {
+        win_rate_pct = static_cast<double>(winning_trades) / static_cast<double>(closed_trades) * 100.0;
+    } else {
+        STONKS_LOG("report", "no closed round trips -> win rate suppressed");
+    }
 
     // Peak-to-trough of the mark-to-market equity curve.
     double max_drawdown_pct = 0.0;
@@ -84,8 +153,9 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
     }
 
     STONKS_LOG("report",
-        "metrics: notional={:.4f} max_dd={:.4f}% return={:.4f}% ending_cash={:.4f} ending_equity={:.4f}",
-        notional, max_drawdown_pct, return_pct.value_or(0.0), in.ending_cash, in.ending_equity);
+        "metrics: notional={:.4f} max_dd={:.4f}% return={:.4f}% win_rate={:.4f}% ({}/{}) ending_cash={:.4f} ending_equity={:.4f}",
+        notional, max_drawdown_pct, return_pct.value_or(0.0), win_rate_pct.value_or(0.0),
+        winning_trades, closed_trades, in.ending_cash, in.ending_equity);
 
     return ReportMetrics{
         in.bars_processed,
@@ -94,6 +164,9 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         in.trades.size(),
         in.orders.size(),
         notional,
+        closed_trades,
+        winning_trades,
+        win_rate_pct,
         in.starting_cash,
         in.ending_cash,
         in.ending_equity,
@@ -116,9 +189,9 @@ inline void print_report(std::ostream& os, const ReportMetrics& m)
     }
     os << "Orders placed:   " << m.orders_placed << '\n';
     os << "Trades:          " << m.trade_count << '\n';
-    if (m.trade_count != 0) {
-        os << "Notional traded: " << m.notional << '\n';
-    }
+    os << "Notional traded: " << m.notional << '\n';
+    os << "Win rate:        " << m.win_rate_pct.value_or(0.0) << " % ("
+       << m.winning_trades << "/" << m.closed_trades << ")\n";
     os << "Starting cash:   " << m.starting_cash << '\n';
     os << "Ending cash:     " << m.ending_cash << '\n';
     os << "Ending equity:   " << m.ending_equity << '\n';
