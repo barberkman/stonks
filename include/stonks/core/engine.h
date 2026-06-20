@@ -50,7 +50,7 @@ public:
 
         while (auto ts = m_dataFeed.next_timestamp()) {
             m_clock.set(*ts);
-            const auto ts_ms = ts->value.time_since_epoch().count();
+            [[maybe_unused]] const auto ts_ms = ts->value.time_since_epoch().count();
 
             // Settle the whole timestamp first: fill/mark every symbol that
             // printed, before the strategy reacts once for this timestamp.

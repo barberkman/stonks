@@ -7,8 +7,8 @@
 namespace stonks::broker {
 
 namespace {
-const char* side_str(core::OrderSide s) { return s == core::OrderSide::Buy ? "Buy" : "Sell"; }
-const char* type_str(core::OrderType t) { return t == core::OrderType::Market ? "Market" : "Limit"; }
+[[maybe_unused]] const char* side_str(core::OrderSide s) { return s == core::OrderSide::Buy ? "Buy" : "Sell"; }
+[[maybe_unused]] const char* type_str(core::OrderType t) { return t == core::OrderType::Market ? "Market" : "Limit"; }
 } // namespace
 
 BacktestBroker::BacktestBroker(core::Balance initial_cash)

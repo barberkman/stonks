@@ -25,17 +25,3 @@ target_compile_definitions(python_tests PRIVATE
 )
 
 gtest_discover_tests(python_tests)
-
-# Pure-Python strategy tests (pytest + stonks.testing.FakeContext), registered as
-# a ctest so `ctest` runs them alongside the C++ suites. Requires the app venv
-# (with the editable `stonks` install) created per app/python/README.md.
-set(_qm_venv_python "${PROJECT_SOURCE_DIR}/app/python/.venv/bin/python")
-if(EXISTS "${_qm_venv_python}")
-    add_test(
-        NAME qm_python_strategies
-        COMMAND "${_qm_venv_python}" -m pytest -q "${CMAKE_CURRENT_SOURCE_DIR}"
-        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    )
-else()
-    message(STATUS "app venv not found at ${_qm_venv_python}; skipping qm_python_strategies test")
-endif()

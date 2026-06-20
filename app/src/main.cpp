@@ -1,7 +1,3 @@
-// Python.h (pulled in via pybind11 by pythonstrategy.h) must precede every Qt
-// header: Python's `PyType_Slot *slots;` clashes with Qt's `slots` keyword macro.
-#include "strategies/pythonstrategy.h"
-
 #include <chrono>
 #include <iostream>
 #include <string_view>
@@ -17,39 +13,21 @@
 
 #include "report.h"
 #include "strategies/ema50strategy.h"
-#include "strategies/qm_breakout.h"
-#include "strategies/qm_short_breakout.h"
-#include "strategies/qm_episodic_pivot.h"
-#include "strategies/qm_parabolic_short.h"
-#include "strategies/qm_orb.h"
+#include "strategies/qmsignals.h"
 
 namespace stonks::app {
 
-// Wires up the Engine (strategy + KLineFeed + BacktestBroker) and runs it,
+// Wires up the Engine (QM signals scanner + KLineFeed + BacktestBroker) and runs it,
 // printing the report to the terminal. Shared by the headless and GUI run paths.
-//
-// To run a different Qullamaggie setup, swap the active strategy below for one of
-// the commented alternatives and rebuild — the Engine holds a single strategy.
+// The scanner places no orders — it prints each fired setup's signal to stdout.
 void run_backtest() {
-    std::cout << "--- Qullamaggie: qm_breakout ---" << std::endl;
-
     constexpr stonks::core::Balance starting_cash = 1000.0;
     stonks::core::Engine engine
     {
-        // PythonStrategy{ "qm_breakout",        "QMBreakoutStrategy" },
-        // PythonStrategy{ "qm_short_breakout", "QMShortBreakoutStrategy" },
-        // PythonStrategy{ "qm_episodic_pivot", "QMEpisodicPivotStrategy" },
-        // PythonStrategy{ "qm_parabolic_short", "QMParabolicShortStrategy" },
-        // PythonStrategy{ "qm_orb",            "QMORBStrategy" },
-        // PythonStrategy{ "ema50strategy",     "EMA50Strategy" },
+        // PythonStrategy{ "ema50strategy", "EMA50Strategy" },
         // EMA50Strategy{},
-        // Native C++ Qullamaggie setups (header-only, mirror the Python ones):
-        // QMBreakoutStrategy{},
-        // QMShortBreakoutStrategy{},
-        // QMEpisodicPivotStrategy{},
-        // QMParabolicShortStrategy{},
-        QMORBStrategy{},
-        stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet" },
+        QMSignalsStrategy{},
+        stonks::datafeed::KLineFeed{ "app/data/us_1d_filtered.parquet" },
         stonks::broker::BacktestBroker{ starting_cash }
     };
 

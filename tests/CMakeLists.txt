@@ -9,7 +9,7 @@ add_executable(core_tests
     core/scenarios_test.cpp
     core/progressbar_test.cpp
     core/ema50strategy_test.cpp
-    core/qm_strategies_test.cpp
+    core/qmsignals_test.cpp
     core/report_test.cpp
 )
 
