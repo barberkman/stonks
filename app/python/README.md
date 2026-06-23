@@ -160,6 +160,21 @@ for symbol, sub in df.groupby("symbol"):
 The arrays are valid for the current tick only — re-query each tick rather than
 stashing a view.
 
+## Fill mechanics & broker semantics
+
+Same rules as native strategies (the broker is shared):
+
+- **No lookahead.** `history(n)` only sees bars up to the current timestamp, and an
+  order placed on a bar never fills against that same bar.
+- **Market orders** fill at the **next bar's open**; **limit orders** fill once a
+  later bar's range reaches the price. `place_*_order(...)` returns immediately — the
+  order is queued, not filled, so its `bool` return means "accepted", not "filled".
+- **Cash-secured, one position per symbol.** Opening ties up `quantity * fill_price`
+  of cash; an unaffordable order is rejected (it does not wait). While you hold a
+  position in a symbol a same-side order is rejected (no adding — close first); an
+  opposite-side order closes it, clamping an oversized close to what you hold. Shorts
+  are allowed.
+
 ## IDE autocomplete
 
 Generate stubs for `_core` once after a build:

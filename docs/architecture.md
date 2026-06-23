@@ -20,14 +20,12 @@ classDiagram
         -m_broker : BrokerT&
         -m_dataFeed : const DataFeedT&
         -m_clock : const Clock&
-        -m_next_order_id : uint64
         +now() Timestamp
         +cash() Balance
         +equity() Balance
         +history(count) MarketWindow
-        +make_market_order(params) Order
-        +make_limit_order(params) Order
-        +place_order(order) bool
+        +place_order(MarketOrderParams) OrderID
+        +place_order(LimitOrderParams) OrderID
     }
     class Clock {
         -m_timestamp : Timestamp
@@ -53,9 +51,11 @@ classDiagram
         <<concept>>
         +cash() Balance
         +equity() Balance
-        +place_order(order) bool
+        +place_order(MarketOrderParams) OrderID
+        +place_order(LimitOrderParams) OrderID
         +on_tick(bar) void
-        +trades() vector~Trade~
+        +trades() map~TradeID,Trade~
+        +orders() map~OrderID,Order~
     }
     class KLineFeed
     class BacktestBroker
@@ -122,10 +122,10 @@ classDiagram
         +symbol : Symbol
         +side : OrderSide
         +type : OrderType
+        +status : OrderStatus
         +price : optional~Price~
         +quantity : Quantity
         +time_in_force : TimeInForce
-        -Order(...) private ctor, friend Context
     }
     class Trade {
         +id : TradeID
@@ -305,11 +305,9 @@ sequenceDiagram
         S->>Ctx: history(n)
         Note over Ctx: symbols printing at N, each bounded to <= N
         Ctx-->>S: MarketWindow (cannot see N+1)
-        S->>Ctx: make_market_order(...)
-        Note over Ctx: Order.timestamp = now() = N
-        S->>Ctx: place_order(order)
-        Ctx->>B: place_order(order)
-        Note over B: queued, timestamp = N
+        S->>Ctx: place_order(MarketOrderParams{...})
+        Ctx->>B: place_order(params)
+        Note over B: Order built + stamped (timestamp = now() = N), queued
     end
 
     rect rgb(235, 255, 235)
@@ -346,7 +344,7 @@ sequenceDiagram
     Ctx-->>A: MarketWindow (per-symbol spans)
     A-->>Py: combined numpy columns (one DataFrame)
     Py->>A: ctx.place_market_order(...)
-    A->>Ctx: make_market_order + place_order
+    A->>Ctx: place_order(params)
     Ctx-->>A: bool
     A-->>Py: bool
     Py-->>PS: return

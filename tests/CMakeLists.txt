@@ -1,12 +1,15 @@
 include(GoogleTest)
 
-# NOTE: broker/engine/strategy tests were removed during the broker rewrite
-# (margin model, one-position-per-symbol, params-based place_order, map-keyed
-# trades/orders). They will be reimplemented against the new API.
 add_executable(core_tests
     core/types_test.cpp
     core/progressbar_test.cpp
     core/report_test.cpp
+    core/backtestbroker_test.cpp
+    core/scenarios_test.cpp
+    core/lookahead_test.cpp
+    core/determinism_test.cpp
+    core/ema50strategy_test.cpp
+    core/qmsignals_test.cpp
 )
 
 target_include_directories(core_tests PRIVATE

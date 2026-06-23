@@ -35,16 +35,23 @@ public:
     MarketWindow history(int count) const
     {
         MarketWindow w = m_dataFeed.window(count);
+        STONKS_LOG("ctx", "history count={} -> series={} ts={}",
+            count, w.size(), m_clock.now().value.time_since_epoch().count());
         return w;
     }
 
     OrderID place_order(const MarketOrderParams& parameters)
     {
+        STONKS_LOG("ctx", "place market sym={} side={} qty={:.6f}",
+            parameters.symbol, parameters.side == OrderSide::Buy ? "Buy" : "Sell", parameters.quantity);
         return m_broker.place_order(parameters);
     }
 
     OrderID place_order(const LimitOrderParams& parameters)
     {
+        STONKS_LOG("ctx", "place limit sym={} side={} qty={:.6f} price={:.4f}",
+            parameters.symbol, parameters.side == OrderSide::Buy ? "Buy" : "Sell",
+            parameters.quantity, parameters.price);
         return m_broker.place_order(parameters);
     }
 

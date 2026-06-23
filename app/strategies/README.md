@@ -65,11 +65,10 @@ From `include/stonks/core/context.h`:
 | `cash()` | `Balance` | available cash |
 | `equity()` | `Balance` | total portfolio value (cash + positions) |
 | `history(int count)` | `MarketWindow` | every symbol that printed at this timestamp, each with its last N bars (incl. today's) as column views; clamped to bars seen so far |
-| `make_market_order(MarketOrderParams)` | `Order` | builds the order — does **not** submit it |
-| `make_limit_order(LimitOrderParams)` | `Order` | builds the order — does **not** submit it |
-| `place_order(const Order&)` | `bool` | submits a built order to the broker |
+| `place_order(MarketOrderParams)` | `OrderID` | submit a market order to the broker (one call) |
+| `place_order(LimitOrderParams)` | `OrderID` | submit a limit order to the broker (one call) |
 
-Order placement is two-step: `make_*_order(...)` builds the `Order`, then `place_order(order)` submits it.
+Order placement is one call: `context.place_order(MarketOrderParams{ ... })` or `context.place_order(LimitOrderParams{ ... })`. The broker stamps the order with the current time, queues it, and returns its `OrderID` — you never build or hold an `Order` yourself.
 
 ## Types — the ones strategies use
 
@@ -80,29 +79,29 @@ From `include/stonks/core/types.h`, all in `namespace stonks::core`:
 - `KLine { Timestamp timestamp; Symbol symbol; Price open, high, low, close; Volume volume; }`.
 - `SeriesView { std::span<const std::int64_t> timestamp; std::span<const double> open, high, low, close, volume; }` — one symbol's column views into feed storage.
 - `SymbolSeries { std::string_view symbol; SeriesView bars; }` and `MarketWindow { std::vector<SymbolSeries> series; }` — returned by `history()`, one `SymbolSeries` per symbol that printed this tick. Re-query each tick; don't cache a view.
-- `Order` — opaque from the strategy's side after `make_*_order` returns it.
-- Enums: `OrderSide::{ Buy, Sell }`, `OrderType::{ Market, Limit }`, `TimeInForce::{ GTC }`.
-- Param structs:
-  - `MarketOrderParams { Symbol symbol; OrderSide side; Quantity quantity; TimeInForce time_in_force; }`
-  - `LimitOrderParams { Symbol symbol; OrderSide side; Quantity quantity; Price price; TimeInForce time_in_force; }`
+- Strategies never construct or hold an `Order` — you pass the param structs below and get back an `OrderID`. `OrderStatus::{ Open, Filled, Rejected }` is an order's lifecycle state (inspected via the broker, not the strategy).
+- Enums: `OrderSide::{ Buy, Sell }`, `OrderType::{ Market, Limit }`, `OrderStatus::{ Open, Filled, Rejected }`, `TimeInForce::{ GTC }`.
+- Param structs (`time_in_force` defaults to `GTC`, so you can omit it):
+  - `MarketOrderParams { Symbol symbol; OrderSide side; Quantity quantity; TimeInForce time_in_force = GTC; }`
+  - `LimitOrderParams { Symbol symbol; OrderSide side; Quantity quantity; Price price; TimeInForce time_in_force = GTC; }`
 
 Example:
 
 ```cpp
-const auto order = context.make_market_order(stonks::core::MarketOrderParams{
+const stonks::core::OrderID id = context.place_order(stonks::core::MarketOrderParams{
     .symbol = "BTCUSDT",
     .side = stonks::core::OrderSide::Buy,
     .quantity = 0.01,
-    .time_in_force = stonks::core::TimeInForce::GTC,
 });
-context.place_order(order);
+// The OrderID is rarely needed — most strategies ignore the return value.
 ```
 
 ## Fill mechanics & no-lookahead
 
-- **No lookahead.** `context.history(n)` returns only the symbols that printed at `now()`, each with its own bars up to and including `now()`. You cannot see future bars.
-- **Market orders** fill at the next bar's close price when the broker ticks.
-- **Limit orders** fill only if the limit price falls within the bar's `[low, high]` range.
+- **No lookahead.** `context.history(n)` returns only the symbols that printed at `now()`, each with its own bars up to and including `now()`. You cannot see future bars, and an order placed on a bar never fills against that same bar.
+- **Market orders** fill at the **next bar's open** (never the bar the order was placed on).
+- **Limit orders** fill only when a later bar's range reaches the limit: a buy fills at `min(limit, open)` once `low <= limit`; a sell at `max(limit, open)` once `high >= limit`. Until then the order rests.
+- **Cash-secured, one position per symbol.** Opening ties up `quantity * fill_price` of cash; an order you can't afford is **rejected** (it does not wait for cash to free up). While you hold a position in a symbol, a **same-side** order on it is **rejected** — there is no adding to a position, so close it first. An opposite-side order closes it (partly or fully); an oversized close clamps to what you hold and never flips. **Shorts are allowed** — selling with no position opens a short, cash-secured the same way a long is.
 
 ## Style & naming
 
