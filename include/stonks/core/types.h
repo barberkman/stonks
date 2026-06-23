@@ -36,6 +36,13 @@ enum class OrderType : std::uint8_t
     Limit,
 };
 
+enum class OrderStatus : std::uint8_t
+{
+    Open,
+    Filled,
+    Rejected
+};
+
 enum class TimeInForce : std::uint8_t
 {
     GTC,
@@ -105,20 +112,12 @@ struct Order
     Symbol symbol;
     OrderSide side;
     OrderType type;
+    OrderStatus status;
     std::optional<Price> price;
     Quantity quantity;
     TimeInForce time_in_force;
 
     auto operator<=>(const Order&) const = default;
-
-private:
-    Order(OrderID id_, Timestamp ts, Symbol sym, OrderSide s, OrderType t,
-          std::optional<Price> p, Quantity q, TimeInForce tif)
-    : id{ id_ }, timestamp{ ts }, symbol{ std::move(sym) }, side{ s }, type{ t },
-      price{ p }, quantity{ q }, time_in_force{ tif }
-    {}
-
-    template <class BrokerT, class DataFeedT> friend class Context;
 };
 
 struct Trade
@@ -132,6 +131,14 @@ struct Trade
     Price price;
 
     auto operator<=>(const Trade&) const = default;
+};
+
+struct Position
+{
+    Quantity quantity;
+    Price price;
+
+    auto operator<=>(const Position&) const = default;
 };
 
 // One sample of account equity at a given timestamp. The engine records one per

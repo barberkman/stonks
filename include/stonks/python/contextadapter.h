@@ -23,14 +23,14 @@ public:
 
     bool place_market_order(core::MarketOrderParams params) override
     {
-        const auto order = m_ctx.make_market_order(std::move(params));
-        return m_ctx.place_order(order);
+        m_ctx.place_order(params);   // Context forwards to the broker, which builds + stamps the Order
+        return true;
     }
 
     bool place_limit_order(core::LimitOrderParams params) override
     {
-        const auto order = m_ctx.make_limit_order(std::move(params));
-        return m_ctx.place_order(order);
+        m_ctx.place_order(params);
+        return true;
     }
 
 private:

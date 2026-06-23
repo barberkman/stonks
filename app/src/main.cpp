@@ -25,8 +25,8 @@ void run_backtest() {
     stonks::core::Engine engine
     {
         // PythonStrategy{ "ema50strategy", "EMA50Strategy" },
-        // EMA50Strategy{},
-        QMSignalsStrategy{},
+        EMA50Strategy{},
+        // QMSignalsStrategy{},
         stonks::datafeed::KLineFeed{ "app/data/us_1d_filtered.parquet" },
         stonks::broker::BacktestBroker{ starting_cash }
     };

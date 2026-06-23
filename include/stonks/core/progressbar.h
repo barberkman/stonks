@@ -73,6 +73,47 @@ inline std::string render_bar(double frac, int width)
 
 } // namespace detail
 
+// Mode for ProgressBar output: print a live line to the console (default), or
+// stay silent and only track values for an external consumer (e.g. a GUI).
+enum class ProgressOutput { Console, Silent };
+
+// A snapshot of progress for an external consumer to render itself. `percent`
+// is 0..100, or -1 when `total` is unknown; `eta` is 0 when unknown or complete.
+struct ProgressState
+{
+    std::optional<std::size_t> total;
+    std::size_t current{ 0 };
+    int percent{ -1 };
+    std::chrono::nanoseconds elapsed{ 0 };
+    double rate{ 0.0 };
+    std::chrono::nanoseconds eta{ 0 };
+};
+
+// Single source of truth for the derived progress values, shared by the console
+// formatter and ProgressBar::state() so they can never drift apart.
+inline ProgressState compute_progress(std::optional<std::size_t> total,
+                                      std::size_t current,
+                                      std::chrono::nanoseconds elapsed)
+{
+    const double elapsed_s = std::chrono::duration<double>{ elapsed }.count();
+    ProgressState state;
+    state.total = total;
+    state.current = current;
+    state.elapsed = elapsed;
+    state.rate = elapsed_s > 0.0 ? static_cast<double>(current) / elapsed_s : 0.0;
+    if (total) {
+        const std::size_t tot = *total;
+        state.percent = tot > 0 ? static_cast<int>(current * 100 / tot) : 100;
+        if (current > 0 && current < tot && elapsed_s > 0.0) {
+            const double remaining_s = elapsed_s
+                * static_cast<double>(tot - current) / static_cast<double>(current);
+            state.eta = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>{ remaining_s });
+        }
+    }
+    return state;
+}
+
 // Pure + deterministic: no clock, no stream, no TTY. `elapsed` is supplied by
 // the caller so this is directly unit-testable. total == nullopt selects the
 // count-only fallback (for feeds that cannot report a size).
@@ -81,36 +122,24 @@ inline std::string format_progress(std::optional<std::size_t> total,
                                    std::chrono::nanoseconds elapsed,
                                    std::string_view unit = "bars")
 {
-    const double elapsed_s = std::chrono::duration<double>{ elapsed }.count();
-    const double rate = elapsed_s > 0.0
-        ? static_cast<double>(current) / elapsed_s
-        : 0.0;
+    const ProgressState state = compute_progress(total, current, elapsed);
     const int unit_len = static_cast<int>(unit.size());
 
     char buf[512];
     if (total) {
         const std::size_t tot = *total;
-        const int pct = tot > 0 ? static_cast<int>(current * 100 / tot) : 100;
         const double frac = tot > 0
             ? static_cast<double>(current) / static_cast<double>(tot)
             : 1.0;
 
-        std::chrono::nanoseconds eta{ 0 };
-        if (current > 0 && current < tot && elapsed_s > 0.0) {
-            const double remaining_s = elapsed_s
-                * static_cast<double>(tot - current) / static_cast<double>(current);
-            eta = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::duration<double>{ remaining_s });
-        }
-
         std::snprintf(buf, sizeof(buf),
             "%3d%%|%s| %zu/%zu [%s<%s, %.0f %.*s/s]",
-            pct,
+            state.percent,
             detail::render_bar(frac, kBarWidth).c_str(),
             current, tot,
             detail::format_duration(elapsed).c_str(),
-            detail::format_duration(eta).c_str(),
-            rate,
+            detail::format_duration(state.eta).c_str(),
+            state.rate,
             unit_len, unit.data());
         return buf;
     }
@@ -127,7 +156,7 @@ inline std::string format_progress(std::optional<std::size_t> total,
         current,
         unit_len, unit.data(),
         detail::format_duration(elapsed).c_str(),
-        rate,
+        state.rate,
         unit_len, unit.data());
     return buf;
 }
@@ -139,17 +168,18 @@ class ProgressBar
 {
 public:
     explicit ProgressBar(std::optional<std::size_t> total,
-                         std::string_view unit = "bars")
+                         std::string_view unit = "bars",
+                         ProgressOutput mode = ProgressOutput::Console)
     : m_total{ total },
       m_unit{ unit },
-      m_enabled{ detail::stderr_is_tty() },
+      m_console{ mode == ProgressOutput::Console && detail::stderr_is_tty() },
       m_start{ std::chrono::steady_clock::now() }
     {}
 
     void update(std::size_t current)
     {
-        if (!m_enabled) { return; }
         m_current = current;
+        if (!m_console) { return; }
         if (m_total) {
             const std::size_t tot = *m_total;
             const int pct = tot > 0 ? static_cast<int>(current * 100 / tot) : 100;
@@ -164,10 +194,18 @@ public:
 
     void finish()
     {
-        if (!m_enabled) { return; }
+        if (!m_console) { return; }
         render(m_current);
         std::cerr << '\n';
         std::cerr.flush();
+    }
+
+    // Snapshot of the latest progress for an external consumer (e.g. a GUI) to
+    // render itself. Valid in any mode; tracks values even when not printing.
+    ProgressState state() const
+    {
+        return compute_progress(m_total, m_current,
+            std::chrono::steady_clock::now() - m_start);
     }
 
 private:
@@ -185,7 +223,7 @@ private:
 
     std::optional<std::size_t> m_total;
     std::string m_unit;
-    bool m_enabled;
+    bool m_console;
     std::chrono::steady_clock::time_point m_start;
     std::size_t m_current{ 0 };
     int m_last_percent{ -1 };

@@ -44,8 +44,6 @@ struct __attribute__((visibility("hidden"))) PythonStrategy
         }
         m_has_on_start = pybind11::hasattr(m_py_instance, "on_start");
         m_has_on_stop = pybind11::hasattr(m_py_instance, "on_stop");
-        STONKS_LOG("py", "loaded {}:{} has_on_start={} has_on_stop={}",
-            m_module_name, m_class_name, m_has_on_start, m_has_on_stop);
     }
 
     PythonStrategy(PythonStrategy&&) noexcept = default;
@@ -62,9 +60,7 @@ private:
     {
         if (!m_adapter) {
             m_adapter = stonks::python::make_adapter(context);
-            STONKS_LOG("py", "adapter created (first invoke)");
         }
-        STONKS_LOG("py", "invoke {}", method);
         pybind11::gil_scoped_acquire gil;
         try {
             m_py_instance.attr(method)(pybind11::cast(

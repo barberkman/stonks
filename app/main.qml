@@ -3,16 +3,56 @@ import QtQuick.Controls
 import Stonks
 
 ApplicationWindow {
+    id: window
     visible: true
-    width: 400
-    height: 300
-    title: "stonks"
+    width: 1440
+    height: 900
+    minimumWidth: 1120
+    minimumHeight: 680
+    title: "Backtester"
+    color: Theme.bg
 
-    EngineRunner { id: runner }
-
-    Button {
+    Row {
         anchors.fill: parent
-        text: "Run"
-        onClicked: runner.run()
+
+        Sidebar {
+            id: sidebar
+            height: parent.height
+        }
+
+        Column {
+            width: parent.width - sidebar.width
+            height: parent.height
+
+            Header {
+                id: header
+                width: parent.width
+            }
+
+            // content area — swapped by App.view
+            Item {
+                width: parent.width
+                height: parent.height - header.height
+
+                Loader {
+                    anchors.fill: parent
+                    sourceComponent: {
+                        switch (App.view) {
+                        case "backtests": return cBacktests
+                        case "setup": return cSetup
+                        case "running": return cRunning
+                        case "detail": return cDetail
+                        case "logs": return cLogs
+                        }
+                        return cBacktests
+                    }
+                }
+                Component { id: cBacktests; BacktestsView {} }
+                Component { id: cSetup; SetupView {} }
+                Component { id: cRunning; RunningView {} }
+                Component { id: cDetail; DetailView {} }
+                Component { id: cLogs; LogsView {} }
+            }
+        }
     }
 }

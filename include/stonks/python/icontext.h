@@ -21,9 +21,9 @@ public:
     // each with its last `count` bars (bound to Python as one combined DataFrame).
     virtual core::MarketWindow history(int count) const = 0;
 
-    // make_*_order is intentionally not exposed: Order's constructor is
-    // private and friended only to Context, so Python can never hold an
-    // unsubmitted Order. The adapter does make + place in one step.
+    // Orders are placed by params, not constructed on the Python side: the
+    // adapter forwards params straight to the broker (via Context), so Python
+    // never holds an unsubmitted Order.
     virtual bool place_market_order(core::MarketOrderParams params) = 0;
     virtual bool place_limit_order(core::LimitOrderParams params) = 0;
 };

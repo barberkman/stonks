@@ -36,8 +36,6 @@ PyMarketWindow gather(const core::MarketWindow& win)
 
     // GIL is held here (entered in PythonStrategy::invoke). Aggregate counts only
     // — never log per element, and never touch py::object values.
-    STONKS_LOG("py", "gather series={} rows={}", win.series.size(), total);
-
     py::array_t<std::int64_t> timestamp(total);
     py::array_t<double> open(total), high(total), low(total), close(total), volume(total);
     auto* ts = timestamp.mutable_data();
@@ -152,15 +150,12 @@ PYBIND11_MODULE(_core, m)
                 core::OrderSide side,
                 core::Quantity quantity,
                 core::TimeInForce time_in_force) {
-                 STONKS_LOG("py", "place_market_order sym={} side={} qty={:.6f}",
-                     symbol, side == core::OrderSide::Buy ? "Buy" : "Sell", quantity);
                  const bool ok = self.place_market_order(core::MarketOrderParams{
                      std::move(symbol),
                      side,
                      quantity,
                      time_in_force,
                  });
-                 STONKS_LOG("py", "place_market_order -> {}", ok);
                  return ok;
              },
              py::arg("symbol"),
@@ -174,8 +169,6 @@ PYBIND11_MODULE(_core, m)
                 core::Quantity quantity,
                 core::Price price,
                 core::TimeInForce time_in_force) {
-                 STONKS_LOG("py", "place_limit_order sym={} side={} qty={:.6f} price={:.4f}",
-                     symbol, side == core::OrderSide::Buy ? "Buy" : "Sell", quantity, price);
                  const bool ok = self.place_limit_order(core::LimitOrderParams{
                      std::move(symbol),
                      side,
@@ -183,7 +176,6 @@ PYBIND11_MODULE(_core, m)
                      price,
                      time_in_force,
                  });
-                 STONKS_LOG("py", "place_limit_order -> {}", ok);
                  return ok;
              },
              py::arg("symbol"),

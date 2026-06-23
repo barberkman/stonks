@@ -1,7 +1,7 @@
 #pragma once
 
 #include <concepts>
-#include <vector>
+#include <unordered_map>
 
 #include "stonks/core/types.h"
 
@@ -18,8 +18,11 @@ concept HasEquity = requires(const BrokerT& broker) {
 };
 
 template <class BrokerT>
-concept HasPlaceOrder = requires(BrokerT& broker, const Order& order) {
-    { broker.place_order(order) } -> std::same_as<bool>;
+concept HasPlaceOrder = requires (BrokerT& broker, 
+                                  const MarketOrderParams& market, 
+                                  const LimitOrderParams& limit) {
+    { broker.place_order(market) } -> std::same_as<OrderID>;
+    { broker.place_order(limit) } -> std::same_as<OrderID>;
 };
 
 template <class BrokerT>
@@ -29,12 +32,12 @@ concept HasOnTickBar = requires(BrokerT& broker, const KLine& bar) {
 
 template <class BrokerT>
 concept HasTrades = requires(const BrokerT& broker) {
-    { broker.trades() } -> std::convertible_to<std::vector<Trade>>;
+    { broker.trades() } -> std::convertible_to<std::unordered_map<TradeID, Trade>>;
 };
 
 template <class BrokerT>
 concept HasOrders = requires(const BrokerT& broker) {
-    { broker.orders() } -> std::convertible_to<std::vector<Order>>;
+    { broker.orders() } -> std::convertible_to<std::unordered_map<OrderID, Order>>;
 };
 
 template <class BrokerT>

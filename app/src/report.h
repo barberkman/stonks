@@ -8,8 +8,8 @@
 #include <ios>
 #include <optional>
 #include <ostream>
-#include <span>
 #include <unordered_map>
+#include <vector>
 
 #include "stonks/core/log.h"
 #include "stonks/core/types.h"
@@ -20,15 +20,15 @@
 // engine/template dependency — so the metrics are directly unit-testable.
 namespace stonks::app {
 
-// Everything the reporter needs, assembled by the caller after a run. The spans
-// view storage owned by the engine/broker and must outlive the call.
+// Everything the reporter needs, assembled by the caller after a run. Owns its
+// trade/order/equity-curve data, so it is safe to store and outlive the inputs.
 struct ReportInput
 {
     core::Balance starting_cash;
     std::size_t bars_processed;
-    std::span<const core::Trade> trades;
-    std::span<const core::Order> orders;
-    std::span<const core::EquityPoint> equity_curve;
+    std::vector<core::Trade> trades;
+    std::vector<core::Order> orders;
+    std::vector<core::EquityPoint> equity_curve;
     core::Balance ending_cash;
     core::Balance ending_equity;
     std::chrono::nanoseconds elapsed;

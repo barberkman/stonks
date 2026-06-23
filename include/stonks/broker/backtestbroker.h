@@ -14,22 +14,27 @@ public:
 
     core::Balance cash() const;
     core::Balance equity() const;
-    const std::vector<core::Trade>& trades() const;
-    const std::vector<core::Order>& orders() const;
+    const std::unordered_map<core::TradeID, core::Trade>& trades() const;
+    const std::unordered_map<core::OrderID, core::Order>& orders() const;
 
-    bool place_order(const core::Order& order);
+    core::OrderID place_order(const core::MarketOrderParams& parameters);
+    core::OrderID place_order(const core::LimitOrderParams& parameters);
+
     void on_tick(const core::KLine& bar);
 
 private:
-    bool try_fill(const core::Order& order, const core::KLine& bar);
+    core::OrderID register_order(core::Order order);
 
     core::Balance m_cash;
-    std::unordered_map<core::Symbol, core::Quantity> m_positions;
-    std::unordered_map<core::Symbol, core::Price> m_last_price;
-    std::vector<core::Order> m_open_orders;
-    std::vector<core::Order> m_order_log;
-    std::vector<core::Trade> m_trades;
-    core::TradeID m_next_trade_id{ 1 };
+    core::Timestamp m_now;
+    std::unordered_map<core::Symbol, core::Position> m_positions;
+    std::unordered_map<core::Symbol, core::Price> m_last_prices;
+    std::unordered_map<core::OrderID, core::Order> m_orders;
+    std::unordered_map<core::TradeID, core::Trade> m_trades;
+    std::vector<core::OrderID> m_open_orders;
+    
+    core::OrderID m_next_order_id;
+    core::TradeID m_next_trade_id;
 };
 
 } // namespace stonks::broker

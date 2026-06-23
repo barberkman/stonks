@@ -96,4 +96,62 @@ TEST(ProgressBar, UnitIsCustomizable) {
     EXPECT_NE(s.find("ticks/s"), std::string::npos);
 }
 
+// --- ProgressState snapshot (consumed by a GUI) ------------------------------
+
+TEST(ProgressState, ComputeKnownTotalDerivesPercentRateAndEta) {
+    // 20/100 in 2s -> 20%, 10 bars/s, 80 remaining at 10/s -> 8s ETA.
+    const auto st = compute_progress(100, 20, 2s);
+    ASSERT_TRUE(st.total.has_value());
+    EXPECT_EQ(*st.total, 100u);
+    EXPECT_EQ(st.current, 20u);
+    EXPECT_EQ(st.percent, 20);
+    EXPECT_DOUBLE_EQ(st.rate, 10.0);
+    EXPECT_EQ(st.eta, 8s);
+    EXPECT_EQ(st.elapsed, 2s);
+}
+
+TEST(ProgressState, ComputeZeroTotalIsComplete) {
+    const auto st = compute_progress(0, 0, 1s);
+    EXPECT_EQ(st.percent, 100);
+    EXPECT_EQ(st.eta, 0ns);
+}
+
+TEST(ProgressState, ComputeUnknownTotalHasNoPercentOrEta) {
+    const auto st = compute_progress(std::nullopt, 1500, 3s);
+    EXPECT_FALSE(st.total.has_value());
+    EXPECT_EQ(st.percent, -1);
+    EXPECT_EQ(st.eta, 0ns);
+    EXPECT_DOUBLE_EQ(st.rate, 500.0); // 1500 / 3s
+    EXPECT_EQ(st.current, 1500u);
+}
+
+TEST(ProgressState, DefaultIsZeroedAndUnknown) {
+    const ProgressState st;
+    EXPECT_FALSE(st.total.has_value());
+    EXPECT_EQ(st.current, 0u);
+    EXPECT_EQ(st.percent, -1);
+}
+
+// update() records current/total in any mode (even when not rendering, as under
+// ctest where stderr is not a TTY), so state() is valid for a silent GUI.
+TEST(ProgressBar, StateTracksCurrentAndTotalInConsoleMode) {
+    ProgressBar bar{ 100, "bars", ProgressOutput::Console };
+    bar.update(40);
+    const auto st = bar.state();
+    ASSERT_TRUE(st.total.has_value());
+    EXPECT_EQ(*st.total, 100u);
+    EXPECT_EQ(st.current, 40u);
+    EXPECT_EQ(st.percent, 40);
+}
+
+TEST(ProgressBar, StateTracksCurrentAndTotalInSilentMode) {
+    ProgressBar bar{ 100, "bars", ProgressOutput::Silent };
+    bar.update(75);
+    const auto st = bar.state();
+    ASSERT_TRUE(st.total.has_value());
+    EXPECT_EQ(*st.total, 100u);
+    EXPECT_EQ(st.current, 75u);
+    EXPECT_EQ(st.percent, 75);
+}
+
 } // namespace stonks::core

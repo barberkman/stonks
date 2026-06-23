@@ -179,11 +179,6 @@ void KLineFeed::build(std::vector<Row> rows)
         }
     }
     m_group_start.push_back(n);
-
-    STONKS_LOG("feed", "build: rows={} symbols={} groups={} resolution_ms={}",
-        n, m_id_to_ticker.size(),
-        m_group_start.empty() ? 0u : static_cast<std::uint32_t>(m_group_start.size() - 1),
-        m_resolution.count());
 }
 
 std::optional<core::Timestamp> KLineFeed::next_timestamp() const
@@ -196,7 +191,6 @@ void KLineFeed::advance()
 {
     if (m_group + 1 < m_group_start.size()) {
         ++m_group;
-        STONKS_LOG("feed", "advance -> group={}/{}", m_group, m_group_start.size() - 1);
     }
 }
 
@@ -205,7 +199,6 @@ std::vector<core::KLine> KLineFeed::current_bars() const
     std::vector<core::KLine> bars;
     const std::uint32_t begin = m_group_start[m_group];
     const std::uint32_t end = m_group_start[m_group + 1];
-    STONKS_LOG("feed", "current_bars group={} bars={}", m_group, end - begin);
     bars.reserve(end - begin);
     for (std::uint32_t k = begin; k < end; ++k) {
         const std::uint32_t r = m_order[k];
@@ -245,7 +238,6 @@ core::MarketWindow KLineFeed::window(int count) const
     core::MarketWindow w;
     const std::uint32_t begin = m_group_start[m_group];
     const std::uint32_t end = m_group_start[m_group + 1];
-    STONKS_LOG("feed", "window count={} group={} series={}", count, m_group, end - begin);
     w.series.reserve(end - begin);
     for (std::uint32_t k = begin; k < end; ++k) {
         const std::uint32_t r = m_order[k];

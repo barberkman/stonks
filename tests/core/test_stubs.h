@@ -18,19 +18,38 @@ namespace stonks::core::test {
 struct StubBroker
 {
     std::vector<Order>* placed{ nullptr };
-    std::vector<Trade> m_trades;
-    std::vector<Order> m_orders;
+    std::unordered_map<TradeID, Trade> m_trades;
+    std::unordered_map<OrderID, Order> m_orders;
+    OrderID next_id{ 1 };
 
     Balance cash() const { return {}; }
     Balance equity() const { return {}; }
-    const std::vector<Trade>& trades() const { return m_trades; }
-    const std::vector<Order>& orders() const { return m_orders; }
-    bool place_order(const Order& o)
+    const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
+    const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
+
+    OrderID place_order(const MarketOrderParams& p)
     {
-        if (placed) { placed->push_back(o); }
-        return true;
+        return record(Order{ next_id, Timestamp{}, p.symbol, p.side,
+                             OrderType::Market, OrderStatus::Open,
+                             std::nullopt, p.quantity, p.time_in_force });
+    }
+    OrderID place_order(const LimitOrderParams& p)
+    {
+        return record(Order{ next_id, Timestamp{}, p.symbol, p.side,
+                             OrderType::Limit, OrderStatus::Open,
+                             p.price, p.quantity, p.time_in_force });
     }
     void on_tick(const KLine&) {}
+
+private:
+    OrderID record(Order o)
+    {
+        const OrderID id = o.id;
+        if (placed) { placed->push_back(o); }
+        m_orders.try_emplace(id, std::move(o));
+        ++next_id;
+        return id;
+    }
 };
 
 // Columnar test feed mirroring KLineFeed's per-timestamp model: tests assign

@@ -4,10 +4,41 @@ qt_add_executable(app
     src/main.cpp
 )
 
+set_source_files_properties(qml/Theme.qml qml/App.qml PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+)
+
 qt_add_qml_module(app
     URI Stonks
     VERSION 1.0
-    QML_FILES main.qml
+    QML_FILES
+        main.qml
+        qml/Theme.qml
+        qml/App.qml
+        qml/Header.qml
+        qml/Sidebar.qml
+        qml/components/NavButton.qml
+        qml/components/AccentButton.qml
+        qml/components/GhostButton.qml
+        qml/components/Page.qml
+        qml/components/MetricCell.qml
+        qml/components/StatCell.qml
+        qml/components/EquityChart.qml
+        qml/components/DrawdownChart.qml
+        qml/components/Sparkline.qml
+        qml/components/CandleChart.qml
+        qml/components/StyledSelect.qml
+        qml/components/ParamField.qml
+        qml/components/Spinner.qml
+        qml/views/BacktestsView.qml
+        qml/views/LogsView.qml
+        qml/views/DetailView.qml
+        qml/views/ReportView.qml
+        qml/views/TradesView.qml
+        qml/views/SetupView.qml
+        qml/views/RunningView.qml
+        qml/js/format.js
+        qml/js/mockdata.js
 )
 
 target_include_directories(app PRIVATE

@@ -51,8 +51,6 @@ struct EMA50Strategy
                 ++state.seed_count;
                 if (state.seed_count < PERIOD) continue;
                 state.ema = state.seed_sum / PERIOD;
-                STONKS_LOG("ema50", "sym={} seeded ema={:.4f} after {} bars",
-                    symbol, *state.ema, PERIOD);
             }
             else
             {
@@ -64,30 +62,25 @@ struct EMA50Strategy
             {
                 const auto qty = context.equity() * POSITION_FRACTION / close;
                 if (qty <= 0.0) continue;
-                const auto order = context.make_market_order(stonks::core::MarketOrderParams{
+                // held_quantity is tracked optimistically on placement, not on a
+                // confirmed fill — the broker may still reject (e.g. insufficient cash).
+                context.place_order(stonks::core::MarketOrderParams{
                     .symbol = symbol,
                     .side = stonks::core::OrderSide::Buy,
                     .quantity = qty,
                     .time_in_force = stonks::core::TimeInForce::GTC,
                 });
-                STONKS_LOG("ema50", "sym={} ENTER close={:.4f} > ema={:.4f} qty={:.6f} held_before={:.6f}",
-                    symbol, close, *state.ema, qty, state.held_quantity);
-                // NOTE: place_order always returns true (order only queued, not
-                // filled). held_quantity is updated on placement, not on a
-                // confirmed fill — see verification findings.
-                if (context.place_order(order)) state.held_quantity = qty;
+                state.held_quantity = qty;
             }
             else if (close < *state.ema && state.held_quantity > 0.0)
             {
-                const auto order = context.make_market_order(stonks::core::MarketOrderParams{
+                context.place_order(stonks::core::MarketOrderParams{
                     .symbol = symbol,
                     .side = stonks::core::OrderSide::Sell,
                     .quantity = state.held_quantity,
                     .time_in_force = stonks::core::TimeInForce::GTC,
                 });
-                STONKS_LOG("ema50", "sym={} EXIT close={:.4f} < ema={:.4f} qty={:.6f}",
-                    symbol, close, *state.ema, state.held_quantity);
-                if (context.place_order(order)) state.held_quantity = 0.0;
+                state.held_quantity = 0.0;
             }
         }
     }
