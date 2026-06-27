@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "stonks/core/context.h"
@@ -21,16 +22,18 @@ public:
 
     core::MarketWindow history(int count) const override { return m_ctx.history(count); }
 
-    bool place_market_order(core::MarketOrderParams params) override
+    core::OrderID place_market_order(core::MarketOrderParams params,
+                                     std::optional<core::OrderID> parent) override
     {
-        m_ctx.place_order(params);   // Context forwards to the broker, which builds + stamps the Order
-        return true;
+        // Context forwards to the broker, which builds + stamps the Order and
+        // returns its id; pass `parent` through for bracket/OCO linkage.
+        return m_ctx.place_order(params, parent);
     }
 
-    bool place_limit_order(core::LimitOrderParams params) override
+    core::OrderID place_limit_order(core::LimitOrderParams params,
+                                    std::optional<core::OrderID> parent) override
     {
-        m_ctx.place_order(params);
-        return true;
+        return m_ctx.place_order(params, parent);
     }
 
 private:

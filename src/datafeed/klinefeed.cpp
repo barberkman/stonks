@@ -1,19 +1,21 @@
 #include "stonks/datafeed/klinefeed.h"
 
 #include <algorithm>
+#include <charconv>
+#include <chrono>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/compute/api.h>
 #include <parquet/arrow/reader.h>
-
-#include "stonks/core/log.h"
 
 namespace {
 
@@ -44,11 +46,65 @@ std::shared_ptr<arrow::ChunkedArray> column_as(
     return datum.chunked_array();
 }
 
+// Parse a UTC date string ("YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS") to epoch ms.
+// Throws std::runtime_error on any malformed input.
+std::int64_t parse_datetime_ms(std::string_view s)
+{
+    auto fail = [&] { throw std::runtime_error{ "invalid datetime: " + std::string{ s } }; };
+
+    // Read exactly `width` digits at `pos` into an int, advancing `pos`.
+    auto read_int = [&](std::size_t& pos, std::size_t width) {
+        if (pos + width > s.size()) { fail(); }
+        int value = 0;
+        const char* first = s.data() + pos;
+        const char* last = first + width;
+        const auto [ptr, ec] = std::from_chars(first, last, value);
+        if (ec != std::errc{} || ptr != last) { fail(); }
+        pos += width;
+        return value;
+    };
+    auto expect = [&](std::size_t& pos, char c) {
+        if (pos >= s.size() || s[pos] != c) { fail(); }
+        ++pos;
+    };
+
+    std::size_t pos = 0;
+    const int year = read_int(pos, 4);
+    expect(pos, '-');
+    const int month = read_int(pos, 2);
+    expect(pos, '-');
+    const int day = read_int(pos, 2);
+
+    int hour = 0, minute = 0, second = 0;
+    if (pos < s.size()) {
+        expect(pos, 'T');
+        hour = read_int(pos, 2);
+        expect(pos, ':');
+        minute = read_int(pos, 2);
+        expect(pos, ':');
+        second = read_int(pos, 2);
+    }
+    if (pos != s.size()) { fail(); }
+
+    const std::chrono::year_month_day ymd{
+        std::chrono::year{ year },
+        std::chrono::month{ static_cast<unsigned>(month) },
+        std::chrono::day{ static_cast<unsigned>(day) } };
+    if (!ymd.ok() || hour > 23 || minute > 59 || second > 59) { fail(); }
+
+    const auto tp = std::chrono::time_point_cast<std::chrono::milliseconds>(
+                        std::chrono::sys_days{ ymd })
+        + std::chrono::hours{ hour } + std::chrono::minutes{ minute }
+        + std::chrono::seconds{ second };
+    return tp.time_since_epoch().count();
+}
+
 } // namespace
 
 namespace stonks::datafeed {
 
 KLineFeed::KLineFeed(std::filesystem::path parquet_path,
+                     Filter filter,
                      core::Timestamp::duration resolution)
 : m_resolution{ resolution }
 {
@@ -97,17 +153,34 @@ KLineFeed::KLineFeed(std::filesystem::path parquet_path,
         }
     }
 
-    build(std::move(rows));
+    build(std::move(rows), filter);
 }
 
-KLineFeed::KLineFeed(std::vector<Row> rows, core::Timestamp::duration resolution)
+KLineFeed::KLineFeed(std::vector<Row> rows, Filter filter, core::Timestamp::duration resolution)
 : m_resolution{ resolution }
 {
-    build(std::move(rows));
+    build(std::move(rows), filter);
 }
 
-void KLineFeed::build(std::vector<Row> rows)
+void KLineFeed::build(std::vector<Row> rows, const Filter& filter)
 {
+    // 0. Apply the optional filter: drop rows outside the half-open [start, end)
+    //    range or not in the symbol allowlist. Everything downstream (interning,
+    //    sorting, SoA fill) is unchanged.
+    const auto lo = filter.start.empty()
+        ? std::optional<std::int64_t>{} : std::optional{ parse_datetime_ms(filter.start) };
+    const auto hi = filter.end.empty()
+        ? std::optional<std::int64_t>{} : std::optional{ parse_datetime_ms(filter.end) };
+    const std::unordered_set<std::string_view> allowed(
+        filter.symbols.begin(), filter.symbols.end());
+
+    std::erase_if(rows, [&](const Row& r) {
+        if (lo && r.timestamp_ms < *lo) { return true; }
+        if (hi && r.timestamp_ms >= *hi) { return true; }
+        if (!allowed.empty() && !allowed.contains(std::string_view{ r.symbol })) { return true; }
+        return false;
+    });
+
     const auto n = static_cast<std::uint32_t>(rows.size());
 
     // 1. Intern symbols by first appearance (file order) -> SymbolID.

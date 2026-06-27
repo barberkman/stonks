@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "stonks/core/types.h"
 
 namespace stonks::python {
@@ -23,9 +25,13 @@ public:
 
     // Orders are placed by params, not constructed on the Python side: the
     // adapter forwards params straight to the broker (via Context), so Python
-    // never holds an unsubmitted Order.
-    virtual bool place_market_order(core::MarketOrderParams params) = 0;
-    virtual bool place_limit_order(core::LimitOrderParams params) = 0;
+    // never holds an unsubmitted Order. The broker-assigned OrderID is returned;
+    // `parent` links this order to an entry (children stay dormant until the
+    // parent fills, then OCO-cancel their siblings) — nullopt for a standalone order.
+    virtual core::OrderID place_market_order(core::MarketOrderParams params,
+                                             std::optional<core::OrderID> parent) = 0;
+    virtual core::OrderID place_limit_order(core::LimitOrderParams params,
+                                            std::optional<core::OrderID> parent) = 0;
 };
 
 } // namespace stonks::python

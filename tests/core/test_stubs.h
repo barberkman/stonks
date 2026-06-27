@@ -27,15 +27,15 @@ struct StubBroker
     const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
     const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
 
-    OrderID place_order(const MarketOrderParams& p)
+    OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
-        return record(Order{ next_id, Timestamp{}, p.symbol, p.side,
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Market, OrderStatus::Open,
                              std::nullopt, p.quantity, p.time_in_force });
     }
-    OrderID place_order(const LimitOrderParams& p)
+    OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
-        return record(Order{ next_id, Timestamp{}, p.symbol, p.side,
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Limit, OrderStatus::Open,
                              p.price, p.quantity, p.time_in_force });
     }

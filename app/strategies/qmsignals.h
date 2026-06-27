@@ -86,13 +86,53 @@ struct QMSignalsStrategy
 
     void on_tick(auto& ctx)
     {
+        static constexpr double position_fraction{ 0.02 };
+
         for (const auto& series : ctx.history(lookback()).series) {
             const stonks::core::Symbol sym{ series.symbol };
             auto sigs = scan(series.bars);
+
+            /*
             for (const auto& s : sigs) {
                 std::cout << std::format("[qm] {:%F %T} {} {} entry={:.4f} stop={:.4f} sell={:.4f}\n",
-                    as_time(s.timestamp), s.setup, sym, s.entry, s.stop, s.sell);
+                as_time(s.timestamp), s.setup, sym, s.entry, s.stop, s.sell);
             }
+            */
+
+            if (!sigs.empty()) {
+                const auto& s = sigs.front();
+                const bool is_long = s.stop < s.entry;                 // long setups stop below entry
+                const double qty = ctx.equity() * position_fraction / s.entry;
+                if (qty > 0.0) {
+                    // Enter order
+                    ctx.place_order(stonks::core::LimitOrderParams{
+                        .symbol = sym,
+                        .side = is_long ? stonks::core::OrderSide::Buy
+                                        : stonks::core::OrderSide::Sell,
+                        .quantity = qty,
+                        .price = s.entry
+                    });
+
+                    // Stop loss order
+                    ctx.place_order(stonks::core::LimitOrderParams{
+                        .symbol = sym,
+                        .side = is_long ? stonks::core::OrderSide::Sell
+                                        : stonks::core::OrderSide::Buy,
+                        .quantity = qty,
+                        .price = s.stop
+                    });
+
+                    // Take profit order
+                    ctx.place_order(stonks::core::LimitOrderParams{
+                        .symbol = sym,
+                        .side = is_long ? stonks::core::OrderSide::Sell
+                                        : stonks::core::OrderSide::Buy,
+                        .quantity = qty,
+                        .price = s.sell
+                    });
+                }
+            }
+
             m_last[sym] = std::move(sigs);
         }
     }

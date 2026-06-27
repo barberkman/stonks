@@ -71,20 +71,21 @@ TEST(ContextAdapter, PlaceMarketOrderBuildsAndForwards)
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    const bool ok = adapter.place_market_order(core::MarketOrderParams{
+    const core::OrderID id = adapter.place_market_order(core::MarketOrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Buy,
         .quantity = 1.5,
         .time_in_force = core::TimeInForce::GTC,
-    });
+    }, std::nullopt);
 
-    EXPECT_TRUE(ok);
+    EXPECT_EQ(id, 1u);                          // broker-assigned OrderID, returned through
     ASSERT_EQ(placed.size(), 1u);
     EXPECT_EQ(placed[0].symbol, "TEST");
     EXPECT_EQ(placed[0].side, core::OrderSide::Buy);
     EXPECT_EQ(placed[0].quantity, 1.5);
     EXPECT_EQ(placed[0].type, core::OrderType::Market);
     EXPECT_FALSE(placed[0].price.has_value());
+    EXPECT_FALSE(placed[0].parent_id.has_value());
 }
 
 TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
@@ -97,15 +98,15 @@ TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    const bool ok = adapter.place_limit_order(core::LimitOrderParams{
+    const core::OrderID id = adapter.place_limit_order(core::LimitOrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Sell,
         .quantity = 2.5,
         .price = 99.5,
         .time_in_force = core::TimeInForce::GTC,
-    });
+    }, std::nullopt);
 
-    EXPECT_TRUE(ok);
+    EXPECT_EQ(id, 1u);
     ASSERT_EQ(placed.size(), 1u);
     EXPECT_EQ(placed[0].symbol, "TEST");
     EXPECT_EQ(placed[0].side, core::OrderSide::Sell);
@@ -113,6 +114,38 @@ TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
     EXPECT_EQ(placed[0].type, core::OrderType::Limit);
     ASSERT_TRUE(placed[0].price.has_value());
     EXPECT_EQ(*placed[0].price, 99.5);
+    EXPECT_FALSE(placed[0].parent_id.has_value());
+}
+
+TEST(ContextAdapter, PlaceOrderForwardsParentForBrackets)
+{
+    StubFeed feed;
+    StubBroker broker;
+    std::vector<core::Order> placed;
+    broker.placed = &placed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    // Entry has no parent; its returned id brackets the protective leg.
+    const core::OrderID entry = adapter.place_market_order(core::MarketOrderParams{
+        .symbol = "TEST",
+        .side = core::OrderSide::Buy,
+        .quantity = 1.0,
+    }, std::nullopt);
+    const core::OrderID child = adapter.place_limit_order(core::LimitOrderParams{
+        .symbol = "TEST",
+        .side = core::OrderSide::Sell,
+        .quantity = 1.0,
+        .price = 110.0,
+    }, entry);
+
+    EXPECT_EQ(entry, 1u);
+    EXPECT_EQ(child, 2u);
+    ASSERT_EQ(placed.size(), 2u);
+    EXPECT_FALSE(placed[0].parent_id.has_value());
+    ASSERT_TRUE(placed[1].parent_id.has_value());
+    EXPECT_EQ(*placed[1].parent_id, entry);
 }
 
 TEST(ContextAdapter, MakeAdapterDeducesTemplateArgs)

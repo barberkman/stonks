@@ -1,13 +1,14 @@
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <sstream>
 #include <string>
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/operators.h>
+#include <pybind11/stl.h>
 
-#include "stonks/core/log.h"
 #include "stonks/core/types.h"
 #include "stonks/python/icontext.h"
 
@@ -149,38 +150,44 @@ PYBIND11_MODULE(_core, m)
                 core::Symbol symbol,
                 core::OrderSide side,
                 core::Quantity quantity,
-                core::TimeInForce time_in_force) {
-                 const bool ok = self.place_market_order(core::MarketOrderParams{
+                core::TimeInForce time_in_force,
+                std::optional<core::OrderID> parent) {
+                 return self.place_market_order(core::MarketOrderParams{
                      std::move(symbol),
                      side,
                      quantity,
                      time_in_force,
-                 });
-                 return ok;
+                 }, parent);
              },
              py::arg("symbol"),
              py::arg("side"),
              py::arg("quantity"),
-             py::arg("time_in_force") = core::TimeInForce::GTC)
+             py::arg("time_in_force") = core::TimeInForce::GTC,
+             py::arg("parent") = std::optional<core::OrderID>{},
+             "Place a market order; returns its OrderID. Pass `parent` (an entry's "
+             "OrderID) to attach this as a bracket child.")
         .def("place_limit_order",
              [](stonks_py::IContext& self,
                 core::Symbol symbol,
                 core::OrderSide side,
                 core::Quantity quantity,
                 core::Price price,
-                core::TimeInForce time_in_force) {
-                 const bool ok = self.place_limit_order(core::LimitOrderParams{
+                core::TimeInForce time_in_force,
+                std::optional<core::OrderID> parent) {
+                 return self.place_limit_order(core::LimitOrderParams{
                      std::move(symbol),
                      side,
                      quantity,
                      price,
                      time_in_force,
-                 });
-                 return ok;
+                 }, parent);
              },
              py::arg("symbol"),
              py::arg("side"),
              py::arg("quantity"),
              py::arg("price"),
-             py::arg("time_in_force") = core::TimeInForce::GTC);
+             py::arg("time_in_force") = core::TimeInForce::GTC,
+             py::arg("parent") = std::optional<core::OrderID>{},
+             "Place a limit order; returns its OrderID. Pass `parent` (an entry's "
+             "OrderID) to attach this as a bracket child.");
 }

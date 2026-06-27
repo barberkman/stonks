@@ -7,7 +7,6 @@
 #include "stonks/core/broker.h"
 #include "stonks/core/clock.h"
 #include "stonks/core/datafeed.h"
-#include "stonks/core/log.h"
 #include "stonks/core/types.h"
 
 namespace stonks::core {
@@ -35,24 +34,17 @@ public:
     MarketWindow history(int count) const
     {
         MarketWindow w = m_dataFeed.window(count);
-        STONKS_LOG("ctx", "history count={} -> series={} ts={}",
-            count, w.size(), m_clock.now().value.time_since_epoch().count());
         return w;
     }
 
-    OrderID place_order(const MarketOrderParams& parameters)
+    OrderID place_order(const MarketOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
     {
-        STONKS_LOG("ctx", "place market sym={} side={} qty={:.6f}",
-            parameters.symbol, parameters.side == OrderSide::Buy ? "Buy" : "Sell", parameters.quantity);
-        return m_broker.place_order(parameters);
+        return m_broker.place_order(parameters, parent);
     }
 
-    OrderID place_order(const LimitOrderParams& parameters)
+    OrderID place_order(const LimitOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
     {
-        STONKS_LOG("ctx", "place limit sym={} side={} qty={:.6f} price={:.4f}",
-            parameters.symbol, parameters.side == OrderSide::Buy ? "Buy" : "Sell",
-            parameters.quantity, parameters.price);
-        return m_broker.place_order(parameters);
+        return m_broker.place_order(parameters, parent);
     }
 
 private:

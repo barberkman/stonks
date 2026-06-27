@@ -5,11 +5,24 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "stonks/core/types.h"
 
 namespace stonks::datafeed {
+
+// Optional row filter applied at KLineFeed construction. Bounds are UTC date
+// strings ("YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS"), half-open [start, end). An
+// empty member is no constraint: "" bounds are unbounded, an empty symbol list
+// admits all symbols. The default member initializers make partial designated
+// initialization (e.g. { .start = "2024-01-01" }) warning-free.
+struct Filter
+{
+    std::string start{};                  // inclusive lower bound, "" = unbounded
+    std::string end{};                    // exclusive upper bound, "" = unbounded
+    std::vector<core::Symbol> symbols{};  // allowlist; empty = all symbols
+};
 
 // Columnar OHLCV feed. Bars are stored struct-of-arrays with each symbol's rows
 // laid out contiguously and chronologically, so per-symbol lookback is a O(1)
@@ -29,12 +42,14 @@ public:
     };
 
     explicit KLineFeed(std::filesystem::path parquet_path,
+                       Filter filter = {},
                        core::Timestamp::duration resolution = std::chrono::days{ 1 });
 
     // In-memory construction (testing): rows in file order, run through the same
     // interning, per-symbol grouping, and global time ordering as the Parquet
     // path.
     explicit KLineFeed(std::vector<Row> rows,
+                       Filter filter = {},
                        core::Timestamp::duration resolution = std::chrono::days{ 1 });
 
     // Iteration is per timestamp: next_timestamp() reports the current timestamp,
@@ -57,7 +72,7 @@ public:
     std::size_t size() const { return m_order.size(); }
 
 private:
-    void build(std::vector<Row> rows);
+    void build(std::vector<Row> rows, const Filter& filter);
 
     // Zero-copy view of physical row r's symbol, last `count` bars ending at r.
     core::SeriesView series_for(std::uint32_t r, int count) const;

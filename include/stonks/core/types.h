@@ -9,7 +9,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace stonks::core {
@@ -40,7 +39,8 @@ enum class OrderStatus : std::uint8_t
 {
     Open,
     Filled,
-    Rejected
+    Rejected,
+    Cancelled
 };
 
 enum class TimeInForce : std::uint8_t
@@ -108,6 +108,7 @@ struct MarketWindow
 struct Order
 {
     OrderID id;
+    std::optional<OrderID> parent_id;
     Timestamp timestamp;
     Symbol symbol;
     OrderSide side;
@@ -137,6 +138,7 @@ struct Position
 {
     Quantity quantity;
     Price price;
+    OrderID entry_id;
 
     auto operator<=>(const Position&) const = default;
 };

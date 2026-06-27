@@ -9,7 +9,6 @@
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 
-#include "stonks/core/log.h"
 #include "stonks/python/contextadapter.h"
 #include "stonks/python/embeddedpython.h"
 #include "stonks/python/icontext.h"

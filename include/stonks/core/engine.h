@@ -10,7 +10,6 @@
 #include "stonks/core/clock.h"
 #include "stonks/core/context.h"
 #include "stonks/core/datafeed.h"
-#include "stonks/core/log.h"
 #include "stonks/core/progressbar.h"
 #include "stonks/core/strategy.h"
 #include "stonks/core/types.h"
@@ -38,20 +37,14 @@ public:
         using ContextT = Context<BrokerT, DataFeedT>;
         ContextT context{ m_broker, m_dataFeed, m_clock };
 
-        STONKS_LOG("engine", "run start: starting_cash={:.4f}", m_broker.cash());
-
         // Start the strategy
         if constexpr (HasOnStart<StrategyT, ContextT>) {
-            STONKS_LOG("engine", "on_start invoked");
             m_strategy.on_start(context);
-        } else {
-            STONKS_LOG("engine", "on_start: not defined by strategy");
         }
 
         // Create progress bar
         std::optional<std::size_t> total;
         if constexpr (HasSize<DataFeedT>) { total = m_dataFeed.size(); }
-        STONKS_LOG("engine", "feed total bars={}", total ? *total : 0);
         m_progress.emplace(total, "bars", m_progress_output);
 
         // Main loop
@@ -67,16 +60,12 @@ public:
                 ++m_bars_processed;
                 ++bars_this_ts;
             }
-            STONKS_LOG("engine", "tick ts={} bars={} total_bars={}", ts_ms, bars_this_ts, m_bars_processed);
 
             // Update the progress
             m_progress->update(m_bars_processed);
 
             const Balance eq = m_broker.equity();
             m_equity_curve.push_back(EquityPoint{ *ts, eq });
-            STONKS_LOG("engine", "equity ts={} equity={:.4f} cash={:.4f}", ts_ms, eq, m_broker.cash());
-
-            STONKS_LOG("engine", "strategy on_tick ts={}", ts_ms);
             m_strategy.on_tick(context);
             m_dataFeed.advance();
         }
@@ -84,14 +73,8 @@ public:
 
         // Stop the strategy
         if constexpr (HasOnStop<StrategyT, ContextT>) {
-            STONKS_LOG("engine", "on_stop invoked");
             m_strategy.on_stop(context);
-        } else {
-            STONKS_LOG("engine", "on_stop: not defined by strategy");
         }
-
-        STONKS_LOG("engine", "run end: total_bars={} trades={} cash={:.4f} equity={:.4f}",
-            m_bars_processed, m_broker.trades().size(), m_broker.cash(), m_broker.equity());
     }
 
     // Run history, for an external reporter to consume after run(). The broker

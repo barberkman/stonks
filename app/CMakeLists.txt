@@ -46,6 +46,11 @@ target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# Qt's lowercase `slots`/`signals`/`emit` keyword macros collide with CPython's
+# object.h (`PyType_Slot *slots;`) once pythonstrategy.h drags pybind11/Python.h
+# into this target. Disable them; the app uses only the Q_OBJECT/Q_INVOKABLE forms.
+target_compile_definitions(app PRIVATE QT_NO_KEYWORDS)
+
 target_link_libraries(app PRIVATE
     stonks_core
     stonks_broker

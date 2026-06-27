@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stonks/core/log.h>
 #include <stonks/core/types.h>
 
 #include <optional>

@@ -2,6 +2,7 @@
 
 #include <unordered_map>
 #include <vector>
+#include <optional>
 
 #include "stonks/core/types.h"
 
@@ -17,13 +18,20 @@ public:
     const std::unordered_map<core::TradeID, core::Trade>& trades() const;
     const std::unordered_map<core::OrderID, core::Order>& orders() const;
 
-    core::OrderID place_order(const core::MarketOrderParams& parameters);
-    core::OrderID place_order(const core::LimitOrderParams& parameters);
+    core::OrderID place_order(const core::MarketOrderParams& parameters,
+                              std::optional<core::OrderID> parent = std::nullopt);
+    core::OrderID place_order(const core::LimitOrderParams& parameters,
+                              std::optional<core::OrderID> parent = std::nullopt);
 
     void on_tick(const core::KLine& bar);
 
 private:
     core::OrderID register_order(core::Order order);
+
+    // Cancel every still-open order in `parent`'s subtree (children, grandchildren, ...),
+    // skipping `keep` (the order currently being filled, which lives in the same subtree).
+    void cancel_subtree(core::OrderID parent, std::vector<core::OrderID>& to_remove,
+                        core::OrderID keep = 0);
 
     core::Balance m_cash;
     core::Timestamp m_now;

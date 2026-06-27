@@ -12,8 +12,7 @@
 #include "stonks/datafeed/klinefeed.h"
 
 #include "report.h"
-#include "strategies/ema50strategy.h"
-#include "strategies/qmsignals.h"
+#include "strategies/pythonstrategy.h"
 
 namespace stonks::app {
 
@@ -24,10 +23,10 @@ void run_backtest() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     stonks::core::Engine engine
     {
-        // PythonStrategy{ "ema50strategy", "EMA50Strategy" },
-        EMA50Strategy{},
-        // QMSignalsStrategy{},
-        stonks::datafeed::KLineFeed{ "app/data/us_1d_filtered.parquet" },
+        PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
+        stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet",
+             { .start = "2025-01-01", .end = "2025-01-02", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
+        },
         stonks::broker::BacktestBroker{ starting_cash }
     };
 

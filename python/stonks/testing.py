@@ -60,6 +60,8 @@ class FakeOrder:
     quantity: float
     price: Optional[float] = None
     time_in_force: TimeInForce = TimeInForce.GTC
+    parent: Optional[int] = None   # entry OrderID this order is bracketed under
+    id: Optional[int] = None       # the OrderID place_*_order handed back
 
 
 class FakeContext:
@@ -76,6 +78,7 @@ class FakeContext:
         self.orders: List[FakeOrder] = []
         self._timestamps = sorted({_to_ms(b.timestamp) for b in bars})
         self._group = -1   # advance() steps to the first timestamp
+        self._next_order_id = 1   # broker hands back monotonic OrderIDs
 
     def advance(self) -> None:
         self._group += 1
@@ -125,9 +128,14 @@ class FakeContext:
         side: OrderSide,
         quantity: float,
         time_in_force: TimeInForce = TimeInForce.GTC,
-    ) -> bool:
-        self.orders.append(FakeOrder(symbol, side, quantity, None, time_in_force))
-        return True
+        parent: Optional[int] = None,
+    ) -> int:
+        oid = self._next_order_id
+        self._next_order_id += 1
+        self.orders.append(
+            FakeOrder(symbol, side, quantity, None, time_in_force, parent, oid)
+        )
+        return oid
 
     def place_limit_order(
         self,
@@ -136,6 +144,11 @@ class FakeContext:
         quantity: float,
         price: float,
         time_in_force: TimeInForce = TimeInForce.GTC,
-    ) -> bool:
-        self.orders.append(FakeOrder(symbol, side, quantity, price, time_in_force))
-        return True
+        parent: Optional[int] = None,
+    ) -> int:
+        oid = self._next_order_id
+        self._next_order_id += 1
+        self.orders.append(
+            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid)
+        )
+        return oid

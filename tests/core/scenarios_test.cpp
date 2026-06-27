@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,8 +37,8 @@ struct BrokerSpy
     Balance equity() const { return impl->equity(); }
     const std::unordered_map<TradeID, Trade>& trades() const { return impl->trades(); }
     const std::unordered_map<OrderID, Order>& orders() const { return impl->orders(); }
-    OrderID place_order(const MarketOrderParams& p) { return impl->place_order(p); }
-    OrderID place_order(const LimitOrderParams& p) { return impl->place_order(p); }
+    OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
+    OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
     void on_tick(const KLine& bar) { impl->on_tick(bar); }
 };
 static_assert(Broker<BrokerSpy>);
