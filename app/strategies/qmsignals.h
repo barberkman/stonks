@@ -105,7 +105,7 @@ struct QMSignalsStrategy
                 const double qty = ctx.equity() * position_fraction / s.entry;
                 if (qty > 0.0) {
                     // Enter order
-                    ctx.place_order(stonks::core::LimitOrderParams{
+                    auto order_id = ctx.place_order(stonks::core::LimitOrderParams{
                         .symbol = sym,
                         .side = is_long ? stonks::core::OrderSide::Buy
                                         : stonks::core::OrderSide::Sell,
@@ -119,8 +119,8 @@ struct QMSignalsStrategy
                         .side = is_long ? stonks::core::OrderSide::Sell
                                         : stonks::core::OrderSide::Buy,
                         .quantity = qty,
-                        .price = s.stop
-                    });
+                        .price = s.stop,
+                    }, order_id);
 
                     // Take profit order
                     ctx.place_order(stonks::core::LimitOrderParams{
@@ -129,7 +129,7 @@ struct QMSignalsStrategy
                                         : stonks::core::OrderSide::Buy,
                         .quantity = qty,
                         .price = s.sell
-                    });
+                    }, order_id);
                 }
             }
 

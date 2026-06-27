@@ -4,6 +4,7 @@ add_executable(core_tests
     core/types_test.cpp
     core/progressbar_test.cpp
     core/report_test.cpp
+    core/report_json_test.cpp
     core/backtestbroker_test.cpp
     core/scenarios_test.cpp
     core/lookahead_test.cpp
@@ -20,6 +21,7 @@ target_link_libraries(core_tests PRIVATE
     stonks_core
     stonks_broker
     GTest::gtest_main
+    nlohmann_json::nlohmann_json
 )
 
 gtest_discover_tests(core_tests)

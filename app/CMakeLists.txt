@@ -56,6 +56,7 @@ target_link_libraries(app PRIVATE
     stonks_broker
     stonks_datafeed
     Qt6::Quick
+    nlohmann_json::nlohmann_json
 )
 
 if(STONKS_PYTHON)

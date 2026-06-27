@@ -1,5 +1,8 @@
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <string>
 #include <string_view>
 
 #include <QGuiApplication>
@@ -12,7 +15,9 @@
 #include "stonks/datafeed/klinefeed.h"
 
 #include "report.h"
+#include "report_json.h"
 #include "strategies/pythonstrategy.h"
+#include "strategies/qmsignals.h"
 
 namespace stonks::app {
 
@@ -23,9 +28,10 @@ void run_backtest() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     stonks::core::Engine engine
     {
-        PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
-        stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet",
-             { .start = "2025-01-01", .end = "2025-01-02", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
+        // PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
+        QMSignalsStrategy{},
+        stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet"
+            , { .start = "2025-01-01", .end = "2025-01-10", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
         },
         stonks::broker::BacktestBroker{ starting_cash }
     };
@@ -34,7 +40,7 @@ void run_backtest() {
     engine.run();
     const std::chrono::nanoseconds elapsed = std::chrono::steady_clock::now() - t0;
 
-    print_report(std::cout, compute_metrics(ReportInput{
+    const ReportInput input{
         starting_cash,
         engine.bars_processed(),
         engine.trades(),
@@ -43,7 +49,15 @@ void run_backtest() {
         engine.cash(),
         engine.equity(),
         elapsed,
-    }));
+    };
+    const ReportMetrics metrics = compute_metrics(input);
+    print_report(std::cout, metrics);
+
+    const std::string path = timestamped_report_path();
+    std::filesystem::create_directories(std::filesystem::path{ path }.parent_path());
+    std::ofstream out{ path };
+    write_report_json(out, input, metrics);
+    std::cout << "Report written to " << path << '\n';
 }
 
 // QML-exposed handle that runs the backtest when the Run button is clicked.
