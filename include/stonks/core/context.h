@@ -7,6 +7,8 @@
 #include "stonks/core/broker.h"
 #include "stonks/core/clock.h"
 #include "stonks/core/datafeed.h"
+#include "stonks/core/log.h"
+#include "stonks/core/logfmt.h"
 #include "stonks/core/types.h"
 
 namespace stonks::core {
@@ -39,11 +41,17 @@ public:
 
     OrderID place_order(const MarketOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
     {
+        STONKS_LOG("ctx", "ev=place_req type=Market sym={} side={} qty={:.6f} parent={} now={}",
+                   parameters.symbol, stonks::log::side_str(parameters.side), parameters.quantity,
+                   parent.value_or(0), stonks::log::ts_ms(m_clock.now()));
         return m_broker.place_order(parameters, parent);
     }
 
     OrderID place_order(const LimitOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
     {
+        STONKS_LOG("ctx", "ev=place_req type=Limit sym={} side={} qty={:.6f} price={:.4f} parent={} now={}",
+                   parameters.symbol, stonks::log::side_str(parameters.side), parameters.quantity,
+                   parameters.price, parent.value_or(0), stonks::log::ts_ms(m_clock.now()));
         return m_broker.place_order(parameters, parent);
     }
 

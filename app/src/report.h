@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "stonks/core/log.h"
+#include "stonks/core/logfmt.h"
 #include "stonks/core/types.h"
 
 // External backtest reporter. The engine keeps the run history (trades, orders,
@@ -82,6 +84,8 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         if (pos.qty == 0.0) {
             pos.qty = fill;
             pos.avg_price = t.price;
+            STONKS_LOG("report", "ev=replay tid={} sym={} side={} qty={:.6f} price={:.4f} branch=open pos_after={:.6f} avg_after={:.4f}",
+                       t.id, t.symbol, stonks::log::side_str(t.side), t.quantity, t.price, pos.qty, pos.avg_price);
             continue;
         }
 
@@ -91,17 +95,24 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
             const double add = std::abs(fill);
             pos.avg_price = (pos.avg_price * prev + t.price * add) / (prev + add);
             pos.qty += fill;
+            STONKS_LOG("report", "ev=replay tid={} sym={} side={} qty={:.6f} price={:.4f} branch=scale_in pos_after={:.6f} avg_after={:.4f}",
+                       t.id, t.symbol, stonks::log::side_str(t.side), t.quantity, t.price, pos.qty, pos.avg_price);
             continue;
         }
 
         // Opposing fill: close against the open position.
         const double closing = std::min(std::abs(fill), std::abs(pos.qty));
+        [[maybe_unused]] const double realized_before = pos.realized;
         pos.realized += (pos.qty > 0.0 ? (t.price - pos.avg_price) : (pos.avg_price - t.price)) * closing;
         pos.qty += (pos.qty > 0.0 ? -closing : closing);
+        STONKS_LOG("report", "ev=replay tid={} sym={} side={} qty={:.6f} price={:.4f} branch=close closing={:.6f} realized_add={:.4f} pos_after={:.6f}",
+                   t.id, t.symbol, stonks::log::side_str(t.side), t.quantity, t.price, closing, pos.realized - realized_before, pos.qty);
 
         if (pos.qty == 0.0) {
             ++closed_trades;
             if (pos.realized > 0.0) { ++winning_trades; }
+            STONKS_LOG("report", "ev=replay_flat tid={} sym={} closed_trades={} won={} realized={:.4f}",
+                       t.id, t.symbol, closed_trades, int(pos.realized > 0.0), pos.realized);
             pos.realized = 0.0;
             pos.avg_price = 0.0;
 
@@ -109,6 +120,8 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
             if (leftover > 0.0) {   // fill flips the position past flat
                 pos.qty = (fill > 0.0 ? leftover : -leftover);
                 pos.avg_price = t.price;
+                STONKS_LOG("report", "ev=replay tid={} sym={} branch=flip leftover={:.6f} pos_after={:.6f}",
+                           t.id, t.symbol, leftover, pos.qty);
             }
         }
     }
@@ -125,7 +138,10 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         if (p.equity > peak) { peak = p.equity; }
         if (peak > 0.0) {
             const double dd = (peak - p.equity) / peak * 100.0;
-            if (dd > max_drawdown_pct) { max_drawdown_pct = dd; }
+            if (dd > max_drawdown_pct) {
+                max_drawdown_pct = dd;
+                STONKS_LOG("report", "ev=dd equity={:.4f} peak={:.4f} dd={:.4f}", p.equity, peak, dd);
+            }
         }
     }
 
@@ -141,6 +157,8 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         return_pct = (in.ending_equity - in.starting_cash) / in.starting_cash * 100.0;
     }
 
+    STONKS_LOG("report", "ev=metrics notional={:.4f} closed={} winning={} starting={:.4f} ending_cash={:.4f} ending_equity={:.4f} max_dd={:.4f}",
+               notional, closed_trades, winning_trades, in.starting_cash, in.ending_cash, in.ending_equity, max_drawdown_pct);
     return ReportMetrics{
         in.bars_processed,
         first_ts,

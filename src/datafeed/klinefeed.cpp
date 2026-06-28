@@ -1,5 +1,7 @@
 #include "stonks/datafeed/klinefeed.h"
 
+#include "stonks/core/log.h"
+
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -174,6 +176,7 @@ void KLineFeed::build(std::vector<Row> rows, const Filter& filter)
     const std::unordered_set<std::string_view> allowed(
         filter.symbols.begin(), filter.symbols.end());
 
+    [[maybe_unused]] const auto rows_in = rows.size();
     std::erase_if(rows, [&](const Row& r) {
         if (lo && r.timestamp_ms < *lo) { return true; }
         if (hi && r.timestamp_ms >= *hi) { return true; }
@@ -189,7 +192,10 @@ void KLineFeed::build(std::vector<Row> rows, const Filter& filter)
     for (std::uint32_t i = 0; i < n; ++i) {
         const auto next_id = static_cast<core::SymbolID>(m_id_to_ticker.size());
         const auto [it, inserted] = intern.try_emplace(rows[i].symbol, next_id);
-        if (inserted) { m_id_to_ticker.push_back(rows[i].symbol); }
+        if (inserted) {
+            m_id_to_ticker.push_back(rows[i].symbol);
+            STONKS_LOG("feed", "ev=symbol id={} ticker={}", static_cast<unsigned>(next_id), rows[i].symbol);
+        }
         file_symbol[i] = it->second;
     }
     const auto num_symbols = static_cast<core::SymbolID>(m_id_to_ticker.size());
@@ -252,6 +258,10 @@ void KLineFeed::build(std::vector<Row> rows, const Filter& filter)
         }
     }
     m_group_start.push_back(n);
+
+    STONKS_LOG("feed", "ev=build rows_in={} rows_kept={} symbols={} groups={} lo={} hi={}",
+               rows_in, n, static_cast<unsigned>(num_symbols), m_group_start.size() - 1,
+               (lo ? *lo : -1), (hi ? *hi : -1));
 }
 
 std::optional<core::Timestamp> KLineFeed::next_timestamp() const

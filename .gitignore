@@ -17,6 +17,7 @@ __pycache__/
 .dmypy.json
 
 app/data/
+app/reports/
 app/python/.venv/
 
 python/stonks/_core*.so

@@ -8,18 +8,11 @@
 #include <utility>
 #include <vector>
 
+#include "stonks/core/log.h"
+#include "stonks/core/logfmt.h"
 #include "stonks/core/types.h"
 
 namespace stonks::broker {
-
-namespace {
-// STONKS_LOG uses std::format, which can't print scoped enums or Timestamp
-// directly; these turn them into format-friendly values. [[maybe_unused]]
-// because they are unreferenced when logging is compiled out.
-[[maybe_unused]] const char* side_str(core::OrderSide s) { return s == core::OrderSide::Buy ? "Buy" : "Sell"; }
-[[maybe_unused]] const char* type_str(core::OrderType t) { return t == core::OrderType::Market ? "Market" : "Limit"; }
-[[maybe_unused]] std::int64_t ts_ms(core::Timestamp t) { return t.value.time_since_epoch().count(); }
-} // namespace
 
 BacktestBroker::BacktestBroker(core::Balance initial_cash)
 : m_cash{ initial_cash },
@@ -43,7 +36,12 @@ core::Balance BacktestBroker::equity() const
                                        : pos.price - mark) * std::abs(pos.quantity);
         }
         e += reserved + upnl;
+        STONKS_LOG("broker", "ev=epos sym={} qty={:.6f} entry={:.4f} mark={:.4f} reserved={:.4f} upnl={:.4f} marked={}",
+                   symbol, pos.quantity, pos.price,
+                   (it != m_last_prices.end() ? it->second : pos.price),
+                   reserved, upnl, int(it != m_last_prices.end()));
     }
+    STONKS_LOG("broker", "ev=equity cash={:.4f} equity={:.4f} npos={}", m_cash, e, m_positions.size());
     return e;
 }
 
@@ -95,6 +93,9 @@ void BacktestBroker::on_tick(const core::KLine& bar)
     // Update symbol last price
     m_last_prices[bar.symbol] = bar.close;
 
+    STONKS_LOG("broker", "ev=bar ts={} sym={} o={:.4f} h={:.4f} l={:.4f} c={:.4f} open_orders={}",
+               log::ts_ms(bar.timestamp), bar.symbol, bar.open, bar.high, bar.low, bar.close, m_open_orders.size());
+
     // Process the open orders; collect the ids that reached a terminal state
     // (filled / rejected) and drop them from the working set afterwards.
     std::vector<core::OrderID> to_remove;
@@ -115,6 +116,8 @@ void BacktestBroker::on_tick(const core::KLine& bar)
 
         // Lookahead gate
         if (order.timestamp >= bar.timestamp) {
+            STONKS_LOG("broker", "ev=gate id={} why=lookahead order_ts={} bar_ts={}",
+                       id, log::ts_ms(order.timestamp), log::ts_ms(bar.timestamp));
             continue;
         }
 
@@ -130,11 +133,15 @@ void BacktestBroker::on_tick(const core::KLine& bar)
             core::Price limit = *order.price;
             if (order.side == core::OrderSide::Buy) {
                 if (bar.low > limit) {
+                    STONKS_LOG("broker", "ev=gate id={} why=limit_buy_no_trigger limit={:.4f} bar_low={:.4f}",
+                               id, limit, bar.low);
                     continue; // price never reached limit
                 }
                 price = std::min(limit, bar.open);
             } else {
                 if (bar.high < limit) {
+                    STONKS_LOG("broker", "ev=gate id={} why=limit_sell_no_trigger limit={:.4f} bar_high={:.4f}",
+                               id, limit, bar.high);
                     continue; // price never reached limit
                 }
                 price = std::max(limit, bar.open);
@@ -143,6 +150,16 @@ void BacktestBroker::on_tick(const core::KLine& bar)
         }
         }
 
+        // Observational state for the ev=fill log; set in the branches below.
+        [[maybe_unused]] const core::Balance cash_before = m_cash;
+        [[maybe_unused]] const char* fill_kind = "";
+        [[maybe_unused]] core::Price fill_entry = 0.0;
+        [[maybe_unused]] core::Balance fill_cost = 0.0;
+        [[maybe_unused]] core::Balance fill_collateral = 0.0;
+        [[maybe_unused]] core::Balance fill_pnl = 0.0;
+        [[maybe_unused]] core::Quantity pos_qty_before = 0.0;
+        [[maybe_unused]] core::Quantity pos_qty_after = 0.0;
+
         // Postiion logic
         const auto position_it = m_positions.find(order.symbol);
         core::Quantity filled_qty;
@@ -150,6 +167,8 @@ void BacktestBroker::on_tick(const core::KLine& bar)
             // No position
             const core::Balance cost = order.quantity * price;
             if (cost > m_cash) {
+                STONKS_LOG("broker", "ev=reject id={} why=insufficient_cash cost={:.4f} cash={:.4f}",
+                           id, cost, m_cash);
                 order.status = core::OrderStatus::Rejected; // Not enough cash
                 cancel_subtree(id, to_remove);              // entry died -> kill its dormant children
                 to_remove.push_back(id);
@@ -160,6 +179,11 @@ void BacktestBroker::on_tick(const core::KLine& bar)
                                                                            : -order.quantity);
             m_positions[order.symbol] = core::Position{ qty, price, order.id };
             filled_qty = order.quantity;
+            fill_kind = (order.side == core::OrderSide::Buy ? "open_long" : "open_short");
+            fill_entry = price;
+            fill_cost = cost;
+            pos_qty_before = 0.0;
+            pos_qty_after = qty;
         } else {
             // Position exist
             core::Position& position = position_it->second;
@@ -168,6 +192,8 @@ void BacktestBroker::on_tick(const core::KLine& bar)
 
             // Same direction as the position: we never add to a position.
             if (position_is_long == order_is_buy) {
+                STONKS_LOG("broker", "ev=reject id={} why=same_side_add pos_qty={:.6f} order_side={}",
+                           id, position.quantity, log::side_str(order.side));
                 order.status = core::OrderStatus::Rejected;
                 cancel_subtree(id, to_remove);              // order died -> kill its dormant children
                 to_remove.push_back(id);
@@ -175,11 +201,22 @@ void BacktestBroker::on_tick(const core::KLine& bar)
             }
 
             // Opposite direction: close part or all of it.
+            const core::Price entry_at_close = position.price;
+            const core::Quantity pos_before_close = position.quantity;
             filled_qty = std::min(order.quantity, std::abs(position.quantity));
             const core::Balance pnl = (position_is_long ? price - position.price
                                                         : position.price - price) * filled_qty;
             m_cash += filled_qty * position.price + pnl;
             position.quantity += (position_is_long ? -filled_qty : filled_qty);
+
+            // Observational state for the ev=fill log; read before any erase below.
+            fill_kind = (position.quantity == 0.0 ? "close_full" : "close_partial");
+            fill_entry = entry_at_close;
+            fill_collateral = filled_qty * entry_at_close;
+            fill_pnl = pnl;
+            pos_qty_before = pos_before_close;
+            pos_qty_after = position.quantity;
+
             if (position.quantity == 0.0) {
                 // flat -> cancel the whole bracket (all levels), keep the leg filling now.
                 cancel_subtree(position.entry_id, to_remove, id);
@@ -189,6 +226,15 @@ void BacktestBroker::on_tick(const core::KLine& bar)
 
         // Recort the fill
         order.status = core::OrderStatus::Filled;
+        STONKS_LOG("broker",
+            "ev=fill trade={} id={} ts={} sym={} side={} type={} kind={} req_qty={:.6f} fill_qty={:.6f} "
+            "price={:.4f} bar_open={:.4f} limit={:.4f} entry={:.4f} cost={:.4f} collateral={:.4f} pnl={:.4f} "
+            "cash_before={:.4f} cash_after={:.4f} pos_before={:.6f} pos_after={:.6f}",
+            m_next_trade_id, order.id, log::ts_ms(bar.timestamp), order.symbol,
+            log::side_str(order.side), log::type_str(order.type), fill_kind,
+            order.quantity, filled_qty, price, bar.open, order.price.value_or(0.0),
+            fill_entry, fill_cost, fill_collateral, fill_pnl, cash_before, m_cash,
+            pos_qty_before, pos_qty_after);
         m_trades.try_emplace(m_next_trade_id, core::Trade{
             m_next_trade_id, order.id, bar.timestamp, order.symbol, order.side, filled_qty, price
         });
@@ -198,6 +244,8 @@ void BacktestBroker::on_tick(const core::KLine& bar)
         for (auto& [c_id, c_order] : m_orders) {
             if (c_order.parent_id == order.id && c_order.status == core::OrderStatus::Open) {
                 c_order.timestamp = bar.timestamp;
+                STONKS_LOG("broker", "ev=arm parent={} child={} new_ts={}",
+                           order.id, c_id, log::ts_ms(bar.timestamp));
             }
         }
 
@@ -226,6 +274,25 @@ core::OrderID BacktestBroker::register_order(core::Order order)
 
     order.status = valid ? core::OrderStatus::Open : core::OrderStatus::Rejected;
 
+#ifdef STONKS_LOG_ENABLED
+    // Break the combined `valid` flag back into its reasons for the audit log.
+    const bool qty_ok = order.quantity > 0.0;
+    const bool price_ok = order.type != core::OrderType::Limit
+                          || (order.price.has_value() && *order.price > 0.0);
+    bool parent_ok = true;
+    if (order.parent_id.has_value()) {
+        const auto pit = m_orders.find(*order.parent_id);
+        parent_ok = (pit != m_orders.end() && pit->second.status == core::OrderStatus::Open);
+    }
+    STONKS_LOG("broker",
+        "ev=place id={} parent={} ts={} sym={} side={} type={} qty={:.6f} price={:.4f} status={} "
+        "qty_ok={} price_ok={} parent_ok={}",
+        order.id, order.parent_id.value_or(0), log::ts_ms(order.timestamp), order.symbol,
+        log::side_str(order.side), log::type_str(order.type), order.quantity,
+        order.price.value_or(0.0), (valid ? "Open" : "Rejected"),
+        int(qty_ok), int(price_ok), int(parent_ok));
+#endif
+
     m_orders.try_emplace(id, std::move(order));
     if (valid) { m_open_orders.push_back(id); }
     return id;
@@ -239,6 +306,7 @@ void BacktestBroker::cancel_subtree(core::OrderID parent, std::vector<core::Orde
             if (oid != keep) {
                 o.status = core::OrderStatus::Cancelled;
                 to_remove.push_back(oid);
+                STONKS_LOG("broker", "ev=cancel id={} parent={} keep={}", oid, parent, keep);
             }
             cancel_subtree(oid, to_remove, keep);   // recurse to reach grandchildren
         }

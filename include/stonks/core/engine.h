@@ -11,6 +11,7 @@
 #include "stonks/core/clock.h"
 #include "stonks/core/context.h"
 #include "stonks/core/datafeed.h"
+#include "stonks/core/log.h"
 #include "stonks/core/progressbar.h"
 #include "stonks/core/strategy.h"
 #include "stonks/core/types.h"
@@ -43,6 +44,8 @@ public:
         using ContextT = Context<BrokerT, DataFeedT>;
         ContextT context{ m_broker, m_dataFeed, m_clock };
 
+        STONKS_LOG("engine", "ev=run_start cash={:.4f}", m_broker.cash());
+
         // Start the strategy
         if constexpr (HasOnStart<StrategyT, ContextT>) {
             m_strategy.on_start(context);
@@ -74,10 +77,15 @@ public:
 
             const Balance eq = m_broker.equity();
             m_equity_curve.push_back(EquityPoint{ *ts, eq });
+            STONKS_LOG("engine", "ev=tick ts={} bars={} bars_total={} cash={:.4f} equity={:.4f}",
+                       ts_ms, bars_this_ts, m_bars_processed, m_broker.cash(), eq);
             m_strategy.on_tick(context);
             m_dataFeed.advance();
         }
         m_progress->finish();
+        STONKS_LOG("engine", "ev=run_end bars_total={} cash={:.4f} equity={:.4f} trades={} orders={}",
+                   m_bars_processed, m_broker.cash(), m_broker.equity(),
+                   m_broker.trades().size(), m_broker.orders().size());
 
         // Stop the strategy
         if constexpr (HasOnStop<StrategyT, ContextT>) {

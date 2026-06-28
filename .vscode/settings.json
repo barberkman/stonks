@@ -9,5 +9,9 @@
     "files.associations": {
         "*.h": "cpp"
     },
-    "C_Cpp.intelliSenseEngine": "disabled"
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "python.defaultInterpreterPath": "${workspaceFolder}/app/python/.venv/bin/python",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/python"
+    ]
 }
