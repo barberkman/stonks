@@ -77,7 +77,7 @@ core::OrderID BacktestBroker::submit(const core::OrderParams& p, bool reduce_onl
     const bool role_ok = reduce_only
         ? (ctx_long.has_value() && *ctx_long != (p.side == core::OrderSide::Buy)   // exit must oppose the context
             && (!ctx_entry_ts.has_value() || *ctx_entry_ts == m_now))              // and belong to the working entry's own bracket, not a superseded signal's
-        : !ctx_long.has_value();                                                    // entry needs a clear symbol
+        : (!ctx_long.has_value() || ctx_entry_ts.has_value());                      // entry: clear symbol, or supersede a resting (unfilled) entry
     const bool ok = structural && role_ok;
 
     STONKS_LOG("broker",
@@ -88,10 +88,27 @@ core::OrderID BacktestBroker::submit(const core::OrderParams& p, bool reduce_onl
         (ctx_long ? (*ctx_long ? "long" : "short") : "clear"),
         int(structural), int(role_ok), ok ? "Open" : "Rejected");
 
+    // Cancel-and-replace: a fresh entry supersedes a resting (unfilled) entry's whole
+    // bracket, so only the latest signal's bracket is ever live on a symbol.
+    if (ok && !reduce_only && ctx_entry_ts.has_value()) {
+        std::vector<core::OrderID> gone;
+        for (auto& [oid, o] : m_orders) {
+            if (!o.reduce_only && o.symbol == p.symbol && o.status == core::OrderStatus::Open) {
+                o.status = core::OrderStatus::Cancelled;
+                STONKS_LOG("broker", "ev=entry_supersede id={} sym={} by={}", oid, p.symbol, id);
+                gone.push_back(oid);
+            }
+        }
+        cancel_exits(p.symbol, gone, /*keep=*/0);   // the superseded entry's pre-placed exits go too
+        std::erase_if(m_open_orders, [&](core::OrderID oid) {
+            return std::ranges::find(gone, oid) != gone.end();
+        });
+    }
+
     m_orders.try_emplace(id, core::Order{
         id, m_now, p.symbol, p.side, p.type,
         ok ? core::OrderStatus::Open : core::OrderStatus::Rejected,
-        p.price, p.quantity, reduce_only, p.time_in_force });
+        p.price, p.quantity, reduce_only, p.time_in_force, p.ttl });
     if (ok) { m_open_orders.push_back(id); }
     return id;
 }
@@ -112,6 +129,20 @@ void BacktestBroker::on_tick(const core::KLine& bar)
         core::Order& order = m_orders.at(id);
         if (order.status != core::OrderStatus::Open) { continue; }
         if (order.symbol != bar.symbol)              { continue; }
+
+        // TTL expiry: an unfilled order past its lifetime is cancelled. For an entry, its
+        // pre-placed exits go too (freeing the symbol for new signals). A filled entry is
+        // Filled (not Open), so this only ever hits unfilled entries.
+        if (order.ttl && (bar.timestamp - order.timestamp) >= *order.ttl) {
+            order.status = core::OrderStatus::Cancelled;
+            STONKS_LOG("broker", "ev=expire id={} sym={} reduce_only={} age_ms={} ttl_ms={}",
+                       id, order.symbol, int(order.reduce_only),
+                       (bar.timestamp - order.timestamp).count(), order.ttl->count());
+            if (!order.reduce_only) { cancel_exits(order.symbol, to_remove, /*keep=*/0); }
+            to_remove.push_back(id);
+            continue;
+        }
+
         if (order.timestamp >= bar.timestamp)        { continue; }   // no same-bar fill / no lookahead
 
         // Trigger + fill price. Limit = passive (favorable touch); Stop = active

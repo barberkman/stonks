@@ -118,6 +118,7 @@ struct Order
     Quantity quantity;
     bool reduce_only;             // false = entry (opens), true = exit (reduce-only SL/TP)
     TimeInForce time_in_force;
+    std::optional<Timestamp::duration> ttl;   // unfilled-order lifetime (carried from OrderParams); nullopt = good-till-cancelled
 
     auto operator<=>(const Order&) const = default;
 };
@@ -165,6 +166,7 @@ struct OrderParams
     Quantity quantity;
     std::optional<Price> price = std::nullopt;
     TimeInForce time_in_force = TimeInForce::GTC;
+    std::optional<Timestamp::duration> ttl = std::nullopt;   // unfilled-order lifetime; nullopt = good-till-cancelled
 };
 
 inline std::ostream& operator<<(std::ostream& os, Timestamp ts)

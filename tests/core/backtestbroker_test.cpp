@@ -284,45 +284,72 @@ TEST(BacktestBroker, RejectedEntryCancelsItsPreplacedExits)
     EXPECT_EQ(broker.trades().size(), 0u);
 }
 
-// A working (unfilled) entry holds the symbol's context. A later signal's bracket
-// is rejected wholesale: its entry collides with the working one, and its exits
-// belong to that superseded signal — they must NOT attach to the tick-1000 entry,
-// or they could (mis-)close its eventual position at a foreign size/level.
-TEST(BacktestBroker, StaleExitsFromALaterBracketAreRejected)
+// A working (unfilled) entry holds the symbol's context. A later signal's *entry*
+// now SUPERSEDES it: the resting entry and its pre-placed exits are cancelled, and
+// the new bracket becomes the live one. This keeps a position's exits matched to the
+// entry that opens it (no stale exits attaching across signals).
+TEST(BacktestBroker, LaterBracketSupersedesRestingEntry)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
 
-    // Tick 1000: a limit-buy entry that won't fill yet, plus its own bracket exits
-    // (same tick as the entry -> accepted).
     broker.on_tick(bar(1000, 100.0, 101.0, 99.0, 100.0));
-    const auto entry = broker.place_order(limit("X", OrderSide::Buy, 10.0, 90.0));
-    const auto sl = broker.place_exit(stop("X", OrderSide::Sell, 10.0, 85.0));
-    const auto tp = broker.place_exit(limit("X", OrderSide::Sell, 10.0, 110.0));
-    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Open);
-    EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Open);
+    const auto e1  = broker.place_order(limit("X", OrderSide::Buy, 10.0, 90.0));
+    const auto sl1 = broker.place_exit (stop ("X", OrderSide::Sell, 10.0, 85.0));
+    const auto tp1 = broker.place_exit (limit("X", OrderSide::Sell, 10.0, 110.0));
 
-    // Tick 2000: entry still working (low 95 > 90). A new signal's bracket arrives:
-    // its entry collides (one context per symbol) and its exits are stale.
+    // Tick 2000: e1 still working (low 95 > 90). A fresh bracket supersedes it.
     broker.on_tick(bar(2000, 100.0, 101.0, 95.0, 100.0));
-    EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Open);
-    const auto stale_entry = broker.place_order(limit("X", OrderSide::Buy, 5.0, 88.0));
-    const auto stale_sl = broker.place_exit(stop("X", OrderSide::Sell, 5.0, 80.0));
-    const auto stale_tp = broker.place_exit(limit("X", OrderSide::Sell, 5.0, 120.0));
-    EXPECT_EQ(broker.orders().at(stale_entry).status, OrderStatus::Rejected);
-    EXPECT_EQ(broker.orders().at(stale_sl).status, OrderStatus::Rejected);   // would partially close at a foreign stop without the guard
-    EXPECT_EQ(broker.orders().at(stale_tp).status, OrderStatus::Rejected);
-    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Open);             // original bracket intact
-    EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Open);
+    const auto e2  = broker.place_order(limit("X", OrderSide::Buy, 5.0, 88.0));
+    const auto sl2 = broker.place_exit (stop ("X", OrderSide::Sell, 5.0, 80.0));
+    const auto tp2 = broker.place_exit (limit("X", OrderSide::Sell, 5.0, 120.0));
 
-    // The entry finally fills; only its own exits exist, so it closes full-size at
-    // its own take-profit (110), not the stale 120/80 levels.
-    broker.on_tick(bar(3000, 92.0, 93.0, 88.0, 90.0));   // low 88 <= 90 -> fill @ min(90,92)=90
+    EXPECT_EQ(broker.orders().at(e1).status,  OrderStatus::Cancelled);   // superseded
+    EXPECT_EQ(broker.orders().at(sl1).status, OrderStatus::Cancelled);
+    EXPECT_EQ(broker.orders().at(tp1).status, OrderStatus::Cancelled);
+    EXPECT_EQ(broker.orders().at(e2).status,  OrderStatus::Open);        // new bracket live
+    EXPECT_EQ(broker.orders().at(sl2).status, OrderStatus::Open);
+    EXPECT_EQ(broker.orders().at(tp2).status, OrderStatus::Open);
+
+    // The new entry fills and closes at ITS levels (qty 5, tp 120), not e1's.
+    broker.on_tick(bar(3000, 89.0, 90.0, 87.0, 88.0));      // low 87 <= 88 -> e2 fills @ min(88,89)=88
     ASSERT_TRUE(broker.position("X").has_value());
-    EXPECT_DOUBLE_EQ(broker.position("X")->quantity, 10.0);
-    broker.on_tick(bar(4000, 100.0, 112.0, 99.0, 111.0));   // TP 110 hit -> full close
+    EXPECT_DOUBLE_EQ(broker.position("X")->quantity, 5.0);
+    broker.on_tick(bar(4000, 100.0, 121.0, 99.0, 120.0));   // tp2 120 hit -> full close
     EXPECT_FALSE(broker.position("X").has_value());
-    EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Filled);
-    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Cancelled);        // OCO
+    EXPECT_EQ(broker.orders().at(tp2).status, OrderStatus::Filled);
+    EXPECT_EQ(broker.orders().at(sl2).status, OrderStatus::Cancelled);   // OCO
+}
+
+// A lone exit placed against a resting entry from an EARLIER tick (no accompanying
+// entry, so no supersede) is still rejected — it isn't part of the entry's bracket.
+TEST(BacktestBroker, LoneLateExitAgainstRestingEntryRejected)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    broker.on_tick(bar(1000, 100.0, 101.0, 99.0, 100.0));
+    broker.place_order(limit("X", OrderSide::Buy, 10.0, 90.0));   // resting entry (tick 1000)
+    broker.on_tick(bar(2000, 100.0, 101.0, 95.0, 100.0));         // still unfilled
+    const auto late = broker.place_exit(limit("X", OrderSide::Sell, 10.0, 110.0));  // later tick, no entry
+    EXPECT_EQ(broker.orders().at(late).status, OrderStatus::Rejected);
+}
+
+// An unfilled entry is cancelled (with its pre-placed exits) once it outlives its
+// per-order TTL, freeing the symbol so later entries can be placed again.
+TEST(BacktestBroker, UnfilledEntryExpiresAfterTtlAndFreesSymbol)
+{
+    using namespace std::chrono;
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    broker.on_tick(bar(1000, 100.0, 101.0, 99.0, 100.0));
+    auto ep = limit("X", OrderSide::Buy, 10.0, 90.0);
+    ep.ttl = milliseconds{ 2000 };                         // entry lives 2 bars of 1000ms
+    const auto entry = broker.place_order(ep);
+    const auto tp    = broker.place_exit(limit("X", OrderSide::Sell, 10.0, 110.0));
+    broker.on_tick(bar(2000, 100.0, 101.0, 95.0, 100.0));   // age 1000 < 2000 -> still open
+    EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Open);
+    broker.on_tick(bar(3000, 100.0, 101.0, 95.0, 100.0));   // age 2000 >= 2000 -> expire (with its tp)
+    EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Cancelled);
+    EXPECT_EQ(broker.orders().at(tp).status,    OrderStatus::Cancelled);
+    const auto e2 = broker.place_order(limit("X", OrderSide::Buy, 10.0, 90.0));   // symbol clear -> accepted
+    EXPECT_EQ(broker.orders().at(e2).status, OrderStatus::Open);
 }
 
 // --- Equity, marking, ids, independence -------------------------------------
@@ -341,7 +368,7 @@ TEST(BacktestBroker, OnlyFillsAdvanceTheTradeIdCounter)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
     broker.place_order(entry_market("X", OrderSide::Buy, 10.0));   // id 1
-    broker.place_order(entry_market("X", OrderSide::Buy, 1.0));    // id 2 -> rejected (working entry exists)
+    broker.place_exit(limit("Z", OrderSide::Sell, 1.0, 110.0));    // id 2 -> rejected (no position on Z), never trades
     broker.on_tick(flat(1000, 100.0));                 // fill 1 -> trade 1
     broker.place_exit(entry_market("X", OrderSide::Sell, 10.0));   // market exit
     broker.on_tick(flat(2000, 110.0));                 // close -> trade 2

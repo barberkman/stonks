@@ -118,6 +118,7 @@ class QMSignalsStrategy(stonks.Strategy):
     MINTICK = 0.0
     MS_PER_DAY = 86_400_000
     POSITION_FRACTION = 0.02
+    entry_ttl_bars = 30          # cancel an unfilled limit entry after this many bars
 
     def on_start(self, ctx):
         # The setups that fired on each symbol's last processed bar (for tests).
@@ -157,14 +158,17 @@ class QMSignalsStrategy(stonks.Strategy):
                     entry_side = OrderSide.Buy if is_long else OrderSide.Sell
                     exit_side = OrderSide.Sell if is_long else OrderSide.Buy
 
-                    # Limit entry; the reduce-only exits attach to the position by
-                    # symbol and OCO-cancel each other once one closes it.
+                    # Limit entry, bounded to N bars of actual spacing so an unfilled
+                    # breakout does not rest forever and block the symbol.
+                    bar_ms = int(ts[-1] - ts[-2]) if len(ts) >= 2 else None
+                    ttl_ms = int(self.entry_ttl_bars * bar_ms) if bar_ms else None
                     ctx.place_order(symbol=symbol, side=entry_side,
-                                    quantity=qty, type=OrderType.Limit, price=s.entry)
-                    # Stop-loss: reduce-only Stop
+                                    quantity=qty, type=OrderType.Limit, price=s.entry,
+                                    ttl_ms=ttl_ms)
+                    # Stop-loss / take-profit: reduce-only, GTC — they live with the
+                    # position and OCO-cancel each other once one closes it.
                     ctx.place_exit(symbol=symbol, side=exit_side,
                                    quantity=qty, type=OrderType.Stop, price=s.stop)
-                    # Take-profit: reduce-only Limit
                     ctx.place_exit(symbol=symbol, side=exit_side,
                                    quantity=qty, type=OrderType.Limit, price=s.sell)
 

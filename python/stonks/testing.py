@@ -62,6 +62,7 @@ class FakeOrder:
     price: Optional[float] = None
     reduce_only: bool = False              # False = entry (place_order), True = exit (place_exit)
     time_in_force: TimeInForce = TimeInForce.GTC
+    ttl_ms: Optional[int] = None           # unfilled-order lifetime in ms; None = good-till-cancelled
     id: Optional[int] = None               # the OrderID place_* handed back
 
 
@@ -137,8 +138,9 @@ class FakeContext:
         type: OrderType = OrderType.Market,
         price: Optional[float] = None,
         time_in_force: TimeInForce = TimeInForce.GTC,
+        ttl_ms: Optional[int] = None,
     ) -> int:
-        return self._record(symbol, side, quantity, type, price, False, time_in_force)
+        return self._record(symbol, side, quantity, type, price, False, time_in_force, ttl_ms)
 
     def place_exit(
         self,
@@ -148,13 +150,14 @@ class FakeContext:
         type: OrderType = OrderType.Market,
         price: Optional[float] = None,
         time_in_force: TimeInForce = TimeInForce.GTC,
+        ttl_ms: Optional[int] = None,
     ) -> int:
-        return self._record(symbol, side, quantity, type, price, True, time_in_force)
+        return self._record(symbol, side, quantity, type, price, True, time_in_force, ttl_ms)
 
-    def _record(self, symbol, side, quantity, type, price, reduce_only, time_in_force) -> int:
+    def _record(self, symbol, side, quantity, type, price, reduce_only, time_in_force, ttl_ms=None) -> int:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, type, price, reduce_only, time_in_force, oid)
+            FakeOrder(symbol, side, quantity, type, price, reduce_only, time_in_force, ttl_ms, oid)
         )
         return oid

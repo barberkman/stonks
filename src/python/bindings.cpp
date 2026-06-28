@@ -168,9 +168,12 @@ PYBIND11_MODULE(_core, m)
                 core::Quantity quantity,
                 core::OrderType type,
                 std::optional<core::Price> price,
-                core::TimeInForce time_in_force) {
+                core::TimeInForce time_in_force,
+                std::optional<std::int64_t> ttl_ms) {
                  return self.place_order(core::OrderParams{
-                     std::move(symbol), side, type, quantity, price, time_in_force });
+                     std::move(symbol), side, type, quantity, price, time_in_force,
+                     ttl_ms ? std::optional<core::Timestamp::duration>{ core::Timestamp::duration{ *ttl_ms } }
+                            : std::nullopt });
              },
              py::arg("symbol"),
              py::arg("side"),
@@ -178,6 +181,7 @@ PYBIND11_MODULE(_core, m)
              py::arg("type") = core::OrderType::Market,
              py::arg("price") = std::optional<core::Price>{},
              py::arg("time_in_force") = core::TimeInForce::GTC,
+             py::arg("ttl_ms") = std::optional<std::int64_t>{},
              "Place an entry order (opens a position); returns its OrderID.")
         .def("place_exit",
              [](stonks_py::IContext& self,
@@ -186,9 +190,12 @@ PYBIND11_MODULE(_core, m)
                 core::Quantity quantity,
                 core::OrderType type,
                 std::optional<core::Price> price,
-                core::TimeInForce time_in_force) {
+                core::TimeInForce time_in_force,
+                std::optional<std::int64_t> ttl_ms) {
                  return self.place_exit(core::OrderParams{
-                     std::move(symbol), side, type, quantity, price, time_in_force });
+                     std::move(symbol), side, type, quantity, price, time_in_force,
+                     ttl_ms ? std::optional<core::Timestamp::duration>{ core::Timestamp::duration{ *ttl_ms } }
+                            : std::nullopt });
              },
              py::arg("symbol"),
              py::arg("side"),
@@ -196,5 +203,6 @@ PYBIND11_MODULE(_core, m)
              py::arg("type") = core::OrderType::Market,
              py::arg("price") = std::optional<core::Price>{},
              py::arg("time_in_force") = core::TimeInForce::GTC,
+             py::arg("ttl_ms") = std::optional<std::int64_t>{},
              "Place a reduce-only exit (stop-loss / take-profit); returns its OrderID.");
 }
