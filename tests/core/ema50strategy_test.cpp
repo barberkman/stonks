@@ -35,24 +35,17 @@ struct RecordingBroker
     const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
     const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
 
-    OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt)
-    {
-        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
-                             OrderType::Market, OrderStatus::Open,
-                             std::nullopt, p.quantity, p.time_in_force });
-    }
-    OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt)
-    {
-        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
-                             OrderType::Limit, OrderStatus::Open,
-                             p.price, p.quantity, p.time_in_force });
-    }
+    OrderID place_order(const OrderParams& p) { return record(p, false); }
+    OrderID place_exit (const OrderParams& p) { return record(p, true ); }
+    std::optional<Position> position(const Symbol&) const { return std::nullopt; }
     void on_tick(const KLine&) {}
 
 private:
-    OrderID record(Order o)
+    OrderID record(const OrderParams& p, bool reduce_only)
     {
-        const OrderID id = o.id;
+        const OrderID id = next_id;
+        Order o{ id, Timestamp{}, p.symbol, p.side, p.type, OrderStatus::Open,
+                 p.price, p.quantity, reduce_only, p.time_in_force };
         placed.push_back(o);
         m_orders.try_emplace(id, std::move(o));
         ++next_id;

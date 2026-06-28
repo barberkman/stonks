@@ -1,8 +1,8 @@
 """Python mirror of app/strategies/qmsignals.h — the Qullamaggie momentum scanner.
 
-Five setups run against each symbol's latest closed bar; whenever one fires the
-strategy places a 3-leg bracket (entry + stop + take-profit limit orders), exactly
-like the C++ reference:
+Five setups run against each symbol's latest closed bar; whenever one fires while
+flat, the strategy places a bracket — a Limit entry plus two reduce-only exits (a
+Stop stop-loss and a Limit take-profit) — exactly like the C++ reference:
 
   breakout        — long: break above a tight base's pivot high
   short_breakout  — short: breakdown below a base's pivot low (downtrend mirror)
@@ -16,8 +16,8 @@ symbol, so on_tick regroups it by symbol before scanning. The setup math is a
 faithful, index-for-index port — base-pivot scans keep the *last* extreme (`>=`
 /`<=`), so the loops are explicit rather than vectorized argmax/argmin.
 
-Fire-and-forget, like the C++: no holdings are tracked. The broker's
-one-position-per-symbol semantics reject duplicate same-side entries.
+Enters only while flat on the symbol (checks ctx.position); the broker's
+one-position-per-symbol model rejects anything placed on top of a position.
 """
 
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 import stonks
-from stonks import OrderSide
+from stonks import OrderSide, OrderType
 
 
 @dataclass
@@ -148,7 +148,8 @@ class QMSignalsStrategy(stonks.Strategy):
             ts = sub["timestamp"].to_numpy()
 
             sigs = self.scan(op, hi, lo, cl, vo, ts)
-            if sigs:
+            # Enter a fresh bracket only when flat on this symbol (one position per symbol).
+            if sigs and ctx.position(symbol) is None:
                 s = sigs[0]
                 is_long = s.stop < s.entry              # long setups stop below entry
                 qty = ctx.equity() * self.POSITION_FRACTION / s.entry
@@ -156,17 +157,16 @@ class QMSignalsStrategy(stonks.Strategy):
                     entry_side = OrderSide.Buy if is_long else OrderSide.Sell
                     exit_side = OrderSide.Sell if is_long else OrderSide.Buy
 
-                    # Entry order — its id parents the protective legs, so the
-                    # broker keeps them dormant until the entry fills and then
-                    # OCO-cancels the loser once one side closes the position.
-                    entry_id = ctx.place_limit_order(symbol=symbol, side=entry_side,
-                                                     quantity=qty, price=s.entry)
-                    # Stop loss order (child of the entry)
-                    ctx.place_limit_order(symbol=symbol, side=exit_side,
-                                          quantity=qty, price=s.stop, parent=entry_id)
-                    # Take profit order (child of the entry)
-                    ctx.place_limit_order(symbol=symbol, side=exit_side,
-                                          quantity=qty, price=s.sell, parent=entry_id)
+                    # Limit entry; the reduce-only exits attach to the position by
+                    # symbol and OCO-cancel each other once one closes it.
+                    ctx.place_order(symbol=symbol, side=entry_side,
+                                    quantity=qty, type=OrderType.Limit, price=s.entry)
+                    # Stop-loss: reduce-only Stop
+                    ctx.place_exit(symbol=symbol, side=exit_side,
+                                   quantity=qty, type=OrderType.Stop, price=s.stop)
+                    # Take-profit: reduce-only Limit
+                    ctx.place_exit(symbol=symbol, side=exit_side,
+                                   quantity=qty, type=OrderType.Limit, price=s.sell)
 
             self._last[symbol] = sigs
 

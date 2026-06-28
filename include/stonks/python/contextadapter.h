@@ -2,7 +2,6 @@
 
 #include <memory>
 #include <optional>
-#include <utility>
 
 #include "stonks/core/context.h"
 #include "stonks/core/types.h"
@@ -19,22 +18,12 @@ public:
     core::Timestamp now() const override { return m_ctx.now(); }
     core::Balance cash() const override { return m_ctx.cash(); }
     core::Balance equity() const override { return m_ctx.equity(); }
+    std::optional<core::Position> position(const core::Symbol& symbol) const override { return m_ctx.position(symbol); }
 
     core::MarketWindow history(int count) const override { return m_ctx.history(count); }
 
-    core::OrderID place_market_order(core::MarketOrderParams params,
-                                     std::optional<core::OrderID> parent) override
-    {
-        // Context forwards to the broker, which builds + stamps the Order and
-        // returns its id; pass `parent` through for bracket/OCO linkage.
-        return m_ctx.place_order(params, parent);
-    }
-
-    core::OrderID place_limit_order(core::LimitOrderParams params,
-                                    std::optional<core::OrderID> parent) override
-    {
-        return m_ctx.place_order(params, parent);
-    }
+    core::OrderID place_order(core::OrderParams params) override { return m_ctx.place_order(params); }
+    core::OrderID place_exit(core::OrderParams params) override { return m_ctx.place_exit(params); }
 
 private:
     core::Context<BrokerT, DataFeedT>& m_ctx;

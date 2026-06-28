@@ -33,6 +33,7 @@ enum class OrderType : std::uint8_t
 {
     Market,
     Limit,
+    Stop,
 };
 
 enum class OrderStatus : std::uint8_t
@@ -108,14 +109,14 @@ struct MarketWindow
 struct Order
 {
     OrderID id;
-    std::optional<OrderID> parent_id;
     Timestamp timestamp;
     Symbol symbol;
     OrderSide side;
     OrderType type;
     OrderStatus status;
-    std::optional<Price> price;
+    std::optional<Price> price;   // Limit target price or Stop trigger price
     Quantity quantity;
+    bool reduce_only;             // false = entry (opens), true = exit (reduce-only SL/TP)
     TimeInForce time_in_force;
 
     auto operator<=>(const Order&) const = default;
@@ -136,9 +137,8 @@ struct Trade
 
 struct Position
 {
-    Quantity quantity;
-    Price price;
-    OrderID entry_id;
+    Quantity quantity;   // signed: >0 long, <0 short
+    Price price;         // entry / cost basis
 
     auto operator<=>(const Position&) const = default;
 };
@@ -154,20 +154,16 @@ struct EquityPoint
     auto operator<=>(const EquityPoint&) const = default;
 };
 
-struct MarketOrderParams
+// One request struct for every order. Role (entry vs reduce-only exit) is the
+// method called: place_order opens, place_exit reduces. `price` is required for
+// Limit (target) and Stop (trigger) and ignored for Market.
+struct OrderParams
 {
     Symbol symbol;
     OrderSide side;
+    OrderType type = OrderType::Market;
     Quantity quantity;
-    TimeInForce time_in_force = TimeInForce::GTC;
-};
-
-struct LimitOrderParams
-{
-    Symbol symbol;
-    OrderSide side;
-    Quantity quantity;
-    Price price;
+    std::optional<Price> price = std::nullopt;
     TimeInForce time_in_force = TimeInForce::GTC;
 };
 

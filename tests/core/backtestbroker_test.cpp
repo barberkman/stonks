@@ -1,8 +1,9 @@
-// Direct unit tests for BacktestBroker against the new cash-secured,
-// one-position-per-symbol model. Orders are stamped with the broker's m_now
-// (set in on_tick), so the recipe to fill an order is: place it, then on_tick a
-// later bar. To stamp at a specific timestamp T (e.g. for the gate), on_tick a
-// bar at T first, then place.
+// Unit tests for BacktestBroker against the reduce-only model:
+//   place_order -> ENTRY, opens a position, only valid on a clear symbol.
+//   place_exit  -> reduce-only EXIT (stop-loss / take-profit), only reduces an
+//                  existing opposite position; never opens or flips.
+// Orders are stamped with the broker's m_now (set in on_tick), so the recipe to
+// fill an order is: place it, then on_tick a LATER bar.
 
 #include <gtest/gtest.h>
 
@@ -38,6 +39,19 @@ std::vector<Trade> sorted_trades(const BacktestBroker& b)
     return v;
 }
 
+OrderParams entry_market(const Symbol& sym, OrderSide side, Quantity qty)
+{
+    return OrderParams{ .symbol = sym, .side = side, .type = OrderType::Market, .quantity = qty };
+}
+OrderParams limit(const Symbol& sym, OrderSide side, Quantity qty, Price price)
+{
+    return OrderParams{ .symbol = sym, .side = side, .type = OrderType::Limit, .quantity = qty, .price = price };
+}
+OrderParams stop(const Symbol& sym, OrderSide side, Quantity qty, Price price)
+{
+    return OrderParams{ .symbol = sym, .side = side, .type = OrderType::Stop, .quantity = qty, .price = price };
+}
+
 } // namespace
 
 // --- Construction ------------------------------------------------------------
@@ -49,6 +63,7 @@ TEST(BacktestBroker, ConstructorSetsCashAndStartsEmpty)
     EXPECT_DOUBLE_EQ(broker.equity(), 50'000.0);
     EXPECT_TRUE(broker.trades().empty());
     EXPECT_TRUE(broker.orders().empty());
+    EXPECT_FALSE(broker.position("X").has_value());
 }
 
 // --- Placement & validation --------------------------------------------------
@@ -56,470 +71,256 @@ TEST(BacktestBroker, ConstructorSetsCashAndStartsEmpty)
 TEST(BacktestBroker, PlaceOrderRecordsAndDoesNotMoveCash)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto id = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
+    const auto id = broker.place_order(entry_market("X", OrderSide::Buy, 1.0));
     EXPECT_EQ(broker.orders().size(), 1u);
     EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Open);
+    EXPECT_FALSE(broker.orders().at(id).reduce_only);
     EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0);   // placing never moves cash
 }
 
-TEST(BacktestBroker, OrderIdsStrictlyIncreaseAcrossMarketAndLimit)
+TEST(BacktestBroker, OrderIdsStrictlyIncrease)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto a = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    const auto b = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 50.0 });
-    const auto c = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0 });
-    EXPECT_EQ(a, OrderID{ 1 });
-    EXPECT_EQ(b, OrderID{ 2 });
-    EXPECT_EQ(c, OrderID{ 3 });
+    const auto a = broker.place_order(entry_market("X", OrderSide::Buy, 1.0));
+    const auto b = broker.place_order(limit("Y", OrderSide::Buy, 1.0, 50.0));
+    EXPECT_EQ(a, 1u);
+    EXPECT_EQ(b, 2u);
 }
 
-TEST(BacktestBroker, MarketOrderHasNoPrice_LimitCarriesPrice)
+TEST(BacktestBroker, RejectsNonPositiveQuantity)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto m = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.5 });
-    const auto l = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 2.0, .price = 99.5 });
-
-    EXPECT_EQ(broker.orders().at(m).type, OrderType::Market);
-    EXPECT_FALSE(broker.orders().at(m).price.has_value());
-    EXPECT_DOUBLE_EQ(broker.orders().at(m).quantity, 1.5);
-
-    EXPECT_EQ(broker.orders().at(l).type, OrderType::Limit);
-    ASSERT_TRUE(broker.orders().at(l).price.has_value());
-    EXPECT_DOUBLE_EQ(*broker.orders().at(l).price, 99.5);
-}
-
-TEST(BacktestBroker, OrderStampedWithCurrentTime)
-{
-    BacktestBroker broker{ Balance{ 10'000.0 } };
-    // Before any tick, m_now is epoch.
-    const auto early = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    EXPECT_EQ(broker.orders().at(early).timestamp, Timestamp{});
-
-    broker.on_tick(flat(5000, 100.0));   // m_now = 5000
-    const auto later = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    EXPECT_EQ(broker.orders().at(later).timestamp, Timestamp::from_millis(5000));
-}
-
-TEST(BacktestBroker, RejectsNonPositiveQuantityAtPlacement)
-{
-    BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto zero = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 0.0 });
-    const auto neg = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = -1.0 });
-    EXPECT_EQ(broker.orders().at(zero).status, OrderStatus::Rejected);
-    EXPECT_EQ(broker.orders().at(neg).status, OrderStatus::Rejected);
-    // A rejected order never fills.
-    broker.on_tick(flat(2000, 100.0));
-    EXPECT_TRUE(broker.trades().empty());
+    const auto id = broker.place_order(entry_market("X", OrderSide::Buy, 0.0));
+    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Rejected);
 }
 
 TEST(BacktestBroker, RejectsLimitWithoutPositivePrice)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto zero = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 0.0 });
-    const auto neg = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = -5.0 });
-    EXPECT_EQ(broker.orders().at(zero).status, OrderStatus::Rejected);
-    EXPECT_EQ(broker.orders().at(neg).status, OrderStatus::Rejected);
+    const auto id = broker.place_order(
+        OrderParams{ .symbol = "X", .side = OrderSide::Buy, .type = OrderType::Limit, .quantity = 1.0 });
+    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Rejected);   // no price
 }
 
-// --- Market fills -------------------------------------------------------------
-
-TEST(BacktestBroker, MarketBuyFillsAtNextBarOpen)
+TEST(BacktestBroker, EntryRejectedWhileSymbolHasAPosition)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto id = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 2.0 });
-    broker.on_tick(bar(2000, 110.0, 115.0, 105.0, 112.0));   // fills @ open=110
-
-    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Filled);
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 220.0);
-    EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0 - 220.0 + 2.0 * 112.0);   // marked to close
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));                 // long opened
+    const auto id2 = broker.place_order(entry_market("X", OrderSide::Buy, 5.0));
+    EXPECT_EQ(broker.orders().at(id2).status, OrderStatus::Rejected);   // one context per symbol
 }
 
-TEST(BacktestBroker, MarketSellWithNoPositionOpensShort)
-{
-    BacktestBroker broker{ Balance{ 1'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0 });
-    broker.on_tick(flat(2000, 110.0));   // short opens @110
-
-    EXPECT_DOUBLE_EQ(broker.cash(), 1'000.0 - 110.0);   // collateral tied up (cash-secured)
-    EXPECT_DOUBLE_EQ(broker.equity(), 1'000.0);         // flat-bar fill -> no immediate P&L
-}
-
-TEST(BacktestBroker, OrderDoesNotFillOnItsOwnBarTimestamp)
+TEST(BacktestBroker, ExitRejectedWithoutAPosition)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.on_tick(flat(2000, 100.0));   // m_now = 2000
-    const auto id = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-
-    broker.on_tick(flat(2000, 110.0));   // same ts: 2000 >= 2000 -> gate, no fill
-    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Open);
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0);
-
-    broker.on_tick(bar(3000, 120.0, 120.0, 120.0, 120.0));   // later -> fills @120
-    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Filled);
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 120.0);
+    const auto id = broker.place_exit(limit("X", OrderSide::Sell, 5.0, 110.0));
+    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Rejected);   // nothing to reduce
 }
 
-TEST(BacktestBroker, OrderFillsOnlyAgainstItsOwnSymbol)
+// --- Entry fills -------------------------------------------------------------
+
+TEST(BacktestBroker, MarketEntryFillsAtNextOpenAndDebitsCash)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto id = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(2000, Symbol{ "Y" }, 50.0));   // different symbol -> no fill
-    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Open);
-    broker.on_tick(flat(2000, Symbol{ "X" }, 100.0));  // matches -> fills @100
-    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Filled);
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 100.0);
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));
+    const auto pos = broker.position("X");
+    ASSERT_TRUE(pos.has_value());
+    EXPECT_DOUBLE_EQ(pos->quantity, 10.0);
+    EXPECT_DOUBLE_EQ(pos->price, 100.0);
+    EXPECT_DOUBLE_EQ(broker.cash(), 9'000.0);
+    EXPECT_EQ(broker.trades().size(), 1u);
 }
 
-// --- Limit fills --------------------------------------------------------------
-
-TEST(BacktestBroker, LimitBuyFillsWhenLowReachesLimit)
+TEST(BacktestBroker, NoFillOnThePlacementBar)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 95.0 });
-    broker.on_tick(bar(2000, 100.0, 105.0, 90.0, 100.0));   // low=90 <= 95 -> min(95,100)=95
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 95.0);
+    broker.on_tick(flat(1000, 100.0));                 // m_now -> 1000
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));   // stamped 1000
+    broker.on_tick(flat(1000, 100.0));                 // same ts -> gated, no fill
+    EXPECT_FALSE(broker.position("X").has_value());
+    broker.on_tick(flat(2000, 100.0));                 // later bar -> fills
+    EXPECT_TRUE(broker.position("X").has_value());
 }
 
-TEST(BacktestBroker, LimitBuyGapDownFillsAtOpen)
+TEST(BacktestBroker, LimitBuyEntryFillsWhenLowReachesLimit)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 90.0 });
-    broker.on_tick(bar(2000, 80.0, 85.0, 75.0, 82.0));   // open=80 below limit -> min(90,80)=80
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 80.0);
+    broker.place_order(limit("X", OrderSide::Buy, 10.0, 100.0));
+    broker.on_tick(bar(1000, 105.0, 106.0, 99.0, 104.0));   // low 99 <= 100 -> fill at min(100,105)=100
+    ASSERT_TRUE(broker.position("X").has_value());
+    EXPECT_DOUBLE_EQ(broker.position("X")->price, 100.0);
 }
 
-TEST(BacktestBroker, LimitBuyStaysOpenWhenLowAboveLimit)
+TEST(BacktestBroker, LimitBuyEntryStaysOpenWhenLowAboveLimit)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto id = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 95.0 });
-    broker.on_tick(bar(2000, 110.0, 115.0, 105.0, 112.0));   // low=105 > 95 -> no fill
-    EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Open);   // lingers, NOT rejected
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0);
-}
-
-TEST(BacktestBroker, LimitSellFillsWhenHighReachesLimit)
-{
-    BacktestBroker broker{ Balance{ 1'000.0 } };
-    broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0, .price = 125.0 });
-    broker.on_tick(bar(2000, 100.0, 130.0, 95.0, 120.0));   // high=130 >= 125 -> max(125,100)=125 (short opens)
-    EXPECT_DOUBLE_EQ(broker.cash(), 1'000.0 - 125.0);       // collateral for the short
-}
-
-TEST(BacktestBroker, LimitSellStaysOpenWhenHighBelowLimit)
-{
-    BacktestBroker broker{ Balance{ 1'000.0 } };
-    const auto id = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0, .price = 125.0 });
-    broker.on_tick(bar(2000, 100.0, 120.0, 95.0, 110.0));   // high=120 < 125 -> no fill
+    const auto id = broker.place_order(limit("X", OrderSide::Buy, 10.0, 100.0));
+    broker.on_tick(bar(1000, 105.0, 110.0, 101.0, 108.0)); // low 101 > 100 -> no fill
+    EXPECT_FALSE(broker.position("X").has_value());
     EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Open);
 }
 
-// --- Trade recording ----------------------------------------------------------
-
-TEST(BacktestBroker, FillRecordsOneTradeWithAllFields)
+TEST(BacktestBroker, StopBuyEntryTriggersOnBreakout)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    const auto id = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 2.0 });
-    broker.on_tick(bar(2000, 110.0, 115.0, 105.0, 112.0));
-
-    ASSERT_EQ(broker.trades().size(), 1u);
-    const auto& t = broker.trades().at(TradeID{ 1 });
-    EXPECT_EQ(t.id, TradeID{ 1 });
-    EXPECT_EQ(t.order_id, id);
-    EXPECT_EQ(t.timestamp, Timestamp::from_millis(2000));
-    EXPECT_EQ(t.symbol, "X");
-    EXPECT_EQ(t.side, OrderSide::Buy);
-    EXPECT_DOUBLE_EQ(t.quantity, 2.0);
-    EXPECT_DOUBLE_EQ(t.price, 110.0);
+    broker.place_order(stop("X", OrderSide::Buy, 10.0, 110.0));
+    broker.on_tick(bar(1000, 105.0, 109.0, 104.0, 108.0)); // high 109 < 110 -> no trigger
+    EXPECT_FALSE(broker.position("X").has_value());
+    broker.on_tick(bar(2000, 108.0, 112.0, 107.0, 111.0)); // high 112 >= 110 -> fill at max(110,108)=110
+    ASSERT_TRUE(broker.position("X").has_value());
+    EXPECT_DOUBLE_EQ(broker.position("X")->price, 110.0);
 }
 
-TEST(BacktestBroker, OnlyFillsAdvanceTheTradeIdCounter)
+TEST(BacktestBroker, InsufficientCashRejectsEntry)
 {
-    BacktestBroker broker{ Balance{ 50.0 } };   // too poor to fill the first buy
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(2000, 100.0));          // cost 100 > 50 -> rejected, no trade
-    EXPECT_TRUE(broker.trades().empty());
-
-    // A later affordable order gets trade id 1 (the rejected attempt didn't burn one).
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(3000, 40.0));
-    const auto trades = sorted_trades(broker);
-    ASSERT_EQ(trades.size(), 1u);
-    EXPECT_EQ(trades.front().id, TradeID{ 1 });
-}
-
-// --- Position model: the rewrite's core --------------------------------------
-
-TEST(BacktestBroker, InsufficientCashRejectsAndDoesNotLinger)
-{
-    BacktestBroker broker{ Balance{ 50.0 } };
-    const auto id = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(2000, 100.0));   // cost 100 > 50 -> Rejected on this bar
+    BacktestBroker broker{ Balance{ 500.0 } };
+    const auto id = broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));                 // cost 1000 > 500 -> reject
     EXPECT_EQ(broker.orders().at(id).status, OrderStatus::Rejected);
-    EXPECT_DOUBLE_EQ(broker.cash(), 50.0);
-
-    // Key new behavior: it does NOT linger to a later, affordable bar.
-    broker.on_tick(flat(3000, 40.0));
-    EXPECT_TRUE(broker.trades().empty());
-    EXPECT_DOUBLE_EQ(broker.cash(), 50.0);
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_DOUBLE_EQ(broker.cash(), 500.0);
 }
 
-TEST(BacktestBroker, SameSideAddIsRejected)
+// --- Reduce-only exits -------------------------------------------------------
+
+TEST(BacktestBroker, ExitReducesPositionAndKeepsSiblingOpen)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(2000, 100.0));   // opens long 1 @100 (m_now=2000)
-
-    const auto add = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(3000, 110.0));   // same-side against existing long -> Rejected
-    EXPECT_EQ(broker.orders().at(add).status, OrderStatus::Rejected);
-    EXPECT_EQ(broker.trades().size(), 1u);                       // only the first open
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 100.0);          // add never settled
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));                 // long 10 @100, cash 9000
+    broker.place_exit(limit("X", OrderSide::Sell, 4.0, 110.0));    // partial TP (id 2)
+    const auto far = broker.place_exit(limit("X", OrderSide::Sell, 10.0, 120.0)); // farther TP (id 3)
+    broker.on_tick(bar(2000, 109.0, 112.0, 108.0, 111.0));   // 110 hit (sell 4); 120 not hit
+    const auto pos = broker.position("X");
+    ASSERT_TRUE(pos.has_value());
+    EXPECT_DOUBLE_EQ(pos->quantity, 6.0);
+    // cash: 9000 + 4*100 (collateral) + (110-100)*4 (pnl) = 9440
+    EXPECT_DOUBLE_EQ(broker.cash(), 9'440.0);
+    EXPECT_EQ(broker.orders().at(far).status, OrderStatus::Open);  // sibling survives partial exit
 }
 
-TEST(BacktestBroker, PartialCloseShrinksPositionKeepsEntry)
+TEST(BacktestBroker, FullExitClosesAndCancelsSiblingNoReverse)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 3.0 });
-    broker.on_tick(flat(2000, 100.0));   // long 3 @100
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));
+    const auto tp = broker.place_exit(limit("X", OrderSide::Sell, 10.0, 110.0));
+    const auto sl = broker.place_exit(stop("X", OrderSide::Sell, 10.0, 95.0));
+    broker.on_tick(bar(2000, 105.0, 115.0, 104.0, 108.0)); // TP 110 hit; SL 95 not (low 104)
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Filled);
+    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Cancelled);   // OCO
+    EXPECT_DOUBLE_EQ(broker.cash(), 10'100.0);          // 9000 + 1000 + 100 pnl
 
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0 });
-    broker.on_tick(flat(3000, 110.0));   // close 1 of 3 @110
-
-    const auto trades = sorted_trades(broker);
-    ASSERT_EQ(trades.size(), 2u);
-    EXPECT_DOUBLE_EQ(trades[1].quantity, 1.0);
-    // cash = 10000 - 300 (open) + (1*100 + 10 pnl) (close 1)
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 300.0 + 110.0);
-    // remaining 2 @ entry 100, marked to 110
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash() + 2.0 * 110.0);
+    broker.on_tick(bar(3000, 108.0, 115.0, 104.0, 108.0));  // nothing left to act on
+    EXPECT_EQ(broker.trades().size(), 2u);
+    EXPECT_FALSE(broker.position("X").has_value());
 }
 
-TEST(BacktestBroker, FullCloseErasesPositionAndRealizesPnl)
+TEST(BacktestBroker, OversizedExitClampsToHeldNoFlip)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 2.0 });
-    broker.on_tick(flat(2000, 100.0));   // long 2 @100
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 2.0 });
-    broker.on_tick(flat(3000, 120.0));   // close 2 @120 -> +40 pnl, flat
-
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 200.0 + 240.0);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());   // flat: equity == cash
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));
+    broker.place_exit(limit("X", OrderSide::Sell, 25.0, 110.0));   // oversized
+    broker.on_tick(bar(2000, 109.0, 115.0, 108.0, 111.0));        // fills min(25,10)=10 -> flat
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_EQ(broker.trades().size(), 2u);             // entry + one close, no short opened
 }
 
-TEST(BacktestBroker, OversizedCloseClampsToHeldNoFlip)
+TEST(BacktestBroker, StopLossExitTriggersOnAdverseMove)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 2.0 });
-    broker.on_tick(flat(2000, 100.0));   // long 2 @100
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 5.0 });
-    broker.on_tick(flat(3000, 120.0));   // sell 5 clamps to held 2 @120, no short opens
-
-    const auto trades = sorted_trades(broker);
-    ASSERT_EQ(trades.size(), 2u);
-    EXPECT_DOUBLE_EQ(trades[1].quantity, 2.0);          // only the held 2 closed
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 200.0 + 240.0);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());   // flat, not short
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));
+    broker.place_exit(stop("X", OrderSide::Sell, 10.0, 95.0));
+    broker.on_tick(bar(2000, 98.0, 99.0, 94.0, 96.0)); // low 94 <= 95 -> sell-stop at min(95,98)=95 -> flat
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_DOUBLE_EQ(broker.cash(), 9'950.0);          // 9000 + 1000 + (95-100)*10
 }
 
 TEST(BacktestBroker, ShortRoundTripRealizesPnl)
 {
-    BacktestBroker broker{ Balance{ 1'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0 });
-    broker.on_tick(flat(2000, 110.0));   // short 1 @110, cash=890
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(3000, 90.0));    // cover @90 -> +20 profit
-
-    EXPECT_DOUBLE_EQ(broker.cash(), 1'020.0);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());   // flat
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    broker.place_order(entry_market("X", OrderSide::Sell, 10.0));  // short entry
+    broker.on_tick(flat(1000, 100.0));
+    const auto pos = broker.position("X");
+    ASSERT_TRUE(pos.has_value());
+    EXPECT_DOUBLE_EQ(pos->quantity, -10.0);
+    EXPECT_DOUBLE_EQ(broker.cash(), 9'000.0);          // cash-secured short ties up full notional
+    broker.place_exit(limit("X", OrderSide::Buy, 10.0, 90.0));     // cover
+    broker.on_tick(bar(2000, 91.0, 92.0, 89.0, 90.0)); // buy-limit 90 hit -> cover -> flat
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_DOUBLE_EQ(broker.cash(), 10'100.0);         // 9000 + 1000 + (100-90)*10
 }
 
-TEST(BacktestBroker, IndependentPositionsAcrossSymbols)
+// --- Brackets (pre-placed) ---------------------------------------------------
+
+TEST(BacktestBroker, PreplacedExitsDormantUntilEntryFillsThenArmedNextBar)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "A", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.place_order(MarketOrderParams{ .symbol = "B", .side = OrderSide::Buy, .quantity = 2.0 });
-    broker.on_tick(flat(2000, Symbol{ "A" }, 100.0));   // A fills @100
-    broker.on_tick(flat(2000, Symbol{ "B" }, 50.0));    // B fills @50
-
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 100.0 - 100.0);
-    broker.on_tick(flat(3000, Symbol{ "A" }, 120.0));   // remark A only
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash() + 1.0 * 120.0 + 2.0 * 50.0);
+    broker.place_order(limit("X", OrderSide::Buy, 10.0, 100.0));   // entry
+    broker.place_exit(limit("X", OrderSide::Sell, 10.0, 105.0));   // TP at 105
+    // The entry's bar also spans the TP price; arming must defer the TP to next bar.
+    broker.on_tick(bar(1000, 100.0, 106.0, 99.0, 104.0));
+    ASSERT_TRUE(broker.position("X").has_value());
+    EXPECT_EQ(broker.trades().size(), 1u);             // only the entry filled this bar
+    broker.on_tick(bar(2000, 104.0, 107.0, 103.0, 106.0));        // now the TP fills
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_EQ(broker.trades().size(), 2u);
 }
 
-// --- Equity marking -----------------------------------------------------------
-
-TEST(BacktestBroker, EquityMarksToLatestClosePerSymbol)
+TEST(BacktestBroker, RejectedEntryCancelsItsPreplacedExits)
 {
-    BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 2.0 });
-    broker.on_tick(flat(2000, 110.0));   // fill 2 @110
-    EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0 - 220.0 + 2.0 * 110.0);
-    broker.on_tick(flat(3000, 130.0));   // remark
-    EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0 - 220.0 + 2.0 * 130.0);
-}
-
-TEST(BacktestBroker, StaleMarkWhenHeldSymbolStopsPrinting)
-{
-    // A held symbol that stops printing keeps contributing at its last-seen close.
-    BacktestBroker broker{ Balance{ 10'000.0 } };
-    broker.place_order(MarketOrderParams{ .symbol = "A", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.place_order(MarketOrderParams{ .symbol = "B", .side = OrderSide::Buy, .quantity = 1.0 });
-    broker.on_tick(flat(2000, Symbol{ "A" }, 100.0));
-    broker.on_tick(flat(2000, Symbol{ "B" }, 50.0));
-    EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0);   // 9850 + 100 + 50
-
-    // B never prints again; A keeps printing. B stays frozen at 50.
-    broker.on_tick(flat(3000, Symbol{ "A" }, 200.0));
-    broker.on_tick(flat(4000, Symbol{ "A" }, 300.0));
-    EXPECT_DOUBLE_EQ(broker.equity(), (10'000.0 - 150.0) + 300.0 + 50.0);
-}
-
-// --- Chained orders -----------------------------------------------------------
-
-TEST(BacktestBroker, ChainedOrderStaysDormantUntilParentFills)
-{
-    BacktestBroker broker{ Balance{ 10'000.0 } };
-
-    // Entry: a limit buy that won't fill until price dips to 90.
-    const auto entry = broker.place_order(LimitOrderParams{
-        .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 90.0 });
-    // Chained exit: a sell limit at 110, dormant until the entry fills.
-    const auto exit = broker.place_order(LimitOrderParams{
-        .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0, .price = 110.0 }, entry);
-
-    // Bar reaches 110 (the exit's price) but not 90 (the entry's): the entry lingers,
-    // and the dormant exit must NOT fire even though its own price was hit.
-    broker.on_tick(bar(2000, 100.0, 130.0, 95.0, 100.0));
-    EXPECT_TRUE(broker.trades().empty());
-    EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Open);
-    EXPECT_EQ(broker.orders().at(exit).status, OrderStatus::Open);   // still dormant
-
-    // Price dips to 90: the entry fills (@85), which activates the exit.
-    broker.on_tick(bar(3000, 85.0, 88.0, 80.0, 86.0));
-    EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Filled);
-    ASSERT_EQ(broker.trades().size(), 1u);
-
-    // Next bar reaches 110: the now-active exit fills and closes the position.
-    broker.on_tick(bar(4000, 120.0, 125.0, 115.0, 122.0));
-    EXPECT_EQ(broker.orders().at(exit).status, OrderStatus::Filled);
-    ASSERT_EQ(broker.trades().size(), 2u);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());   // flat
-}
-
-// --- Bracket cancellation (cancel-on-reject & cancel-on-flat) -----------------
-
-TEST(BacktestBroker, RejectedEntryCancelsDormantChildren)
-{
-    BacktestBroker broker{ Balance{ 100.0 } };   // too little to afford the entry
-
-    const auto entry = broker.place_order(
-        MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
-    const auto tp = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0, .price = 220.0 }, entry);
-    const auto sl = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 1.0, .price = 180.0 }, entry);
-
-    // Entry market-buys at open=200 -> cost 200 > 100 cash -> rejected, brackets cancelled.
-    broker.on_tick(flat(1000, 200.0));
-
+    BacktestBroker broker{ Balance{ 50.0 } };          // too little to afford the entry
+    const auto entry = broker.place_order(limit("X", OrderSide::Buy, 10.0, 100.0));
+    const auto tp = broker.place_exit(limit("X", OrderSide::Sell, 10.0, 110.0));
+    broker.on_tick(bar(1000, 100.0, 101.0, 99.0, 100.0));   // entry triggers but cost 1000 > 50 -> reject
     EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Rejected);
     EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Cancelled);
-    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Cancelled);
-    EXPECT_TRUE(broker.trades().empty());
-    EXPECT_DOUBLE_EQ(broker.equity(), 100.0);
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_EQ(broker.trades().size(), 0u);
 }
 
-TEST(BacktestBroker, PartialExitKeepsSiblingAlive)
+// --- Equity, marking, ids, independence -------------------------------------
+
+TEST(BacktestBroker, EquityMarksToLatestClose)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-
-    const auto entry = broker.place_order(
-        MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0 });
-    const auto tp1 = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 4.0, .price = 110.0 }, entry);
-    const auto tp2 = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 6.0, .price = 120.0 }, entry);
-
-    broker.on_tick(flat(1000, 100.0));                     // entry fills @100, both targets armed
-    EXPECT_EQ(broker.orders().at(entry).status, OrderStatus::Filled);
-
-    broker.on_tick(bar(2000, 105.0, 112.0, 104.0, 108.0)); // hits 110, not 120
-    EXPECT_EQ(broker.orders().at(tp1).status, OrderStatus::Filled);
-    EXPECT_EQ(broker.orders().at(tp2).status, OrderStatus::Open);   // partial -> sibling survives
-    EXPECT_EQ(broker.trades().size(), 2u);
-
-    broker.on_tick(bar(3000, 118.0, 125.0, 117.0, 122.0)); // now hits 120
-    EXPECT_EQ(broker.orders().at(tp2).status, OrderStatus::Filled);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());      // flat
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'160.0);
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));
+    broker.on_tick(flat(1000, 100.0));                 // long 10 @100
+    EXPECT_DOUBLE_EQ(broker.equity(), 10'000.0);       // 9000 + 1000 reserved + 0 upnl
+    broker.on_tick(flat(2000, 110.0));                 // mark -> 110
+    EXPECT_DOUBLE_EQ(broker.equity(), 10'100.0);       // + (110-100)*10
 }
 
-TEST(BacktestBroker, FullExitCancelsRemainingLegAndNoReverse)
+TEST(BacktestBroker, OnlyFillsAdvanceTheTradeIdCounter)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-
-    const auto entry = broker.place_order(
-        MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0 });
-    const auto tp1 = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 110.0 }, entry);
-    const auto tp2 = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 130.0 }, entry);
-
-    broker.on_tick(flat(1000, 100.0));                     // entry fills @100
-    broker.on_tick(bar(2000, 105.0, 115.0, 104.0, 108.0)); // hits 110 -> tp1 closes all 10 -> flat
-
-    EXPECT_EQ(broker.orders().at(tp1).status, OrderStatus::Filled);
-    EXPECT_EQ(broker.orders().at(tp2).status, OrderStatus::Cancelled);  // cancel-on-flat
-    EXPECT_EQ(broker.trades().size(), 2u);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());
-
-    // A later bar reaching tp2's old price must NOT reopen a short.
-    broker.on_tick(bar(3000, 128.0, 135.0, 127.0, 132.0));
-    EXPECT_EQ(broker.trades().size(), 2u);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());      // still flat, no reverse position
-    EXPECT_DOUBLE_EQ(broker.cash(), 10'100.0);
+    broker.place_order(entry_market("X", OrderSide::Buy, 10.0));   // id 1
+    broker.place_order(entry_market("X", OrderSide::Buy, 1.0));    // id 2 -> rejected (working entry exists)
+    broker.on_tick(flat(1000, 100.0));                 // fill 1 -> trade 1
+    broker.place_exit(entry_market("X", OrderSide::Sell, 10.0));   // market exit
+    broker.on_tick(flat(2000, 110.0));                 // close -> trade 2
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[0].id, 1u);
+    EXPECT_EQ(trades[1].id, 2u);
 }
 
-TEST(BacktestBroker, RestingEntrySurvivesCancelOnFlat)
+TEST(BacktestBroker, PositionsAreIndependentPerSymbol)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-
-    const auto entryA = broker.place_order(
-        MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0 });
-    const auto tpA = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 110.0 }, entryA);
-    // Independent re-entry order, NOT part of A's bracket (no parent).
-    const auto entryB = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 5.0, .price = 80.0 });
-
-    broker.on_tick(flat(1000, 100.0));                     // entryA fills @100; entryB rests (low 100 > 80)
-    broker.on_tick(bar(2000, 105.0, 115.0, 104.0, 108.0)); // tpA closes A -> flat -> cancel-on-flat(A)
-
-    EXPECT_EQ(broker.orders().at(tpA).status, OrderStatus::Filled);
-    EXPECT_EQ(broker.orders().at(entryB).status, OrderStatus::Open);   // entry survived the sweep
-
-    // And it still works: price dips to 80 -> entryB fills, opening a fresh position.
-    broker.on_tick(bar(3000, 79.0, 82.0, 78.0, 81.0));
-    EXPECT_EQ(broker.orders().at(entryB).status, OrderStatus::Filled);
-}
-
-TEST(BacktestBroker, CancelOnFlatRecursesToGrandchildren)
-{
-    BacktestBroker broker{ Balance{ 10'000.0 } };
-
-    const auto entry = broker.place_order(
-        MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0 });
-    const auto tp = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 110.0 }, entry);
-    // A grandchild hanging off the take-profit (a nested leg).
-    const auto grandchild = broker.place_order(
-        LimitOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0, .price = 50.0 }, tp);
-
-    broker.on_tick(flat(1000, 100.0));                     // entry fills @100
-    broker.on_tick(bar(2000, 105.0, 115.0, 104.0, 108.0)); // tp closes position -> flat
-
-    EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Filled);
-    EXPECT_EQ(broker.orders().at(grandchild).status, OrderStatus::Cancelled);  // reached via recursion
+    broker.place_order(entry_market("A", OrderSide::Buy, 1.0));
+    broker.place_order(entry_market("B", OrderSide::Sell, 1.0));
+    broker.on_tick(flat(1000, "A", 100.0));
+    broker.on_tick(flat(1000, "B", 200.0));
+    ASSERT_TRUE(broker.position("A").has_value());
+    ASSERT_TRUE(broker.position("B").has_value());
+    EXPECT_GT(broker.position("A")->quantity, 0.0);    // long A
+    EXPECT_LT(broker.position("B")->quantity, 0.0);    // short B
 }
 
 } // namespace stonks::broker

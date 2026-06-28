@@ -37,8 +37,9 @@ struct BrokerSpy
     Balance equity() const { return impl->equity(); }
     const std::unordered_map<TradeID, Trade>& trades() const { return impl->trades(); }
     const std::unordered_map<OrderID, Order>& orders() const { return impl->orders(); }
-    OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
-    OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
+    OrderID place_order(const OrderParams& p) { return impl->place_order(p); }
+    OrderID place_exit(const OrderParams& p) { return impl->place_exit(p); }
+    std::optional<Position> position(const Symbol& s) const { return impl->position(s); }
     void on_tick(const KLine& bar) { impl->on_tick(bar); }
 };
 static_assert(Broker<BrokerSpy>);
@@ -97,9 +98,9 @@ struct BuyThenSell
     void on_tick(auto& ctx)
     {
         if (tick == 0) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
+            ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
         } else if (tick == 1) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = qty });
+            ctx.place_exit(OrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = qty });
         }
         ++tick;
     }
@@ -115,7 +116,7 @@ struct BuyAndHold
     void on_tick(auto& ctx)
     {
         if (placed) { return; }
-        ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
+        ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
         placed = true;
     }
 };
@@ -131,7 +132,7 @@ struct LimitBuyOnce
     void on_tick(auto& ctx)
     {
         if (placed) { return; }
-        ctx.place_order(LimitOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty, .price = limit });
+        ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .type = OrderType::Limit, .quantity = qty, .price = limit });
         placed = true;
     }
 };
@@ -149,12 +150,12 @@ struct TwoSymbolBuyer
     void on_tick(auto& ctx)
     {
         if (!bought_a) {
-            ctx.place_order(MarketOrderParams{ .symbol = a, .side = OrderSide::Buy, .quantity = qty_a });
+            ctx.place_order(OrderParams{ .symbol = a, .side = OrderSide::Buy, .quantity = qty_a });
             bought_a = true;
             return;
         }
         if (!bought_b) {
-            ctx.place_order(MarketOrderParams{ .symbol = b, .side = OrderSide::Buy, .quantity = qty_b });
+            ctx.place_order(OrderParams{ .symbol = b, .side = OrderSide::Buy, .quantity = qty_b });
             bought_b = true;
         }
     }
@@ -171,9 +172,9 @@ struct ShortOnceThenCover
     void on_tick(auto& ctx)
     {
         if (tick == 0) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = qty });
+            ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = qty });
         } else if (tick == cover_at) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
+            ctx.place_exit(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
         }
         ++tick;
     }
@@ -190,7 +191,7 @@ struct BuyOnLastBar
     void on_tick(auto& ctx)
     {
         if (tick == last_index) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
+            ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
         }
         ++tick;
     }
@@ -208,9 +209,9 @@ struct BuyTwiceSameSide
     void on_tick(auto& ctx)
     {
         if (tick == 0) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = q0 });
+            ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = q0 });
         } else if (tick == 1) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = q1 });
+            ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = q1 });
         }
         ++tick;
     }
@@ -228,9 +229,9 @@ struct BuyThenOversell
     void on_tick(auto& ctx)
     {
         if (tick == 0) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = held });
+            ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = held });
         } else if (tick == 2) {
-            ctx.place_order(MarketOrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = oversell });
+            ctx.place_exit(OrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = oversell });
         }
         ++tick;
     }
@@ -255,7 +256,7 @@ struct BuyEachPrinterEveryTick
     void on_tick(auto& ctx)
     {
         for (const auto& s : ctx.history(1).series) {
-            ctx.place_order(MarketOrderParams{ .symbol = Symbol{ s.symbol }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 } });
+            ctx.place_order(OrderParams{ .symbol = Symbol{ s.symbol }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 } });
         }
     }
 };

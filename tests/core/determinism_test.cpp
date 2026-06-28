@@ -16,9 +16,10 @@ struct OneOrderPerTick
 {
     void on_tick(auto& context)
     {
-        context.place_order(LimitOrderParams{
+        context.place_order(OrderParams{
             .symbol = Symbol{ "X" },
             .side = OrderSide::Buy,
+            .type = OrderType::Limit,
             .quantity = Quantity{ 1.0 },
             .price = Price{ 42.0 },
         });

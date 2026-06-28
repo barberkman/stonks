@@ -1,14 +1,10 @@
 #pragma once
 
-#include <cstdint>
 #include <optional>
-#include <utility>
 
 #include "stonks/core/broker.h"
 #include "stonks/core/clock.h"
 #include "stonks/core/datafeed.h"
-#include "stonks/core/log.h"
-#include "stonks/core/logfmt.h"
 #include "stonks/core/types.h"
 
 namespace stonks::core {
@@ -30,30 +26,16 @@ public:
     Balance cash() const { return m_broker.cash(); }
     Balance equity() const { return m_broker.equity(); }
 
+    // The current position on a symbol, or nullopt if flat. Lets a strategy
+    // attach exits to (or manage) a position it already holds.
+    std::optional<Position> position(const Symbol& symbol) const { return m_broker.position(symbol); }
+
     // This tick's window: every symbol that printed at the current timestamp,
-    // each with its last `count` bars (including today's). No-lookahead by
-    // construction; see KLineFeed::window.
-    MarketWindow history(int count) const
-    {
-        MarketWindow w = m_dataFeed.window(count);
-        return w;
-    }
+    // each with its last `count` bars. No-lookahead by construction.
+    MarketWindow history(int count) const { return m_dataFeed.window(count); }
 
-    OrderID place_order(const MarketOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
-    {
-        STONKS_LOG("ctx", "ev=place_req type=Market sym={} side={} qty={:.6f} parent={} now={}",
-                   parameters.symbol, stonks::log::side_str(parameters.side), parameters.quantity,
-                   parent.value_or(0), stonks::log::ts_ms(m_clock.now()));
-        return m_broker.place_order(parameters, parent);
-    }
-
-    OrderID place_order(const LimitOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
-    {
-        STONKS_LOG("ctx", "ev=place_req type=Limit sym={} side={} qty={:.6f} price={:.4f} parent={} now={}",
-                   parameters.symbol, stonks::log::side_str(parameters.side), parameters.quantity,
-                   parameters.price, parent.value_or(0), stonks::log::ts_ms(m_clock.now()));
-        return m_broker.place_order(parameters, parent);
-    }
+    OrderID place_order(const OrderParams& parameters) { return m_broker.place_order(parameters); }  // entry
+    OrderID place_exit (const OrderParams& parameters) { return m_broker.place_exit(parameters); }   // reduce-only exit
 
 private:
     BrokerT& m_broker;

@@ -63,10 +63,10 @@ class EMA50Strategy(stonks.Strategy):
                 qty = ctx.cash() / close
                 if qty <= 0.0:
                     continue
-                if ctx.place_market_order(symbol=symbol, side=OrderSide.Buy, quantity=qty):
+                if ctx.place_order(symbol=symbol, side=OrderSide.Buy, quantity=qty):
                     state["held_quantity"] = qty
             elif close < state["ema"] and state["held_quantity"] > 0.0:
-                if ctx.place_market_order(
+                if ctx.place_exit(
                     symbol=symbol, side=OrderSide.Sell, quantity=state["held_quantity"]
                 ):
                     state["held_quantity"] = 0.0
@@ -136,8 +136,9 @@ def test_buys_on_uptrend():
 | `ctx.cash()` | `float` |
 | `ctx.equity()` | `float` |
 | `ctx.history(count: int)` | `MarketWindow` — every symbol that printed this tick, each with its last N bars, as one combined frame |
-| `ctx.place_market_order(symbol, side, quantity, time_in_force=GTC)` | `bool` |
-| `ctx.place_limit_order(symbol, side, quantity, price, time_in_force=GTC)` | `bool` |
+| `ctx.position(symbol)` | `Position` (`.quantity` signed, `.price`) or `None` if flat |
+| `ctx.place_order(symbol, side, quantity, type=OrderType.Market, price=None, time_in_force=GTC)` | `OrderID` — an ENTRY; opens a position, valid only when flat on the symbol |
+| `ctx.place_exit(symbol, side, quantity, type=OrderType.Market, price=None, time_in_force=GTC)` | `OrderID` — a reduce-only EXIT (stop-loss `type=Stop` / take-profit `type=Limit`); only reduces an existing opposite position |
 
 `history(n)` returns a `MarketWindow` — a long frame over every symbol that
 printed at the current timestamp. `.symbol` is a per-row column; `.timestamp` is

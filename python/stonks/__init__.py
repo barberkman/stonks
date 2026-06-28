@@ -11,6 +11,7 @@ from stonks._core import (
     MarketWindow,
     OrderSide,
     OrderType,
+    Position,
     TimeInForce,
     Timestamp,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "MarketWindow",
     "OrderSide",
     "OrderType",
+    "Position",
     "Strategy",
     "TimeInForce",
     "Timestamp",

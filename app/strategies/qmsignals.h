@@ -14,11 +14,12 @@
 
 #include <stonks/core/types.h>
 
-// Qullamaggie momentum scanner — all five setups in one strategy, print-only.
+// Qullamaggie momentum scanner — all five setups in one strategy.
 //
-// Runs every setup against each symbol's closed bar and, whenever one fires, prints
-// a line with the timestamp, setup name, and the trade levels (entry / stop / sell).
-// It does NOT place orders — it only reports signals via std::cout.
+// Runs every setup against each symbol's closed bar and, whenever one fires while
+// the symbol is flat, places a bracket: a Limit ENTRY plus two reduce-only EXITs —
+// a Stop stop-loss and a Limit take-profit (cancelled together when the position
+// goes flat, OCO).
 //
 //   breakout        — long: break above a tight base's pivot high
 //   short_breakout  — short: breakdown below a base's pivot low (downtrend mirror)
@@ -99,37 +100,26 @@ struct QMSignalsStrategy
             }
             */
 
-            if (!sigs.empty()) {
+            // Enter a fresh bracket only when flat on this symbol (one position per symbol).
+            if (!sigs.empty() && !ctx.position(sym).has_value()) {
                 const auto& s = sigs.front();
                 const bool is_long = s.stop < s.entry;                 // long setups stop below entry
                 const double qty = ctx.equity() * position_fraction / s.entry;
                 if (qty > 0.0) {
-                    // Enter order
-                    auto order_id = ctx.place_order(stonks::core::LimitOrderParams{
-                        .symbol = sym,
-                        .side = is_long ? stonks::core::OrderSide::Buy
-                                        : stonks::core::OrderSide::Sell,
-                        .quantity = qty,
-                        .price = s.entry
-                    });
+                    const auto entry_side = is_long ? stonks::core::OrderSide::Buy : stonks::core::OrderSide::Sell;
+                    const auto exit_side  = is_long ? stonks::core::OrderSide::Sell : stonks::core::OrderSide::Buy;
 
-                    // Stop loss order
-                    ctx.place_order(stonks::core::LimitOrderParams{
-                        .symbol = sym,
-                        .side = is_long ? stonks::core::OrderSide::Sell
-                                        : stonks::core::OrderSide::Buy,
-                        .quantity = qty,
-                        .price = s.stop,
-                    }, order_id);
+                    ctx.place_order(stonks::core::OrderParams{          // limit entry
+                        .symbol = sym, .side = entry_side,
+                        .type = stonks::core::OrderType::Limit, .quantity = qty, .price = s.entry });
 
-                    // Take profit order
-                    ctx.place_order(stonks::core::LimitOrderParams{
-                        .symbol = sym,
-                        .side = is_long ? stonks::core::OrderSide::Sell
-                                        : stonks::core::OrderSide::Buy,
-                        .quantity = qty,
-                        .price = s.sell
-                    }, order_id);
+                    ctx.place_exit(stonks::core::OrderParams{           // stop-loss: reduce-only Stop
+                        .symbol = sym, .side = exit_side,
+                        .type = stonks::core::OrderType::Stop, .quantity = qty, .price = s.stop });
+
+                    ctx.place_exit(stonks::core::OrderParams{           // take-profit: reduce-only Limit
+                        .symbol = sym, .side = exit_side,
+                        .type = stonks::core::OrderType::Limit, .quantity = qty, .price = s.sell });
                 }
             }
 

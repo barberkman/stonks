@@ -47,10 +47,10 @@ class EMA50Strategy(stonks.Strategy):
                 qty = ctx.cash() / close
                 if qty <= 0.0:
                     continue
-                if ctx.place_market_order(symbol=symbol, side=OrderSide.Buy, quantity=qty):
+                if ctx.place_order(symbol=symbol, side=OrderSide.Buy, quantity=qty):
                     state["held_quantity"] = qty
             elif close < state["ema"] and state["held_quantity"] > 0.0:
-                if ctx.place_market_order(
+                if ctx.place_exit(
                     symbol=symbol, side=OrderSide.Sell, quantity=state["held_quantity"]
                 ):
                     state["held_quantity"] = 0.0

@@ -61,7 +61,7 @@ TEST(ContextAdapter, HistoryForwardsToContext)
     EXPECT_DOUBLE_EQ(adapted.series[0].bars.close.back(), 101.0);
 }
 
-TEST(ContextAdapter, PlaceMarketOrderBuildsAndForwards)
+TEST(ContextAdapter, PlaceOrderBuildsAndForwardsEntry)
 {
     StubFeed feed;
     StubBroker broker;
@@ -71,12 +71,12 @@ TEST(ContextAdapter, PlaceMarketOrderBuildsAndForwards)
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    const core::OrderID id = adapter.place_market_order(core::MarketOrderParams{
+    const core::OrderID id = adapter.place_order(core::OrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Buy,
+        .type = core::OrderType::Market,
         .quantity = 1.5,
-        .time_in_force = core::TimeInForce::GTC,
-    }, std::nullopt);
+    });
 
     EXPECT_EQ(id, 1u);                          // broker-assigned OrderID, returned through
     ASSERT_EQ(placed.size(), 1u);
@@ -85,10 +85,10 @@ TEST(ContextAdapter, PlaceMarketOrderBuildsAndForwards)
     EXPECT_EQ(placed[0].quantity, 1.5);
     EXPECT_EQ(placed[0].type, core::OrderType::Market);
     EXPECT_FALSE(placed[0].price.has_value());
-    EXPECT_FALSE(placed[0].parent_id.has_value());
+    EXPECT_FALSE(placed[0].reduce_only);
 }
 
-TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
+TEST(ContextAdapter, PlaceOrderForwardsLimitPrice)
 {
     StubFeed feed;
     StubBroker broker;
@@ -98,13 +98,13 @@ TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    const core::OrderID id = adapter.place_limit_order(core::LimitOrderParams{
+    const core::OrderID id = adapter.place_order(core::OrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Sell,
+        .type = core::OrderType::Limit,
         .quantity = 2.5,
         .price = 99.5,
-        .time_in_force = core::TimeInForce::GTC,
-    }, std::nullopt);
+    });
 
     EXPECT_EQ(id, 1u);
     ASSERT_EQ(placed.size(), 1u);
@@ -114,10 +114,10 @@ TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
     EXPECT_EQ(placed[0].type, core::OrderType::Limit);
     ASSERT_TRUE(placed[0].price.has_value());
     EXPECT_EQ(*placed[0].price, 99.5);
-    EXPECT_FALSE(placed[0].parent_id.has_value());
+    EXPECT_FALSE(placed[0].reduce_only);
 }
 
-TEST(ContextAdapter, PlaceOrderForwardsParentForBrackets)
+TEST(ContextAdapter, PlaceExitMarksReduceOnly)
 {
     StubFeed feed;
     StubBroker broker;
@@ -127,25 +127,25 @@ TEST(ContextAdapter, PlaceOrderForwardsParentForBrackets)
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    // Entry has no parent; its returned id brackets the protective leg.
-    const core::OrderID entry = adapter.place_market_order(core::MarketOrderParams{
+    const core::OrderID entry = adapter.place_order(core::OrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Buy,
         .quantity = 1.0,
-    }, std::nullopt);
-    const core::OrderID child = adapter.place_limit_order(core::LimitOrderParams{
+    });
+    const core::OrderID stop = adapter.place_exit(core::OrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Sell,
+        .type = core::OrderType::Stop,
         .quantity = 1.0,
-        .price = 110.0,
-    }, entry);
+        .price = 90.0,
+    });
 
     EXPECT_EQ(entry, 1u);
-    EXPECT_EQ(child, 2u);
+    EXPECT_EQ(stop, 2u);
     ASSERT_EQ(placed.size(), 2u);
-    EXPECT_FALSE(placed[0].parent_id.has_value());
-    ASSERT_TRUE(placed[1].parent_id.has_value());
-    EXPECT_EQ(*placed[1].parent_id, entry);
+    EXPECT_FALSE(placed[0].reduce_only);       // entry
+    EXPECT_TRUE(placed[1].reduce_only);        // reduce-only exit
+    EXPECT_EQ(placed[1].type, core::OrderType::Stop);
 }
 
 TEST(ContextAdapter, MakeAdapterDeducesTemplateArgs)

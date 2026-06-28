@@ -19,19 +19,18 @@ public:
     virtual core::Balance cash() const = 0;
     virtual core::Balance equity() const = 0;
 
+    // The current position on a symbol, or nullopt if flat.
+    virtual std::optional<core::Position> position(const core::Symbol& symbol) const = 0;
+
     // This tick's window: every symbol that printed at the current timestamp,
     // each with its last `count` bars (bound to Python as one combined DataFrame).
     virtual core::MarketWindow history(int count) const = 0;
 
-    // Orders are placed by params, not constructed on the Python side: the
-    // adapter forwards params straight to the broker (via Context), so Python
-    // never holds an unsubmitted Order. The broker-assigned OrderID is returned;
-    // `parent` links this order to an entry (children stay dormant until the
-    // parent fills, then OCO-cancel their siblings) — nullopt for a standalone order.
-    virtual core::OrderID place_market_order(core::MarketOrderParams params,
-                                             std::optional<core::OrderID> parent) = 0;
-    virtual core::OrderID place_limit_order(core::LimitOrderParams params,
-                                            std::optional<core::OrderID> parent) = 0;
+    // Orders are placed by params, not constructed on the Python side. place_order
+    // opens a position (entry); place_exit is reduce-only (stop-loss / take-profit).
+    // The broker-assigned OrderID is returned.
+    virtual core::OrderID place_order(core::OrderParams params) = 0;
+    virtual core::OrderID place_exit(core::OrderParams params) = 0;
 };
 
 } // namespace stonks::python

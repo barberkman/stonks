@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 
 import numpy as np
 
-from stonks import OrderSide, TimeInForce
+from stonks import OrderSide, OrderType, TimeInForce
 
 
 @dataclass
@@ -58,10 +58,11 @@ class FakeOrder:
     symbol: str
     side: OrderSide
     quantity: float
+    type: OrderType = OrderType.Market
     price: Optional[float] = None
+    reduce_only: bool = False              # False = entry (place_order), True = exit (place_exit)
     time_in_force: TimeInForce = TimeInForce.GTC
-    parent: Optional[int] = None   # entry OrderID this order is bracketed under
-    id: Optional[int] = None       # the OrderID place_*_order handed back
+    id: Optional[int] = None               # the OrderID place_* handed back
 
 
 class FakeContext:
@@ -70,6 +71,9 @@ class FakeContext:
     Construct with a pre-built list of bars (multi-symbol, in time order). Ticks
     are per timestamp: call `advance()` once per distinct timestamp before each
     `on_tick`. Placed orders accumulate in `.orders` for test assertions.
+
+    Fills are not simulated, so `position()` always reports flat — strategies are
+    exercised as if they hold nothing.
     """
 
     def __init__(self, bars: List[FakeKLine], cash: float = 100_000.0):
@@ -93,6 +97,9 @@ class FakeContext:
 
     def equity(self) -> float:
         return self._cash
+
+    def position(self, symbol: str):
+        return None
 
     def history(self, count: int) -> FakeMarketWindow:
         now_ms = self.now()
@@ -122,33 +129,32 @@ class FakeContext:
             volume=np.array(vo, dtype=np.float64),
         )
 
-    def place_market_order(
+    def place_order(
         self,
         symbol: str,
         side: OrderSide,
         quantity: float,
+        type: OrderType = OrderType.Market,
+        price: Optional[float] = None,
         time_in_force: TimeInForce = TimeInForce.GTC,
-        parent: Optional[int] = None,
     ) -> int:
-        oid = self._next_order_id
-        self._next_order_id += 1
-        self.orders.append(
-            FakeOrder(symbol, side, quantity, None, time_in_force, parent, oid)
-        )
-        return oid
+        return self._record(symbol, side, quantity, type, price, False, time_in_force)
 
-    def place_limit_order(
+    def place_exit(
         self,
         symbol: str,
         side: OrderSide,
         quantity: float,
-        price: float,
+        type: OrderType = OrderType.Market,
+        price: Optional[float] = None,
         time_in_force: TimeInForce = TimeInForce.GTC,
-        parent: Optional[int] = None,
     ) -> int:
+        return self._record(symbol, side, quantity, type, price, True, time_in_force)
+
+    def _record(self, symbol, side, quantity, type, price, reduce_only, time_in_force) -> int:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid)
+            FakeOrder(symbol, side, quantity, type, price, reduce_only, time_in_force, oid)
         )
         return oid

@@ -63,21 +63,19 @@ struct EMA50Strategy
                 if (qty <= 0.0) continue;
                 // held_quantity is tracked optimistically on placement, not on a
                 // confirmed fill — the broker may still reject (e.g. insufficient cash).
-                context.place_order(stonks::core::MarketOrderParams{
+                context.place_order(stonks::core::OrderParams{
                     .symbol = symbol,
                     .side = stonks::core::OrderSide::Buy,
                     .quantity = qty,
-                    .time_in_force = stonks::core::TimeInForce::GTC,
                 });
                 state.held_quantity = qty;
             }
             else if (close < *state.ema && state.held_quantity > 0.0)
             {
-                context.place_order(stonks::core::MarketOrderParams{
+                context.place_exit(stonks::core::OrderParams{
                     .symbol = symbol,
                     .side = stonks::core::OrderSide::Sell,
                     .quantity = state.held_quantity,
-                    .time_in_force = stonks::core::TimeInForce::GTC,
                 });
                 state.held_quantity = 0.0;
             }

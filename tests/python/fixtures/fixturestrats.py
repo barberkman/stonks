@@ -20,7 +20,7 @@ class BareTickOnly:
     silently skipped when not defined."""
 
     def on_tick(self, ctx):
-        ctx.place_market_order(symbol="X", side=OrderSide.Buy, quantity=2.0)
+        ctx.place_order(symbol="X", side=OrderSide.Buy, quantity=2.0)
 
 
 class CallRecording(stonks.Strategy):
@@ -28,13 +28,13 @@ class CallRecording(stonks.Strategy):
     hook fired. Tests assert the order/quantities sequence to verify dispatch."""
 
     def on_start(self, ctx):
-        ctx.place_market_order(symbol="X", side=OrderSide.Buy, quantity=1.0)
+        ctx.place_order(symbol="X", side=OrderSide.Buy, quantity=1.0)
 
     def on_tick(self, ctx):
-        ctx.place_market_order(symbol="X", side=OrderSide.Buy, quantity=2.0)
+        ctx.place_order(symbol="X", side=OrderSide.Buy, quantity=2.0)
 
     def on_stop(self, ctx):
-        ctx.place_market_order(symbol="X", side=OrderSide.Buy, quantity=3.0)
+        ctx.place_order(symbol="X", side=OrderSide.Buy, quantity=3.0)
 
 
 class RaisingStrategy:
@@ -50,7 +50,7 @@ class CashAwareStrategy(stonks.Strategy):
     the Python -> C++ -> Python query path for context state."""
 
     def on_tick(self, ctx):
-        ctx.place_market_order(
+        ctx.place_order(
             symbol="X", side=OrderSide.Sell, quantity=ctx.cash()
         )
 
@@ -87,7 +87,7 @@ class HistoryInspector(stonks.Strategy):
         assert list(groups["B"]["close"]) == [200.0, 201.0, 202.0], list(groups["B"]["close"])
 
         for symbol, sub in groups.items():
-            ctx.place_market_order(
+            ctx.place_order(
                 symbol=symbol,
                 side=OrderSide.Buy,
                 quantity=float(sub["close"].iloc[-1]),

@@ -77,7 +77,8 @@ PYBIND11_MODULE(_core, m)
 
     py::enum_<core::OrderType>(m, "OrderType")
         .value("Market", core::OrderType::Market)
-        .value("Limit", core::OrderType::Limit);
+        .value("Limit", core::OrderType::Limit)
+        .value("Stop", core::OrderType::Stop);
 
     py::enum_<core::TimeInForce>(m, "TimeInForce")
         .value("GTC", core::TimeInForce::GTC);
@@ -131,6 +132,15 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("volume", &PyMarketWindow::volume)
         .def("__len__", [](const PyMarketWindow& w) { return w.length; });
 
+    py::class_<core::Position>(m, "Position")
+        .def_readonly("quantity", &core::Position::quantity)
+        .def_readonly("price", &core::Position::price)
+        .def("__repr__", [](const core::Position& p) {
+            std::ostringstream os;
+            os << "Position(qty=" << p.quantity << ", price=" << p.price << ")";
+            return os.str();
+        });
+
     // Bind IContext as `Context` so user-facing names match the C++ Context API.
     // No constructor exposed: instances only originate from the engine via
     // PythonStrategy's adapter (cast as a non-owning reference).
@@ -145,49 +155,46 @@ PYBIND11_MODULE(_core, m)
              py::arg("count"),
              "This tick's window: every symbol that printed, each with its last "
              "`count` bars, as one combined frame.")
-        .def("place_market_order",
+        .def("position",
+             [](const stonks_py::IContext& self, core::Symbol symbol) {
+                 return self.position(symbol);
+             },
+             py::arg("symbol"),
+             "The current position on a symbol, or None if flat.")
+        .def("place_order",
              [](stonks_py::IContext& self,
                 core::Symbol symbol,
                 core::OrderSide side,
                 core::Quantity quantity,
-                core::TimeInForce time_in_force,
-                std::optional<core::OrderID> parent) {
-                 return self.place_market_order(core::MarketOrderParams{
-                     std::move(symbol),
-                     side,
-                     quantity,
-                     time_in_force,
-                 }, parent);
+                core::OrderType type,
+                std::optional<core::Price> price,
+                core::TimeInForce time_in_force) {
+                 return self.place_order(core::OrderParams{
+                     std::move(symbol), side, type, quantity, price, time_in_force });
              },
              py::arg("symbol"),
              py::arg("side"),
              py::arg("quantity"),
+             py::arg("type") = core::OrderType::Market,
+             py::arg("price") = std::optional<core::Price>{},
              py::arg("time_in_force") = core::TimeInForce::GTC,
-             py::arg("parent") = std::optional<core::OrderID>{},
-             "Place a market order; returns its OrderID. Pass `parent` (an entry's "
-             "OrderID) to attach this as a bracket child.")
-        .def("place_limit_order",
+             "Place an entry order (opens a position); returns its OrderID.")
+        .def("place_exit",
              [](stonks_py::IContext& self,
                 core::Symbol symbol,
                 core::OrderSide side,
                 core::Quantity quantity,
-                core::Price price,
-                core::TimeInForce time_in_force,
-                std::optional<core::OrderID> parent) {
-                 return self.place_limit_order(core::LimitOrderParams{
-                     std::move(symbol),
-                     side,
-                     quantity,
-                     price,
-                     time_in_force,
-                 }, parent);
+                core::OrderType type,
+                std::optional<core::Price> price,
+                core::TimeInForce time_in_force) {
+                 return self.place_exit(core::OrderParams{
+                     std::move(symbol), side, type, quantity, price, time_in_force });
              },
              py::arg("symbol"),
              py::arg("side"),
              py::arg("quantity"),
-             py::arg("price"),
+             py::arg("type") = core::OrderType::Market,
+             py::arg("price") = std::optional<core::Price>{},
              py::arg("time_in_force") = core::TimeInForce::GTC,
-             py::arg("parent") = std::optional<core::OrderID>{},
-             "Place a limit order; returns its OrderID. Pass `parent` (an entry's "
-             "OrderID) to attach this as a bracket child.");
+             "Place a reduce-only exit (stop-loss / take-profit); returns its OrderID.");
 }

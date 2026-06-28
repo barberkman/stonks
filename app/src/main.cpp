@@ -30,7 +30,7 @@ void run_backtest() {
     {
         PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
         // QMSignalsStrategy{},
-        stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet"
+        stonks::datafeed::KLineFeed{ "app/data/binance_1m.parquet"
             , { .start = "2026-01-01", .end = "2026-01-30", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
         },
         stonks::broker::BacktestBroker{ starting_cash }
