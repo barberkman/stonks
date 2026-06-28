@@ -1,53 +1,90 @@
 pragma Singleton
 import QtQuick
-import "js/mockdata.js" as MD
+import Stonks
 
-// Application state machine + actions (mirrors the design's Component).
+// Application state machine + actions. The single data seam: every view reads
+// through this singleton, which is now backed by the real C++ `Backtest`
+// controller (engine results) instead of mock generators.
 QtObject {
     id: app
 
-    // --- state ---
+    // --- view / UI state ---
     property string view: "backtests"     // backtests | setup | running | detail | logs
     property string detailTab: "report"   // report | trades
-    property string selectedBacktest: "4271"
-    property string symbol: "NVDA"
+    property string selectedBacktest: ""
+    property string symbol: ""
     property var selectedTrade: null       // null | int (trade index)
-    property real progress: 0
-    property int barsDone: 0
+    property real progress: Backtest.progress
+    property int barsDone: Backtest.barsDone
+
+    // --- setup state ---
+    property string strategy: ""           // strategy module id
+    property string dataFile: ""           // data key
+    property var availableSymbols: []      // all symbols in the data file
+    property var symbols: []               // selected symbol allowlist
+    property string startDate: ""
+    property string endDate: ""
     property string startCash: "100,000"
-    property string dataFile: "us_megacaps_1h"
-    property string strategy: "Momentum Breakout v3"
-    property var params: ({ lookback: 20, breakout: 2.0, stop: 4.0, take: 12.0, size: 20, maxpos: 3, cooldown: 5, atr: 14 })
-    property var extraRuns: []
 
-    property int _totalBars: 122835
+    // --- results (populated from the controller) ---
+    property var results: ({})             // runId -> full result object
+    property var completed: []             // result objects, newest first
+    property string runError: ""
 
-    // --- data accessors ---
-    function allBacktests() { return extraRuns.concat(MD.baseBacktests()); }
+    // cached controller lookups
+    property var _strats: ({})             // module -> { display, module, cls }
+    property var _files: ({})              // key -> { key, label, source }
+    property int _nextId: 1
+
+    // --- list caches (lazily filled from the controller) ---
+    function strategyList() {
+        var list = Backtest.listStrategies();
+        var m = {};
+        for (var i = 0; i < list.length; i++) m[list[i].module] = list[i];
+        _strats = m;
+        return list;
+    }
+    function dataFileList() {
+        var list = Backtest.listDataFiles();
+        var m = {};
+        for (var i = 0; i < list.length; i++) m[list[i].key] = list[i];
+        _files = m;
+        return list;
+    }
+    function _fileMap() {
+        if (Object.keys(_files).length === 0) dataFileList();
+        return _files;
+    }
+    function _stratEntry(mod) {
+        if (Object.keys(_strats).length === 0) strategyList();
+        return _strats[mod] || {};
+    }
+
+    // --- data accessors (signatures unchanged; backed by the real result) ---
+    function allBacktests() { return completed; }
     function currentBacktest() {
-        var all = allBacktests();
-        for (var i = 0; i < all.length; i++)
-            if (all[i].id === selectedBacktest) return all[i];
-        return MD.baseBacktests()[0];
+        if (view === "running") return _runningSummary();
+        var r = results[selectedBacktest];
+        return r ? r : {};
     }
-    function latestRun() {
-        var all = allBacktests();
-        for (var i = 0; i < all.length; i++)
-            if (all[i].status === "completed") return all[i];
-        return MD.baseBacktests()[0];
-    }
-    function dataFilesObj() { return MD.dataFiles(); }
-    function strategySource() { return MD.strategySources()[strategy] || ""; }
+    function latestRun() { return completed.length ? completed[0] : {}; }
+    function dataFilesObj() { return _fileMap(); }
+    function strategySource() { return strategy ? ("app/python/" + strategy + ".py") : ""; }
 
-    // data passthroughs (App is the single data seam for the views/charts)
-    function logs() { return MD.buildLogs(latestRun()); }
-    function liveLogList() { return MD.liveLog(progress, params, dataFile, strategy); }
-    function symMeta(id) { return MD.symMeta(id); }
-    function candlesFor(id) { return MD.candlesFor(id); }
-    function tradesFor(id) { return MD.tradesFor(id); }
-    function equityFor(bt) { return MD.equitySeries(bt); }
-    function drawdownFor(bt) { return MD.drawdownOf(MD.equitySeries(bt)); }
-    function sparkSeries(seed, bias) { return MD.sparkSeries(seed, bias); }
+    function logs() { return _buildLogs(latestRun()); }
+    function liveLogList() { return _liveLog(progress); }
+    function symMeta(id) { return { seed: id, name: id }; }   // seed carries the symbol id
+    function candlesFor(id) { return _drill(id).candles || []; }
+    function tradesFor(id) { return _drill(id).trades || []; }
+    function equityFor(bt) { return (bt && bt.equity) ? bt.equity : []; }
+    function drawdownFor(bt) { return (bt && bt.drawdown) ? bt.drawdown : []; }
+    function sparkSeries(seed, bias) { return _drill(seed).spark || []; }
+
+    function _drill(symbolId) {
+        var r = results[selectedBacktest];
+        if (!r || !r.perSymbol) return {};
+        return r.perSymbol[symbolId] || {};
+    }
 
     // --- nav / actions ---
     function go(v) { view = v }
@@ -55,10 +92,8 @@ QtObject {
     function goSetup() { view = "setup" }
 
     function openBacktest(id) {
-        var all = allBacktests();
-        var bt = null;
-        for (var i = 0; i < all.length; i++) if (all[i].id === id) { bt = all[i]; break; }
-        var sym = (bt && bt.symbols && bt.symbols[0]) ? bt.symbols[0].id : "NVDA";
+        var bt = results[id];
+        var sym = (bt && bt.symbols && bt.symbols[0]) ? bt.symbols[0].id : "";
         selectedBacktest = id;
         detailTab = "report";
         symbol = sym;
@@ -73,73 +108,112 @@ QtObject {
     function clearTrade() { selectedTrade = null; }
     function openSymbolTrades(id) { detailTab = "trades"; symbol = id; selectedTrade = null; }
 
-    function setParam(k, val) {
-        var p = {};
-        for (var key in params) p[key] = params[key];
-        p[k] = val;
-        params = p;
+    // --- setup actions ---
+    function setDataFile(key) {
+        dataFile = key;
+        availableSymbols = Backtest.peekSymbols(key);
+        symbols = availableSymbols.slice();      // default: all symbols selected
+        var r = Backtest.peekDateRange(key);
+        startDate = r.start || "";
+        endDate = r.end || "";
+    }
+    function toggleSymbol(id) {
+        var arr = symbols.slice();
+        var i = arr.indexOf(id);
+        if (i >= 0) arr.splice(i, 1); else arr.push(id);
+        symbols = arr;
     }
 
-    // --- run lifecycle ---
-    function nextId() {
-        var mx = 4271;
-        var all = allBacktests();
-        for (var i = 0; i < all.length; i++) {
-            var n = parseInt(all[i].id, 10);
-            if (!isNaN(n)) mx = Math.max(mx, n);
-        }
-        return String(mx + 1);
-    }
-
+    // --- run lifecycle (driven by the controller) ---
     function runBacktest() {
-        progress = 0;
-        barsDone = 0;
+        runError = "";
+        var s = _stratEntry(strategy);
         view = "running";
-        var f = MD.dataFiles()[dataFile];
-        _totalBars = f ? (parseInt(f.bars.replace(/[^0-9]/g, ''), 10) || 122835) : 122835;
-        _runTimer.start();
+        Backtest.run({
+            strategyModule: s.module || strategy,
+            strategyClass: s.cls || "",
+            strategyDisplay: s.display || strategy,
+            dataFile: (_fileMap()[dataFile] || {}).source || ("app/data/" + dataFile + ".parquet"),
+            dataKey: dataFile,
+            symbols: symbols,
+            start: startDate,
+            end: endDate,
+            startCash: parseFloat(String(startCash).replace(/[^0-9.]/g, '')) || 0
+        });
     }
-    function _tickRun() {
-        var p = Math.min(100, progress + (2.2 + Math.random() * 4.2));
-        progress = p;
-        barsDone = Math.round(_totalBars * p / 100);
-        if (p >= 100) { _runTimer.stop(); _finishTimer.start(); }
-    }
-    function finishRun() {
-        var base = MD.baseBacktests();
-        var tmpl = base[0];
-        for (var i = 0; i < base.length; i++)
-            if (base[i].dataKey === dataFile && base[i].status === "completed") { tmpl = base[i]; break; }
-        var nid = nextId();
-        var nb = {};
-        for (var k in tmpl) nb[k] = tmpl[k];
-        nb.id = nid;
-        nb.strategy = strategy;
-        nb.dataKey = dataFile;
-        nb.status = "completed";
-        nb.seed = (parseInt(nid, 10) % 97) + 3;
-        extraRuns = [nb].concat(extraRuns);
-        selectedBacktest = nid;
+    function runSaved() { runBacktest(); }
+    function cancelRun() { Backtest.cancel(); view = "backtests"; }
+
+    function _onFinished(result) {
+        var id = String(_nextId++);
+        result.id = id;
+        var r = {};
+        for (var k in results) r[k] = results[k];
+        r[id] = result;
+        results = r;
+        completed = [result].concat(completed);
+        selectedBacktest = id;
+        symbol = (result.symbols && result.symbols[0]) ? result.symbols[0].id : "";
         detailTab = "report";
-        symbol = nb.symbols[0].id;
         selectedTrade = null;
         view = "detail";
     }
-    function runSaved() {
-        var bt = currentBacktest();
-        dataFile = bt.dataKey;
-        strategy = bt.strategy;
-        runBacktest();
-    }
-    function cancelRun() {
-        _runTimer.stop();
-        _finishTimer.stop();
-        progress = 0;
-        view = "backtests";
+
+    property Connections _conn: Connections {
+        target: Backtest
+        function onFinished(result) { app._onFinished(result); }
+        function onFailed(message) { app.runError = message; app.view = "setup"; }
     }
 
-    property Timer _runTimer: Timer { interval: 95; repeat: true; onTriggered: app._tickRun() }
-    property Timer _finishTimer: Timer { interval: 400; repeat: false; onTriggered: app.finishRun() }
+    // --- transient summary while a run is in flight (no completed run yet) ---
+    function _runningSummary() {
+        var s = _stratEntry(strategy);
+        return {
+            id: "", strategy: (s.display || strategy), dataKey: dataFile,
+            status: "running", range: startDate + " → " + endDate,
+            symbols: symbols.map(function (x) { return { id: x }; })
+        };
+    }
+
+    // --- log synthesis (engine has no structured event stream) ---
+    function _logCol(lvl) {
+        var m = { INFO: '#9aa0a8', DEBUG: '#6b727c', WARN: '#cbb26a', ERROR: '#e1574c' };
+        return m[lvl] || '#9aa0a8';
+    }
+    function _liveLog(p) {
+        var seq = [
+            [2, 'INFO', 'loading strategy ' + ((_stratEntry(strategy).display) || strategy)],
+            [6, 'INFO', 'data ' + dataFile + ' · ' + (symbols || []).join(' · ')],
+            [10, 'DEBUG', 'filter ' + (startDate || '∅') + ' → ' + (endDate || '∅')],
+            [24, 'INFO', 'streaming bars · ' + barsDone + ' processed'],
+            [42, 'INFO', 'simulating fills · cash-secured broker'],
+            [60, 'INFO', 'starting cash $' + startCash],
+            [82, 'INFO', 'reconciling round-trips'],
+            [92, 'DEBUG', 'computing performance metrics'],
+            [98, 'INFO', 'run complete · assembling report']
+        ];
+        var out = [];
+        for (var i = 0; i < seq.length; i++)
+            if (p >= seq[i][0]) out.push({ t: Math.round(p) + '%', lvl: seq[i][1], lc: _logCol(seq[i][1]), m: seq[i][2] });
+        return out;
+    }
+    function _buildLogs(bt) {
+        if (!bt || !bt.id) return [];
+        var syms = bt.symbols || [];
+        var L = [
+            ['00:00.000', 'INFO', 'loaded strategy ' + (bt.strategy || '')],
+            ['00:00.012', 'INFO', 'data ' + (bt.dataKey || '') + ' · ' + (bt.bars || '?') + ' bars'],
+            ['00:00.044', 'DEBUG', 'universe: ' + syms.map(function (s) { return s.id; }).join(' · ')]
+        ];
+        for (var i = 0; i < syms.length; i++)
+            L.push(['00:0' + (2 + i) + '.000', 'INFO', syms[i].id + ': ' + (syms[i].trades || 0)
+                + ' trades · win ' + (syms[i].win || '—')]);
+        L.push(['00:08.020', 'INFO', 'profit factor ' + (bt.pf || '—') + ' · max dd ' + (bt.maxdd || '—')]);
+        L.push(['00:09.440', 'INFO', 'ending equity ' + (bt.endEqStr || '') + ' · return ' + (bt.ret || '')]);
+        L.push(['00:09.840', 'INFO', 'run #' + bt.id + ' completed in ' + (bt.elapsed || '')
+            + ' · ' + (bt.perbar || '') + '/bar']);
+        return L.map(function (r) { return { t: r[0], lvl: r[1], lc: _logCol(r[1]), m: r[2] }; });
+    }
 
     // --- header strings ---
     function sectionLabel() {
@@ -147,7 +221,7 @@ QtObject {
         case "backtests": return "Backtests"
         case "setup": return "Configure"
         case "running": return "Running backtest"
-        case "detail": return currentBacktest().strategy
+        case "detail": return currentBacktest().strategy || ""
         case "logs": return "Diagnostic logs"
         }
         return ""
@@ -157,8 +231,8 @@ QtObject {
         case "backtests": return allBacktests().length + " runs"
         case "setup": return "New run"
         case "running": return "RUNNING · " + Math.round(progress) + "%"
-        case "detail": { var b = currentBacktest(); return b.status === "saved" ? "SAVED" : "COMPLETED · " + b.elapsed }
-        case "logs": return "#" + latestRun().id
+        case "detail": { var b = currentBacktest(); return b.status === "saved" ? "SAVED" : "COMPLETED · " + (b.elapsed || "") }
+        case "logs": return "#" + (latestRun().id || "—")
         }
         return ""
     }

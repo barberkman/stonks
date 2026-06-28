@@ -1,26 +1,23 @@
 import QtQuick
 import Stonks
 
-// Configure a new backtest.
+// Configure a new backtest: pick a Python strategy + data file, filter it
+// (symbols + date range), set starting cash, and run.
 Page {
     id: view
     maxWidth: 1080
     topPad: 36
     spacing: 20
 
-    readonly property var strategyOptions: ["Momentum Breakout v3", "Mean Reversion (Bollinger)", "Dual MA Crossover", "Opening Range Breakout"]
-    readonly property var dataKeys: ["us_megacaps_1h", "us_equities_15m", "sp500_daily", "crypto_majors_1h"]
-    readonly property var paramMeta: [
-        { k: "lookback", label: "Lookback", unit: "bars" },
-        { k: "breakout", label: "Breakout", unit: "%" },
-        { k: "stop", label: "Stop loss", unit: "%" },
-        { k: "take", label: "Take profit", unit: "%" },
-        { k: "size", label: "Position size", unit: "% eq" },
-        { k: "maxpos", label: "Max positions", unit: "" },
-        { k: "cooldown", label: "Cooldown", unit: "bars" },
-        { k: "atr", label: "ATR period", unit: "bars" }
-    ]
-    function dataLabel(key) { return (App.dataFilesObj()[key] || {}).label || key }
+    readonly property var strats: App.strategyList()    // [{display, module, cls}]
+    readonly property var files: App.dataFileList()      // [{key, label, source}]
+    readonly property var stratModules: strats.map(function (s) { return s.module })
+    readonly property var fileKeys: files.map(function (f) { return f.key })
+
+    Component.onCompleted: {
+        if (strats.length && !App.strategy) { App.strategy = strats[0].module; }
+        if (files.length && !App.dataFile) { App.setDataFile(files[0].key); }
+    }
 
     // --- back + title ---
     Row {
@@ -65,8 +62,9 @@ Page {
                 Text { text: "STRATEGY"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
                 StyledSelect {
                     width: parent.width
-                    model: view.strategyOptions
-                    currentIndex: view.strategyOptions.indexOf(App.strategy)
+                    model: view.strats.map(function (s) { return s.display })
+                    values: view.stratModules
+                    currentIndex: Math.max(0, view.stratModules.indexOf(App.strategy))
                     onPicked: function (v) { App.strategy = v }
                 }
                 Column {
@@ -92,10 +90,10 @@ Page {
                 Text { text: "DATA"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
                 StyledSelect {
                     width: parent.width
-                    model: view.dataKeys.map(view.dataLabel)
-                    values: view.dataKeys
-                    currentIndex: view.dataKeys.indexOf(App.dataFile)
-                    onPicked: function (v) { App.dataFile = v }
+                    model: view.files.map(function (f) { return f.label })
+                    values: view.fileKeys
+                    currentIndex: Math.max(0, view.fileKeys.indexOf(App.dataFile))
+                    onPicked: function (v) { App.setDataFile(v) }
                 }
                 Row {
                     width: parent.width
@@ -104,49 +102,87 @@ Page {
                         spacing: 4
                         width: (parent.width - 24) / 2
                         Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
-                        Text { width: parent.width; elide: Text.ElideRight; text: (App.dataFilesObj()[App.dataFile] || {}).symbols || ""; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
+                        Text { width: parent.width; elide: Text.ElideRight; text: App.symbols.length + " of " + App.availableSymbols.length + " selected"; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
                     }
                     Column {
                         spacing: 4
                         width: (parent.width - 24) / 2
                         Text { text: "SOURCE"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
-                        Text { width: parent.width; elide: Text.ElideRight; text: ((App.dataFilesObj()[App.dataFile] || {}).source || "") + " · " + ((App.dataFilesObj()[App.dataFile] || {}).bars || "") + " bars"; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
+                        Text { width: parent.width; elide: Text.ElideRight; text: (App.dataFilesObj()[App.dataFile] || {}).source || ""; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
                     }
                 }
             }
         }
     }
 
-    // --- strategy parameters ---
+    // --- filter: symbols + date range ---
     Rectangle {
         width: view.innerWidth
         radius: 6
         color: Theme.card
         border.color: Theme.border
         border.width: 1
-        implicitHeight: paramCol.implicitHeight + 40
+        implicitHeight: filterCol.implicitHeight + 40
 
         Column {
-            id: paramCol
+            id: filterCol
             x: 22; y: 20
             width: parent.width - 44
             spacing: 16
-            Text { text: "STRATEGY PARAMETERS"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
-            Grid {
+
+            Text { text: "FILTER"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
+
+            // symbol multi-select pills
+            Column {
                 width: parent.width
-                columns: 4
-                rowSpacing: 16
-                columnSpacing: 18
-                Repeater {
-                    model: view.paramMeta
-                    delegate: ParamField {
-                        required property var modelData
-                        width: (paramCol.width - 18 * 3) / 4
-                        label: modelData.label
-                        unit: modelData.unit
-                        value: String(App.params[modelData.k])
-                        onEdited: function (v) { App.setParam(modelData.k, v) }
+                spacing: 8
+                Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10; font.letterSpacing: 0.6 }
+                Flow {
+                    width: parent.width
+                    spacing: 8
+                    Repeater {
+                        model: App.availableSymbols
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: App.symbols.indexOf(modelData) >= 0
+                            width: pillT.implicitWidth + 28
+                            height: 30
+                            radius: 5
+                            color: on ? Theme.accent : "transparent"
+                            border.width: 1
+                            border.color: on ? Theme.accent : Theme.border
+                            Text {
+                                id: pillT
+                                anchors.centerIn: parent
+                                text: modelData
+                                color: parent.on ? Theme.accentInk : Theme.t3
+                                font.family: Theme.mono
+                                font.weight: Font.DemiBold
+                                font.pixelSize: 12
+                            }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: App.toggleSymbol(modelData) }
+                        }
                     }
+                }
+            }
+
+            // date range
+            Row {
+                width: parent.width
+                spacing: 18
+                ParamField {
+                    width: (parent.width - 18) / 2
+                    label: "Start date (YYYY-MM-DD)"
+                    unit: ""
+                    value: App.startDate
+                    onEdited: function (v) { App.startDate = v }
+                }
+                ParamField {
+                    width: (parent.width - 18) / 2
+                    label: "End date (YYYY-MM-DD)"
+                    unit: ""
+                    value: App.endDate
+                    onEdited: function (v) { App.endDate = v }
                 }
             }
         }
@@ -184,6 +220,16 @@ Page {
                     clip: true
                     onEditingFinished: App.startCash = text
                 }
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: App.runError !== ""
+                text: "⚠ " + App.runError
+                color: Theme.negative
+                font.family: Theme.mono
+                font.pixelSize: 12
+                width: 360
+                elide: Text.ElideRight
             }
         }
         AccentButton {

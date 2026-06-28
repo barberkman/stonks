@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -178,7 +179,9 @@ public:
 
     void update(std::size_t current)
     {
-        m_current = current;
+        // Relaxed: a GUI may poll state() from another thread; this is the only
+        // cross-thread field, and a slightly stale count is harmless.
+        m_current.store(current, std::memory_order_relaxed);
         if (!m_console) { return; }
         if (m_total) {
             const std::size_t tot = *m_total;
@@ -195,7 +198,7 @@ public:
     void finish()
     {
         if (!m_console) { return; }
-        render(m_current);
+        render(m_current.load(std::memory_order_relaxed));
         std::cerr << '\n';
         std::cerr.flush();
     }
@@ -204,7 +207,7 @@ public:
     // render itself. Valid in any mode; tracks values even when not printing.
     ProgressState state() const
     {
-        return compute_progress(m_total, m_current,
+        return compute_progress(m_total, m_current.load(std::memory_order_relaxed),
             std::chrono::steady_clock::now() - m_start);
     }
 
@@ -225,7 +228,10 @@ private:
     std::string m_unit;
     bool m_console;
     std::chrono::steady_clock::time_point m_start;
-    std::size_t m_current{ 0 };
+    // Atomic: written by the run thread via update(), read by state() which a
+    // GUI may poll from another thread. (Makes ProgressBar non-movable, which is
+    // fine — Engine holds it in a std::optional and is never itself moved.)
+    std::atomic<std::size_t> m_current{ 0 };
     int m_last_percent{ -1 };
     std::size_t m_last_drawn{ 0 };
 };

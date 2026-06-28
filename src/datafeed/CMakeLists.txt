@@ -4,7 +4,7 @@
 find_package(Arrow REQUIRED QUIET)
 find_package(Parquet REQUIRED QUIET)
 
-add_library(stonks_datafeed STATIC klinefeed.cpp)
+add_library(stonks_datafeed STATIC klinefeed.cpp parquetmeta.cpp)
 target_link_libraries(stonks_datafeed
     PUBLIC stonks_core
     PRIVATE Arrow::arrow_shared Parquet::parquet_shared

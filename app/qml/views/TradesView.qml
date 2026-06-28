@@ -14,7 +14,7 @@ Column {
     function fmtRet1(x) { return (x >= 0 ? "+" : "") + x.toFixed(1) + "%" }
     function fmtRet2(x) { return (x >= 0 ? "+" : "") + x.toFixed(2) + "%" }
     function chartSub() {
-        if (hasSel && trades[sel]) { var t = trades[sel]; return "isolated trade · " + Fmt.dShort(t.entryIdx) + " → " + Fmt.dShort(t.exitIdx) }
+        if (hasSel && trades[sel]) { var t = trades[sel]; return "isolated trade · " + Fmt.tsShort(t.entryTs) + " → " + Fmt.tsShort(t.exitTs) }
         return "all trades · 120-bar window"
     }
     function sumStats() {
@@ -229,9 +229,9 @@ Column {
                                 Item { width: tradesBody.cNum; height: parent.height
                                     Text { anchors.verticalCenter: parent.verticalCenter; text: modelData.n; color: tradeRow.on ? Theme.accent : Theme.t1; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: 12 } }
                                 Item { width: tradesBody.cFlex; height: parent.height
-                                    Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width; elide: Text.ElideRight; text: Fmt.dFull(modelData.entryIdx); color: Theme.t2; font.family: Theme.mono; font.pixelSize: 12 } }
+                                    Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width; elide: Text.ElideRight; text: Fmt.tsFull(modelData.entryTs); color: Theme.t2; font.family: Theme.mono; font.pixelSize: 12 } }
                                 Item { width: tradesBody.cFlex; height: parent.height
-                                    Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width; elide: Text.ElideRight; text: Fmt.dFull(modelData.exitIdx); color: Theme.t2; font.family: Theme.mono; font.pixelSize: 12 } }
+                                    Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width; elide: Text.ElideRight; text: Fmt.tsFull(modelData.exitTs); color: Theme.t2; font.family: Theme.mono; font.pixelSize: 12 } }
                                 Item { width: tradesBody.cQty; height: parent.height
                                     Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width; horizontalAlignment: Text.AlignRight; text: modelData.qty; color: Theme.t4; font.family: Theme.mono; font.pixelSize: 12 } }
                                 Item { width: tradesBody.cPnl; height: parent.height
@@ -292,12 +292,12 @@ Column {
                             Column { spacing: 2; width: (dCol.width - 16) / 2
                                 Text { text: "ENTRY"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10; font.letterSpacing: 0.6 }
                                 Text { text: "$" + t.entryPrice.toFixed(2); color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 13 }
-                                Text { text: Fmt.dFull(t.entryIdx); color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
+                                Text { text: Fmt.tsFull(t.entryTs); color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
                             }
                             Column { spacing: 2; width: (dCol.width - 16) / 2
                                 Text { text: "EXIT"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10; font.letterSpacing: 0.6 }
                                 Text { text: "$" + t.exitPrice.toFixed(2); color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 13 }
-                                Text { text: Fmt.dFull(t.exitIdx); color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
+                                Text { text: Fmt.tsFull(t.exitTs); color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
                             }
                             StatCell { label: "QUANTITY"; value: String(t.qty); valuePx: 13 }
                             StatCell { label: "BARS HELD"; value: t.bars + " bars"; valuePx: 13 }

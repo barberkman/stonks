@@ -46,3 +46,18 @@ function dFull(i) {
     if (hh.length < 2) hh = '0' + hh;
     return dShort(i) + " '" + String(d.getUTCFullYear()).slice(2) + '  ' + hh + ':30';
 }
+
+// Real-timestamp variants (epoch ms) used once the engine supplies real bar/trade times.
+var _mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function tsShort(ms) {
+    var d = new Date(ms);
+    return _mon[d.getUTCMonth()] + ' ' + d.getUTCDate();
+}
+
+function tsFull(ms) {
+    var d = new Date(ms);
+    var hh = String(d.getUTCHours()); if (hh.length < 2) hh = '0' + hh;
+    var mm = String(d.getUTCMinutes()); if (mm.length < 2) mm = '0' + mm;
+    return tsShort(ms) + " '" + String(d.getUTCFullYear()).slice(2) + '  ' + hh + ':' + mm;
+}

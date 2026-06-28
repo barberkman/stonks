@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -23,12 +24,17 @@ class Engine
         "StrategyT must satisfy the Strategy concept");
 
 public:
+    // `cancel`, if non-null, is polled once per timestamp; when it becomes true
+    // the run loop stops cleanly (on_stop still runs). Lets a GUI cancel a run
+    // from another thread without tearing the engine down mid-bar.
     Engine(StrategyT strategy, DataFeedT dataFeed, BrokerT broker,
-           ProgressOutput progress_output = ProgressOutput::Console)
+           ProgressOutput progress_output = ProgressOutput::Console,
+           const std::atomic<bool>* cancel = nullptr)
     : m_strategy{ std::move(strategy) },
       m_dataFeed{ std::move(dataFeed) },
       m_broker{ std::move(broker) },
-      m_progress_output{ progress_output }
+      m_progress_output{ progress_output },
+      m_cancel{ cancel }
     {}
 
     void run()
@@ -49,6 +55,8 @@ public:
 
         // Main loop
         while (auto ts = m_dataFeed.next_timestamp()) {
+            if (m_cancel && m_cancel->load(std::memory_order_relaxed)) { break; }
+
             // Set the timestamp
             m_clock.set(*ts);
             [[maybe_unused]] const auto ts_ms = ts->value.time_since_epoch().count();
@@ -117,6 +125,7 @@ private:
     std::vector<EquityPoint> m_equity_curve;
     std::size_t m_bars_processed{ 0 };
     ProgressOutput m_progress_output;
+    const std::atomic<bool>* m_cancel{ nullptr };
     std::optional<ProgressBar> m_progress;
 };
 

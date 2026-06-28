@@ -2,6 +2,10 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(app
     src/main.cpp
+    src/backtestcontroller.cpp
+    src/backtestworker.cpp
+    src/resultmap.cpp
+    strategies/strategydiscovery.cpp
 )
 
 set_source_files_properties(qml/Theme.qml qml/App.qml PROPERTIES

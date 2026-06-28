@@ -91,7 +91,7 @@ Canvas {
         var ticks = Math.min(6, n - 1);
         for (var k = 0; k <= ticks; k++) {
             var it = Math.round(lo + (k / ticks) * (hi - lo));
-            ctx.fillText(Fmt.dShort(it), Math.max(padL + 14, Math.min(w - padR - 14, X(it))), h - 7);
+            ctx.fillText(Fmt.tsShort(candles[it].t), Math.max(padL + 14, Math.min(w - padR - 14, X(it))), h - 7);
         }
 
         // trade markers

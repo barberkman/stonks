@@ -5,6 +5,7 @@ add_executable(core_tests
     core/progressbar_test.cpp
     core/report_test.cpp
     core/report_json_test.cpp
+    core/analytics_test.cpp
     core/backtestbroker_test.cpp
     core/scenarios_test.cpp
     core/lookahead_test.cpp
@@ -27,14 +28,21 @@ target_link_libraries(core_tests PRIVATE
 gtest_discover_tests(core_tests)
 
 # Datafeed tests link the real KLineFeed (and thus Arrow), kept separate so the
-# stub-only core_tests stay free of that dependency.
+# stub-only core_tests stay free of that dependency. peekparquet_test writes a
+# fixture parquet at runtime, so it links Arrow/Parquet directly.
+find_package(Arrow REQUIRED QUIET)
+find_package(Parquet REQUIRED QUIET)
+
 add_executable(datafeed_tests
     core/klinefeed_test.cpp
+    core/peekparquet_test.cpp
 )
 
 target_link_libraries(datafeed_tests PRIVATE
     stonks_core
     stonks_datafeed
+    Arrow::arrow_shared
+    Parquet::parquet_shared
     GTest::gtest_main
 )
 

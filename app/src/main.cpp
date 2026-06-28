@@ -6,7 +6,6 @@
 #include <string_view>
 
 #include <QGuiApplication>
-#include <QObject>
 #include <QQmlApplicationEngine>
 #include <QtQml/qqml.h>
 
@@ -14,6 +13,7 @@
 #include "stonks/broker/backtestbroker.h"
 #include "stonks/datafeed/klinefeed.h"
 
+#include "backtestcontroller.h"
 #include "report.h"
 #include "report_json.h"
 #include "strategies/pythonstrategy.h"
@@ -28,10 +28,10 @@ void run_backtest() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     stonks::core::Engine engine
     {
-        // PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
-        QMSignalsStrategy{},
+        PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
+        // QMSignalsStrategy{},
         stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet"
-            , { .start = "2025-01-01", .end = "2025-01-10", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
+            , { .start = "2026-01-01", .end = "2026-01-30", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
         },
         stonks::broker::BacktestBroker{ starting_cash }
     };
@@ -60,16 +60,6 @@ void run_backtest() {
     std::cout << "Report written to " << path << '\n';
 }
 
-// QML-exposed handle that runs the backtest when the Run button is clicked.
-class EngineRunner : public QObject {
-    Q_OBJECT
-
-public:
-    using QObject::QObject;
-
-    Q_INVOKABLE void run() { run_backtest(); }
-};
-
 // Returns true if "--gui" appears among the command-line arguments.
 bool wants_gui(int argc, const char* const* argv) {
     for (int i = 1; i < argc; ++i) {
@@ -89,7 +79,8 @@ int main(int argc, char* argv[]) {
     }
 
     QGuiApplication app{ argc, argv };
-    qmlRegisterType<stonks::app::EngineRunner>("Stonks", 1, 0, "EngineRunner");
+    stonks::app::BacktestController controller;
+    qmlRegisterSingletonInstance("Stonks", 1, 0, "Backtest", &controller);
     QQmlApplicationEngine engine;
     engine.load(QUrl{ "qrc:/qt/qml/Stonks/main.qml" });
     if (engine.rootObjects().isEmpty()) {
@@ -97,5 +88,3 @@ int main(int argc, char* argv[]) {
     }
     return app.exec();
 }
-
-#include "main.moc"
