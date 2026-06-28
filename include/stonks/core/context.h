@@ -34,8 +34,17 @@ public:
     // each with its last `count` bars. No-lookahead by construction.
     MarketWindow history(int count) const { return m_dataFeed.window(count); }
 
-    OrderID place_order(const OrderParams& parameters) { return m_broker.place_order(parameters); }  // entry
-    OrderID place_exit (const OrderParams& parameters) { return m_broker.place_exit(parameters); }   // reduce-only exit
+    OrderID place_order(const OrderParams& parameters) { return m_broker.place_order(parameters); }  // entry (may carry SL/TP)
+
+    // Market-close the position on a symbol at the next bar's open; false if flat.
+    bool close(const Symbol& symbol) { return m_broker.close(symbol); }
+
+    // Retarget the SL/TP levels on the symbol's resting entry or live position
+    // (replaces both; nullopt clears that level). False if there is nothing to update.
+    bool update_exits(const Symbol& symbol, std::optional<Price> stop_loss, std::optional<Price> take_profit)
+    {
+        return m_broker.update_exits(symbol, stop_loss, take_profit);
+    }
 
 private:
     BrokerT& m_broker;

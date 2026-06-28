@@ -17,9 +17,8 @@
 // Qullamaggie momentum scanner — all five setups in one strategy.
 //
 // Runs every setup against each symbol's closed bar and, whenever one fires while
-// the symbol is flat, places a bracket: a Limit ENTRY plus two reduce-only EXITs —
-// a Stop stop-loss and a Limit take-profit (cancelled together when the position
-// goes flat, OCO).
+// the symbol is flat, places a Limit ENTRY carrying its stop-loss and take-profit
+// levels; the broker closes the position when a later bar touches either.
 //
 //   breakout        — long: break above a tight base's pivot high
 //   short_breakout  — short: breakdown below a base's pivot low (downtrend mirror)
@@ -107,19 +106,11 @@ struct QMSignalsStrategy
                 const double qty = ctx.equity() * position_fraction / s.entry;
                 if (qty > 0.0) {
                     const auto entry_side = is_long ? stonks::core::OrderSide::Buy : stonks::core::OrderSide::Sell;
-                    const auto exit_side  = is_long ? stonks::core::OrderSide::Sell : stonks::core::OrderSide::Buy;
 
-                    ctx.place_order(stonks::core::OrderParams{          // limit entry
+                    ctx.place_order(stonks::core::OrderParams{          // limit entry carrying stop-loss + take-profit
                         .symbol = sym, .side = entry_side,
-                        .type = stonks::core::OrderType::Limit, .quantity = qty, .price = s.entry });
-
-                    ctx.place_exit(stonks::core::OrderParams{           // stop-loss: reduce-only Stop
-                        .symbol = sym, .side = exit_side,
-                        .type = stonks::core::OrderType::Stop, .quantity = qty, .price = s.stop });
-
-                    ctx.place_exit(stonks::core::OrderParams{           // take-profit: reduce-only Limit
-                        .symbol = sym, .side = exit_side,
-                        .type = stonks::core::OrderType::Limit, .quantity = qty, .price = s.sell });
+                        .type = stonks::core::OrderType::Limit, .quantity = qty, .price = s.entry,
+                        .stop_loss = s.stop, .take_profit = s.sell });
                 }
             }
 

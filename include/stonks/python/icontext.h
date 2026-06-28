@@ -27,10 +27,15 @@ public:
     virtual core::MarketWindow history(int count) const = 0;
 
     // Orders are placed by params, not constructed on the Python side. place_order
-    // opens a position (entry); place_exit is reduce-only (stop-loss / take-profit).
-    // The broker-assigned OrderID is returned.
+    // opens a position (entry) and may carry stop_loss / take_profit levels; the
+    // broker-assigned OrderID is returned. close() market-closes the position on a
+    // symbol; update_exits() retargets its SL/TP levels. Both return whether they
+    // found something to act on.
     virtual core::OrderID place_order(core::OrderParams params) = 0;
-    virtual core::OrderID place_exit(core::OrderParams params) = 0;
+    virtual bool close(const core::Symbol& symbol) = 0;
+    virtual bool update_exits(const core::Symbol& symbol,
+                              std::optional<core::Price> stop_loss,
+                              std::optional<core::Price> take_profit) = 0;
 };
 
 } // namespace stonks::python

@@ -77,11 +77,7 @@ PYBIND11_MODULE(_core, m)
 
     py::enum_<core::OrderType>(m, "OrderType")
         .value("Market", core::OrderType::Market)
-        .value("Limit", core::OrderType::Limit)
-        .value("Stop", core::OrderType::Stop);
-
-    py::enum_<core::TimeInForce>(m, "TimeInForce")
-        .value("GTC", core::TimeInForce::GTC);
+        .value("Limit", core::OrderType::Limit);
 
     py::class_<core::Timestamp>(m, "Timestamp")
         .def(py::init<>())
@@ -135,6 +131,8 @@ PYBIND11_MODULE(_core, m)
     py::class_<core::Position>(m, "Position")
         .def_readonly("quantity", &core::Position::quantity)
         .def_readonly("price", &core::Position::price)
+        .def_readonly("stop_loss", &core::Position::stop_loss)
+        .def_readonly("take_profit", &core::Position::take_profit)
         .def("__repr__", [](const core::Position& p) {
             std::ostringstream os;
             os << "Position(qty=" << p.quantity << ", price=" << p.price << ")";
@@ -168,10 +166,11 @@ PYBIND11_MODULE(_core, m)
                 core::Quantity quantity,
                 core::OrderType type,
                 std::optional<core::Price> price,
-                core::TimeInForce time_in_force,
+                std::optional<core::Price> stop_loss,
+                std::optional<core::Price> take_profit,
                 std::optional<std::int64_t> ttl_ms) {
                  return self.place_order(core::OrderParams{
-                     std::move(symbol), side, type, quantity, price, time_in_force,
+                     std::move(symbol), side, type, quantity, price, stop_loss, take_profit,
                      ttl_ms ? std::optional<core::Timestamp::duration>{ core::Timestamp::duration{ *ttl_ms } }
                             : std::nullopt });
              },
@@ -180,29 +179,26 @@ PYBIND11_MODULE(_core, m)
              py::arg("quantity"),
              py::arg("type") = core::OrderType::Market,
              py::arg("price") = std::optional<core::Price>{},
-             py::arg("time_in_force") = core::TimeInForce::GTC,
+             py::arg("stop_loss") = std::optional<core::Price>{},
+             py::arg("take_profit") = std::optional<core::Price>{},
              py::arg("ttl_ms") = std::optional<std::int64_t>{},
-             "Place an entry order (opens a position); returns its OrderID.")
-        .def("place_exit",
+             "Place an entry order (opens a position) with optional stop_loss / take_profit; returns its OrderID.")
+        .def("close",
+             [](stonks_py::IContext& self, const core::Symbol& symbol) {
+                 return self.close(symbol);
+             },
+             py::arg("symbol"),
+             "Market-close the open position on a symbol at the next bar's open; True if a position was armed.")
+        .def("update_exits",
              [](stonks_py::IContext& self,
-                core::Symbol symbol,
-                core::OrderSide side,
-                core::Quantity quantity,
-                core::OrderType type,
-                std::optional<core::Price> price,
-                core::TimeInForce time_in_force,
-                std::optional<std::int64_t> ttl_ms) {
-                 return self.place_exit(core::OrderParams{
-                     std::move(symbol), side, type, quantity, price, time_in_force,
-                     ttl_ms ? std::optional<core::Timestamp::duration>{ core::Timestamp::duration{ *ttl_ms } }
-                            : std::nullopt });
+                const core::Symbol& symbol,
+                std::optional<core::Price> stop_loss,
+                std::optional<core::Price> take_profit) {
+                 return self.update_exits(symbol, stop_loss, take_profit);
              },
              py::arg("symbol"),
-             py::arg("side"),
-             py::arg("quantity"),
-             py::arg("type") = core::OrderType::Market,
-             py::arg("price") = std::optional<core::Price>{},
-             py::arg("time_in_force") = core::TimeInForce::GTC,
-             py::arg("ttl_ms") = std::optional<std::int64_t>{},
-             "Place a reduce-only exit (stop-loss / take-profit); returns its OrderID.");
+             py::arg("stop_loss") = std::optional<core::Price>{},
+             py::arg("take_profit") = std::optional<core::Price>{},
+             "Retarget the stop_loss / take_profit on a symbol's resting entry or live position; "
+             "True if there was something to update.");
 }

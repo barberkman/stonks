@@ -38,7 +38,11 @@ struct BrokerSpy
     const std::unordered_map<TradeID, Trade>& trades() const { return impl->trades(); }
     const std::unordered_map<OrderID, Order>& orders() const { return impl->orders(); }
     OrderID place_order(const OrderParams& p) { return impl->place_order(p); }
-    OrderID place_exit(const OrderParams& p) { return impl->place_exit(p); }
+    bool close(const Symbol& s) { return impl->close(s); }
+    bool update_exits(const Symbol& s, std::optional<Price> sl, std::optional<Price> tp)
+    {
+        return impl->update_exits(s, sl, tp);
+    }
     std::optional<Position> position(const Symbol& s) const { return impl->position(s); }
     void on_tick(const KLine& bar) { impl->on_tick(bar); }
 };
@@ -88,7 +92,7 @@ void run_engine(StrategyT strategy, std::vector<KLine> bars, BacktestBroker& bro
 
 // --- Scripted strategies -----------------------------------------------------
 
-// Buy once on the first tick, sell on the second tick.
+// Buy once on the first tick, close the position on the second tick.
 struct BuyThenSell
 {
     Quantity qty;
@@ -100,7 +104,7 @@ struct BuyThenSell
         if (tick == 0) {
             ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
         } else if (tick == 1) {
-            ctx.place_exit(OrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = qty });
+            ctx.close(symbol);
         }
         ++tick;
     }
@@ -174,7 +178,7 @@ struct ShortOnceThenCover
         if (tick == 0) {
             ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = qty });
         } else if (tick == cover_at) {
-            ctx.place_exit(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = qty });
+            ctx.close(symbol);
         }
         ++tick;
     }
@@ -217,12 +221,10 @@ struct BuyTwiceSameSide
     }
 };
 
-// Buy `held` on tick 0, then sell `oversell` (> held) on tick 2 — the close must
-// clamp to the held quantity and never flip to a short.
-struct BuyThenOversell
+// Buy `held` on tick 0, then close the whole position at market on tick 2.
+struct BuyThenClose
 {
     Quantity held;
-    Quantity oversell;
     Symbol symbol{ "X" };
     int tick{ 0 };
 
@@ -231,7 +233,7 @@ struct BuyThenOversell
         if (tick == 0) {
             ctx.place_order(OrderParams{ .symbol = symbol, .side = OrderSide::Buy, .quantity = held });
         } else if (tick == 2) {
-            ctx.place_exit(OrderParams{ .symbol = symbol, .side = OrderSide::Sell, .quantity = oversell });
+            ctx.close(symbol);
         }
         ++tick;
     }
@@ -284,7 +286,7 @@ TEST(Scenario, RoundTrip_BuyThenSell_TwoTradesAtNextBarOpens)
     EXPECT_DOUBLE_EQ(trades[0].price, 110.0);
 
     EXPECT_EQ(trades[1].id, TradeID{ 2 });
-    EXPECT_GT(trades[1].order_id, trades[0].order_id);
+    EXPECT_EQ(trades[1].order_id, trades[0].order_id);   // the close attributes to the entry order
     EXPECT_EQ(trades[1].timestamp, Timestamp::from_millis(3000));
     EXPECT_EQ(trades[1].side, OrderSide::Sell);
     EXPECT_DOUBLE_EQ(trades[1].price, 120.0);
@@ -430,23 +432,24 @@ TEST(Scenario, SameSideAddIsRejected_NoStacking)
     EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 1 * 110.0);
 }
 
-// NEW: an oversized close clamps to the held quantity and never flips to a short.
-TEST(Scenario, OversizedClose_ClampsToHeld_NoFlip)
+// close() flattens the whole position at the next bar's open and never flips.
+TEST(Scenario, Close_FlattensFullPosition)
 {
     BacktestBroker broker{ Balance{ 10'000.0 } };
-    run_engine(BuyThenOversell{ .held = Quantity{ 2.0 }, .oversell = Quantity{ 5.0 } }, {
+    run_engine(BuyThenClose{ .held = Quantity{ 2.0 } }, {
         flat(1000, 100.0),   // tick 0: buy 2 (stamped 1000)
         flat(2000, 110.0),   // tick 1: buy fills @110
-        flat(3000, 120.0),   // tick 2: sell 5 placed (stamped 3000)
-        flat(4000, 130.0),   // tick 3: sell fills, clamped to 2 @130
+        flat(3000, 120.0),   // tick 2: close requested
+        flat(4000, 130.0),   // tick 3: close fills at the next-bar open @130
         flat(5000, 140.0),   // mark — must be flat, not short
     }, broker);
 
     const auto trades = sorted_trades(broker);
     ASSERT_EQ(trades.size(), 2u);
-    EXPECT_DOUBLE_EQ(trades[1].quantity, 2.0);            // closed only the held 2, not 5
+    EXPECT_EQ(trades[1].side, OrderSide::Sell);
+    EXPECT_DOUBLE_EQ(trades[1].quantity, 2.0);            // closed the full held 2
     EXPECT_DOUBLE_EQ(broker.cash(), 10'000.0 - 2 * 110.0 + 2 * 130.0);
-    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());     // flat: no residual short despite overselling
+    EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());     // flat: no residual position
 }
 
 TEST(Scenario, LifecycleHooks_StartOnceTickNStopOnce)
@@ -509,7 +512,7 @@ TEST(Scenario, Report_DerivesMetricsFromEngineData)
     });
 
     EXPECT_EQ(metrics.bars_processed, 3u);
-    EXPECT_EQ(metrics.orders_placed, 2u);
+    EXPECT_EQ(metrics.orders_placed, 1u);   // one entry order; the close is not an order
     EXPECT_EQ(metrics.trade_count, 2u);
     EXPECT_DOUBLE_EQ(metrics.notional, 110.0 + 120.0);
     EXPECT_DOUBLE_EQ(metrics.ending_cash, 1'000.0 - 110.0 + 120.0);

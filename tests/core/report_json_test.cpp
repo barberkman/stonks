@@ -27,7 +27,6 @@ using core::Order;
 using core::OrderSide;
 using core::OrderStatus;
 using core::OrderType;
-using core::TimeInForce;
 using core::Timestamp;
 using core::Trade;
 
@@ -145,12 +144,12 @@ TEST(ReportJson, OrderEnumsAndOptionalsWithValues)
         .timestamp = Timestamp::from_millis(0),
         .symbol = "ETHUSDT",
         .side = OrderSide::Sell,
-        .type = OrderType::Stop,
+        .type = OrderType::Limit,
         .status = OrderStatus::Rejected,
         .price = core::Price{ 2'000.0 },
+        .stop_loss = core::Price{ 2'100.0 },
+        .take_profit = core::Price{ 1'800.0 },
         .quantity = 1.0,
-        .reduce_only = true,
-        .time_in_force = TimeInForce::GTC,
     };
     const ReportInput in{
         .starting_cash = 1'000.0,
@@ -165,12 +164,12 @@ TEST(ReportJson, OrderEnumsAndOptionalsWithValues)
     const auto j = serialize(in);
     ASSERT_EQ(j.at("orders").size(), 1u);
     const auto& jo = j.at("orders").front();
-    EXPECT_TRUE(jo.at("reduce_only").get<bool>());
     EXPECT_EQ(jo.at("side").get<std::string>(), "Sell");
-    EXPECT_EQ(jo.at("type").get<std::string>(), "Stop");
+    EXPECT_EQ(jo.at("type").get<std::string>(), "Limit");
     EXPECT_EQ(jo.at("status").get<std::string>(), "Rejected");
     EXPECT_DOUBLE_EQ(jo.at("price").get<double>(), 2'000.0);
-    EXPECT_EQ(jo.at("time_in_force").get<std::string>(), "GTC");
+    EXPECT_DOUBLE_EQ(jo.at("stop_loss").get<double>(), 2'100.0);
+    EXPECT_DOUBLE_EQ(jo.at("take_profit").get<double>(), 1'800.0);
 }
 
 TEST(ReportJson, OrderOptionalsSerializeAsNullWhenEmpty)
@@ -184,8 +183,6 @@ TEST(ReportJson, OrderOptionalsSerializeAsNullWhenEmpty)
         .status = OrderStatus::Filled,
         .price = std::nullopt,
         .quantity = 3.0,
-        .reduce_only = false,
-        .time_in_force = TimeInForce::GTC,
     };
     const ReportInput in{
         .starting_cash = 1'000.0,
@@ -199,7 +196,8 @@ TEST(ReportJson, OrderOptionalsSerializeAsNullWhenEmpty)
     };
     const auto jo = serialize(in).at("orders").front();
     EXPECT_TRUE(jo.at("price").is_null());
-    EXPECT_FALSE(jo.at("reduce_only").get<bool>());
+    EXPECT_TRUE(jo.at("stop_loss").is_null());
+    EXPECT_TRUE(jo.at("take_profit").is_null());
     EXPECT_EQ(jo.at("type").get<std::string>(), "Market");
     EXPECT_EQ(jo.at("status").get<std::string>(), "Filled");
 }

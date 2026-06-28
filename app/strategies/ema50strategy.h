@@ -72,11 +72,7 @@ struct EMA50Strategy
             }
             else if (close < *state.ema && state.held_quantity > 0.0)
             {
-                context.place_exit(stonks::core::OrderParams{
-                    .symbol = symbol,
-                    .side = stonks::core::OrderSide::Sell,
-                    .quantity = state.held_quantity,
-                });
+                context.close(symbol);   // market-close the position at the next bar's open
                 state.held_quantity = 0.0;
             }
         }

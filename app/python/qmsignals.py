@@ -156,21 +156,17 @@ class QMSignalsStrategy(stonks.Strategy):
                 qty = ctx.equity() * self.POSITION_FRACTION / s.entry
                 if qty > 0.0:
                     entry_side = OrderSide.Buy if is_long else OrderSide.Sell
-                    exit_side = OrderSide.Sell if is_long else OrderSide.Buy
 
-                    # Limit entry, bounded to N bars of actual spacing so an unfilled
-                    # breakout does not rest forever and block the symbol.
+                    # Limit entry carrying its stop-loss and take-profit levels; the
+                    # broker closes the position when a later bar touches either. The
+                    # TTL bounds an unfilled breakout to N bars so it does not rest
+                    # forever and block the symbol.
                     bar_ms = int(ts[-1] - ts[-2]) if len(ts) >= 2 else None
                     ttl_ms = int(self.entry_ttl_bars * bar_ms) if bar_ms else None
                     ctx.place_order(symbol=symbol, side=entry_side,
                                     quantity=qty, type=OrderType.Limit, price=s.entry,
+                                    stop_loss=s.stop, take_profit=s.sell,
                                     ttl_ms=ttl_ms)
-                    # Stop-loss / take-profit: reduce-only, GTC — they live with the
-                    # position and OCO-cancel each other once one closes it.
-                    ctx.place_exit(symbol=symbol, side=exit_side,
-                                   quantity=qty, type=OrderType.Stop, price=s.stop)
-                    ctx.place_exit(symbol=symbol, side=exit_side,
-                                   quantity=qty, type=OrderType.Limit, price=s.sell)
 
             self._last[symbol] = sigs
 

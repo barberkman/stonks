@@ -19,7 +19,6 @@ inline const char* type_str(core::OrderType t)
     switch (t) {
     case core::OrderType::Market: return "Market";
     case core::OrderType::Limit:  return "Limit";
-    case core::OrderType::Stop:   return "Stop";
     }
     return "?";
 }

@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -18,6 +19,8 @@ namespace stonks::core::test {
 struct StubBroker
 {
     std::vector<Order>* placed{ nullptr };
+    std::vector<Symbol> closed;                                       // symbols passed to close()
+    std::vector<std::tuple<Symbol, std::optional<Price>, std::optional<Price>>> exit_updates;
     std::unordered_map<TradeID, Trade> m_trades;
     std::unordered_map<OrderID, Order> m_orders;
     OrderID next_id{ 1 };
@@ -27,22 +30,26 @@ struct StubBroker
     const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
     const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
 
-    OrderID place_order(const OrderParams& p) { return record(p, false); }
-    OrderID place_exit (const OrderParams& p) { return record(p, true ); }
-    std::optional<Position> position(const Symbol&) const { return std::nullopt; }
-    void on_tick(const KLine&) {}
-
-private:
-    OrderID record(const OrderParams& p, bool reduce_only)
+    OrderID place_order(const OrderParams& p)
     {
         const OrderID id = next_id;
-        Order o{ id, Timestamp{}, p.symbol, p.side, p.type, OrderStatus::Open,
-                 p.price, p.quantity, reduce_only, p.time_in_force };
+        Order o{ .id = id, .timestamp = Timestamp{}, .symbol = p.symbol, .side = p.side,
+                 .type = p.type, .status = OrderStatus::Open, .price = p.price,
+                 .stop_loss = p.stop_loss, .take_profit = p.take_profit,
+                 .quantity = p.quantity, .ttl = p.ttl };
         if (placed) { placed->push_back(o); }
         m_orders.try_emplace(id, std::move(o));
         ++next_id;
         return id;
     }
+    bool close(const Symbol& symbol) { closed.push_back(symbol); return true; }
+    bool update_exits(const Symbol& symbol, std::optional<Price> stop_loss, std::optional<Price> take_profit)
+    {
+        exit_updates.emplace_back(symbol, stop_loss, take_profit);
+        return true;
+    }
+    std::optional<Position> position(const Symbol&) const { return std::nullopt; }
+    void on_tick(const KLine&) {}
 };
 
 // Columnar test feed mirroring KLineFeed's per-timestamp model: tests assign

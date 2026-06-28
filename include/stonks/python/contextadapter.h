@@ -23,7 +23,13 @@ public:
     core::MarketWindow history(int count) const override { return m_ctx.history(count); }
 
     core::OrderID place_order(core::OrderParams params) override { return m_ctx.place_order(params); }
-    core::OrderID place_exit(core::OrderParams params) override { return m_ctx.place_exit(params); }
+    bool close(const core::Symbol& symbol) override { return m_ctx.close(symbol); }
+    bool update_exits(const core::Symbol& symbol,
+                      std::optional<core::Price> stop_loss,
+                      std::optional<core::Price> take_profit) override
+    {
+        return m_ctx.update_exits(symbol, stop_loss, take_profit);
+    }
 
 private:
     core::Context<BrokerT, DataFeedT>& m_ctx;

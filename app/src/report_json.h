@@ -29,7 +29,6 @@ inline const char* to_string(OrderType t)
     switch (t) {
         case OrderType::Market: return "Market";
         case OrderType::Limit: return "Limit";
-        case OrderType::Stop: return "Stop";
     }
     return "Unknown";
 }
@@ -43,11 +42,6 @@ inline const char* to_string(OrderStatus s)
         case OrderStatus::Cancelled: return "Cancelled";
     }
     return "Unknown";
-}
-
-inline const char* to_string(TimeInForce)
-{
-    return "GTC";
 }
 
 // ISO-8601 string, matching the operator<< used by the text report.
@@ -81,9 +75,9 @@ inline void to_json(nlohmann::json& j, const Order& o)
         { "type", to_string(o.type) },
         { "status", to_string(o.status) },
         { "price", o.price ? nlohmann::json(*o.price) : nlohmann::json(nullptr) },
+        { "stop_loss", o.stop_loss ? nlohmann::json(*o.stop_loss) : nlohmann::json(nullptr) },
+        { "take_profit", o.take_profit ? nlohmann::json(*o.take_profit) : nlohmann::json(nullptr) },
         { "quantity", o.quantity },
-        { "reduce_only", o.reduce_only },
-        { "time_in_force", to_string(o.time_in_force) },
     };
 }
 

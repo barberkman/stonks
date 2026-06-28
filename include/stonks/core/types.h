@@ -33,7 +33,6 @@ enum class OrderType : std::uint8_t
 {
     Market,
     Limit,
-    Stop,
 };
 
 enum class OrderStatus : std::uint8_t
@@ -42,11 +41,6 @@ enum class OrderStatus : std::uint8_t
     Filled,
     Rejected,
     Cancelled
-};
-
-enum class TimeInForce : std::uint8_t
-{
-    GTC,
 };
 
 struct Timestamp
@@ -115,10 +109,10 @@ struct Order
     OrderType type;
     OrderStatus status;
     std::optional<Price> price;   // Limit target price or Stop trigger price
+    std::optional<Price> stop_loss;
+    std::optional<Price> take_profit;
     Quantity quantity;
-    bool reduce_only;             // false = entry (opens), true = exit (reduce-only SL/TP)
-    TimeInForce time_in_force;
-    std::optional<Timestamp::duration> ttl;   // unfilled-order lifetime (carried from OrderParams); nullopt = good-till-cancelled
+    std::optional<Timestamp::duration> ttl;
 
     auto operator<=>(const Order&) const = default;
 };
@@ -140,6 +134,9 @@ struct Position
 {
     Quantity quantity;   // signed: >0 long, <0 short
     Price price;         // entry / cost basis
+    OrderID order_id;
+    std::optional<Price> stop_loss;
+    std::optional<Price> take_profit;
 
     auto operator<=>(const Position&) const = default;
 };
@@ -155,9 +152,10 @@ struct EquityPoint
     auto operator<=>(const EquityPoint&) const = default;
 };
 
-// One request struct for every order. Role (entry vs reduce-only exit) is the
-// method called: place_order opens, place_exit reduces. `price` is required for
-// Limit (target) and Stop (trigger) and ignored for Market.
+// Request struct for an entry order (place_order opens a position). `price` is
+// required for Limit (target) and ignored for Market. Optional stop_loss /
+// take_profit arm once the entry fills: the broker closes the position when a
+// later bar touches either level.
 struct OrderParams
 {
     Symbol symbol;
@@ -165,7 +163,8 @@ struct OrderParams
     OrderType type = OrderType::Market;
     Quantity quantity;
     std::optional<Price> price = std::nullopt;
-    TimeInForce time_in_force = TimeInForce::GTC;
+    std::optional<Price> stop_loss = std::nullopt;
+    std::optional<Price> take_profit = std::nullopt;
     std::optional<Timestamp::duration> ttl = std::nullopt;   // unfilled-order lifetime; nullopt = good-till-cancelled
 };
 

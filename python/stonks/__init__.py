@@ -12,7 +12,6 @@ from stonks._core import (
     OrderSide,
     OrderType,
     Position,
-    TimeInForce,
     Timestamp,
 )
 
@@ -44,6 +43,5 @@ __all__ = [
     "OrderType",
     "Position",
     "Strategy",
-    "TimeInForce",
     "Timestamp",
 ]

@@ -85,7 +85,8 @@ TEST(ContextAdapter, PlaceOrderBuildsAndForwardsEntry)
     EXPECT_EQ(placed[0].quantity, 1.5);
     EXPECT_EQ(placed[0].type, core::OrderType::Market);
     EXPECT_FALSE(placed[0].price.has_value());
-    EXPECT_FALSE(placed[0].reduce_only);
+    EXPECT_FALSE(placed[0].stop_loss.has_value());
+    EXPECT_FALSE(placed[0].take_profit.has_value());
 }
 
 TEST(ContextAdapter, PlaceOrderForwardsLimitPrice)
@@ -114,10 +115,9 @@ TEST(ContextAdapter, PlaceOrderForwardsLimitPrice)
     EXPECT_EQ(placed[0].type, core::OrderType::Limit);
     ASSERT_TRUE(placed[0].price.has_value());
     EXPECT_EQ(*placed[0].price, 99.5);
-    EXPECT_FALSE(placed[0].reduce_only);
 }
 
-TEST(ContextAdapter, PlaceExitMarksReduceOnly)
+TEST(ContextAdapter, PlaceOrderForwardsStopLossTakeProfit)
 {
     StubFeed feed;
     StubBroker broker;
@@ -127,25 +127,51 @@ TEST(ContextAdapter, PlaceExitMarksReduceOnly)
     core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
     python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
 
-    const core::OrderID entry = adapter.place_order(core::OrderParams{
+    const core::OrderID id = adapter.place_order(core::OrderParams{
         .symbol = "TEST",
         .side = core::OrderSide::Buy,
+        .type = core::OrderType::Limit,
         .quantity = 1.0,
-    });
-    const core::OrderID stop = adapter.place_exit(core::OrderParams{
-        .symbol = "TEST",
-        .side = core::OrderSide::Sell,
-        .type = core::OrderType::Stop,
-        .quantity = 1.0,
-        .price = 90.0,
+        .price = 100.0,
+        .stop_loss = 90.0,
+        .take_profit = 120.0,
     });
 
-    EXPECT_EQ(entry, 1u);
-    EXPECT_EQ(stop, 2u);
-    ASSERT_EQ(placed.size(), 2u);
-    EXPECT_FALSE(placed[0].reduce_only);       // entry
-    EXPECT_TRUE(placed[1].reduce_only);        // reduce-only exit
-    EXPECT_EQ(placed[1].type, core::OrderType::Stop);
+    EXPECT_EQ(id, 1u);
+    ASSERT_EQ(placed.size(), 1u);
+    ASSERT_TRUE(placed[0].stop_loss.has_value());
+    EXPECT_EQ(*placed[0].stop_loss, 90.0);
+    ASSERT_TRUE(placed[0].take_profit.has_value());
+    EXPECT_EQ(*placed[0].take_profit, 120.0);
+}
+
+TEST(ContextAdapter, CloseForwardsSymbol)
+{
+    StubFeed feed;
+    StubBroker broker;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    EXPECT_TRUE(adapter.close("TEST"));
+    ASSERT_EQ(broker.closed.size(), 1u);
+    EXPECT_EQ(broker.closed[0], "TEST");
+}
+
+TEST(ContextAdapter, UpdateExitsForwards)
+{
+    StubFeed feed;
+    StubBroker broker;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    EXPECT_TRUE(adapter.update_exits("TEST", 95.0, std::nullopt));
+    ASSERT_EQ(broker.exit_updates.size(), 1u);
+    EXPECT_EQ(std::get<0>(broker.exit_updates[0]), "TEST");
+    ASSERT_TRUE(std::get<1>(broker.exit_updates[0]).has_value());
+    EXPECT_EQ(*std::get<1>(broker.exit_updates[0]), 95.0);
+    EXPECT_FALSE(std::get<2>(broker.exit_updates[0]).has_value());
 }
 
 TEST(ContextAdapter, MakeAdapterDeducesTemplateArgs)

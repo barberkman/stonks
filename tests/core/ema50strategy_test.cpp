@@ -26,6 +26,7 @@ struct RecordingBroker
 {
     Balance equity_value{};
     std::vector<Order> placed;          // strategy-intent capture, in placement order
+    std::vector<Symbol> closed;         // symbols passed to close(), in call order
     std::unordered_map<TradeID, Trade> m_trades;
     std::unordered_map<OrderID, Order> m_orders;
     OrderID next_id{ 1 };
@@ -35,22 +36,22 @@ struct RecordingBroker
     const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
     const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
 
-    OrderID place_order(const OrderParams& p) { return record(p, false); }
-    OrderID place_exit (const OrderParams& p) { return record(p, true ); }
-    std::optional<Position> position(const Symbol&) const { return std::nullopt; }
-    void on_tick(const KLine&) {}
-
-private:
-    OrderID record(const OrderParams& p, bool reduce_only)
+    OrderID place_order(const OrderParams& p)
     {
         const OrderID id = next_id;
-        Order o{ id, Timestamp{}, p.symbol, p.side, p.type, OrderStatus::Open,
-                 p.price, p.quantity, reduce_only, p.time_in_force };
+        Order o{ .id = id, .timestamp = Timestamp{}, .symbol = p.symbol, .side = p.side,
+                 .type = p.type, .status = OrderStatus::Open, .price = p.price,
+                 .stop_loss = p.stop_loss, .take_profit = p.take_profit,
+                 .quantity = p.quantity, .ttl = p.ttl };
         placed.push_back(o);
         m_orders.try_emplace(id, std::move(o));
         ++next_id;
         return id;
     }
+    bool close(const Symbol& symbol) { closed.push_back(symbol); return true; }
+    bool update_exits(const Symbol&, std::optional<Price>, std::optional<Price>) { return true; }
+    std::optional<Position> position(const Symbol&) const { return std::nullopt; }
+    void on_tick(const KLine&) {}
 };
 
 // Feed double presenting one timestamp's window. The strategy reads it via
@@ -198,21 +199,23 @@ TEST(EMA50Strategy, OnePositionPerSymbol)
     EXPECT_EQ(h.broker.placed.front().side, OrderSide::Buy);
 }
 
-TEST(EMA50Strategy, ExitSellsFullPositionThenReenters)
+TEST(EMA50Strategy, ExitClosesPositionThenReenters)
 {
     Harness h;
     h.seed("AAA", 49, 100.0, EQUITY);
     h.tick("AAA", 101.0, EQUITY);   // enter
-    h.tick("AAA", 1.0, EQUITY);     // far below EMA -> exit
+    h.tick("AAA", 1.0, EQUITY);     // far below EMA -> close
     h.tick("AAA", 1000.0, EQUITY);  // back above EMA -> re-enter
 
-    ASSERT_EQ(h.broker.placed.size(), 3u);
+    // Two entries (initial + re-entry); the exit is a market close, not an order.
+    ASSERT_EQ(h.broker.placed.size(), 2u);
     EXPECT_EQ(h.broker.placed[0].side, OrderSide::Buy);
-    EXPECT_EQ(h.broker.placed[1].side, OrderSide::Sell);
-    // The exit liquidates exactly the quantity held from the entry.
-    EXPECT_DOUBLE_EQ(h.broker.placed[1].quantity, h.broker.placed[0].quantity);
-    EXPECT_EQ(h.broker.placed[2].side, OrderSide::Buy);
-    EXPECT_DOUBLE_EQ(h.broker.placed[2].quantity, EQUITY * 0.01 / 1000.0);
+    EXPECT_EQ(h.broker.placed[1].side, OrderSide::Buy);
+    EXPECT_DOUBLE_EQ(h.broker.placed[1].quantity, EQUITY * 0.01 / 1000.0);
+
+    // The cross below the EMA closed the held symbol exactly once.
+    ASSERT_EQ(h.broker.closed.size(), 1u);
+    EXPECT_EQ(h.broker.closed[0], "AAA");
 }
 
 TEST(EMA50Strategy, ConcurrentPositionsAcrossSymbols)

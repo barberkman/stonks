@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 
 import numpy as np
 
-from stonks import OrderSide, OrderType, TimeInForce
+from stonks import OrderSide, OrderType
 
 
 @dataclass
@@ -60,10 +60,10 @@ class FakeOrder:
     quantity: float
     type: OrderType = OrderType.Market
     price: Optional[float] = None
-    reduce_only: bool = False              # False = entry (place_order), True = exit (place_exit)
-    time_in_force: TimeInForce = TimeInForce.GTC
+    stop_loss: Optional[float] = None      # exit-on-loss level carried by the entry
+    take_profit: Optional[float] = None    # exit-on-profit level
     ttl_ms: Optional[int] = None           # unfilled-order lifetime in ms; None = good-till-cancelled
-    id: Optional[int] = None               # the OrderID place_* handed back
+    id: Optional[int] = None               # the OrderID place_order handed back
 
 
 class FakeContext:
@@ -81,6 +81,8 @@ class FakeContext:
         self._bars = bars
         self._cash = cash
         self.orders: List[FakeOrder] = []
+        self.closes: List[str] = []                        # symbols passed to close()
+        self.exit_updates: List[Any] = []                  # (symbol, stop_loss, take_profit) tuples
         self._timestamps = sorted({_to_ms(b.timestamp) for b in bars})
         self._group = -1   # advance() steps to the first timestamp
         self._next_order_id = 1   # broker hands back monotonic OrderIDs
@@ -137,27 +139,26 @@ class FakeContext:
         quantity: float,
         type: OrderType = OrderType.Market,
         price: Optional[float] = None,
-        time_in_force: TimeInForce = TimeInForce.GTC,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
         ttl_ms: Optional[int] = None,
     ) -> int:
-        return self._record(symbol, side, quantity, type, price, False, time_in_force, ttl_ms)
-
-    def place_exit(
-        self,
-        symbol: str,
-        side: OrderSide,
-        quantity: float,
-        type: OrderType = OrderType.Market,
-        price: Optional[float] = None,
-        time_in_force: TimeInForce = TimeInForce.GTC,
-        ttl_ms: Optional[int] = None,
-    ) -> int:
-        return self._record(symbol, side, quantity, type, price, True, time_in_force, ttl_ms)
-
-    def _record(self, symbol, side, quantity, type, price, reduce_only, time_in_force, ttl_ms=None) -> int:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, type, price, reduce_only, time_in_force, ttl_ms, oid)
+            FakeOrder(symbol, side, quantity, type, price, stop_loss, take_profit, ttl_ms, oid)
         )
         return oid
+
+    def close(self, symbol: str) -> bool:
+        self.closes.append(symbol)
+        return True
+
+    def update_exits(
+        self,
+        symbol: str,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> bool:
+        self.exit_updates.append((symbol, stop_loss, take_profit))
+        return True

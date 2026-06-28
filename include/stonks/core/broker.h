@@ -18,9 +18,11 @@ concept HasEquity = requires(const BrokerT& broker) {
 };
 
 template <class BrokerT>
-concept HasPlaceOrder = requires (BrokerT& broker, const OrderParams& params) {
-    { broker.place_order(params) } -> std::same_as<OrderID>;
-    { broker.place_exit(params) }  -> std::same_as<OrderID>;
+concept HasPlaceOrder = requires (BrokerT& broker, const OrderParams& params,
+                                  const Symbol& symbol, std::optional<Price> level) {
+    { broker.place_order(params) }                  -> std::same_as<OrderID>;
+    { broker.close(symbol) }                        -> std::same_as<bool>;
+    { broker.update_exits(symbol, level, level) }   -> std::same_as<bool>;
 };
 
 template <class BrokerT>

@@ -142,45 +142,37 @@ def _flat_bars(symbol="TEST"):
     ]
 
 
-def test_breakout_fires_long_bracket():
+def test_breakout_fires_long_entry():
     ctx, s = _run(_breakout_bars())
 
     sigs = s.last_signals("TEST")
     assert [x.setup for x in sigs] == ["breakout"]
     sig = sigs[0]
 
-    assert len(ctx.orders) == 3
-    entry, stop, tp = ctx.orders
-    # Long bracket: Buy entry, Sell stop, Sell take-profit.
+    # One entry order carries its stop-loss and take-profit levels.
+    assert len(ctx.orders) == 1
+    entry = ctx.orders[0]
     assert entry.side == OrderSide.Buy and entry.price == pytest.approx(sig.entry)
-    assert stop.side == OrderSide.Sell and stop.price == pytest.approx(sig.stop)
-    assert tp.side == OrderSide.Sell and tp.price == pytest.approx(sig.sell)
-    # The protective legs are bracketed under the entry's OrderID.
-    assert entry.parent is None
-    assert stop.parent == entry.id
-    assert tp.parent == entry.id
+    assert entry.stop_loss == pytest.approx(sig.stop)
+    assert entry.take_profit == pytest.approx(sig.sell)
     # Pivot high was 142; stop below entry; take-profit above.
     assert sig.entry == pytest.approx(142.0)
     assert sig.stop < sig.entry < sig.sell
 
 
-def test_short_breakout_fires_short_bracket():
+def test_short_breakout_fires_short_entry():
     ctx, s = _run(_short_breakout_bars())
 
     sigs = s.last_signals("TEST")
     assert [x.setup for x in sigs] == ["short_breakout"]
     sig = sigs[0]
 
-    assert len(ctx.orders) == 3
-    entry, stop, tp = ctx.orders
-    # Short bracket: Sell entry, Buy stop, Buy take-profit.
+    # One Sell entry carrying its stop-loss (above) and take-profit (below).
+    assert len(ctx.orders) == 1
+    entry = ctx.orders[0]
     assert entry.side == OrderSide.Sell and entry.price == pytest.approx(sig.entry)
-    assert stop.side == OrderSide.Buy and stop.price == pytest.approx(sig.stop)
-    assert tp.side == OrderSide.Buy and tp.price == pytest.approx(sig.sell)
-    # The protective legs are bracketed under the entry's OrderID.
-    assert entry.parent is None
-    assert stop.parent == entry.id
-    assert tp.parent == entry.id
+    assert entry.stop_loss == pytest.approx(sig.stop)
+    assert entry.take_profit == pytest.approx(sig.sell)
     assert sig.entry == pytest.approx(98.0)
     assert sig.sell < sig.entry < sig.stop      # short: stop above, target below
 
