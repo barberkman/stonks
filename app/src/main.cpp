@@ -17,7 +17,6 @@
 #include "report.h"
 #include "report_json.h"
 #include "strategies/pythonstrategy.h"
-#include "strategies/qmsignals.h"
 
 namespace stonks::app {
 
@@ -29,9 +28,8 @@ void run_backtest() {
     stonks::core::Engine engine
     {
         PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
-        // QMSignalsStrategy{},
         stonks::datafeed::KLineFeed{ "app/data/binance_1m.parquet"
-            , { .start = "2026-01-01", .end = "2026-01-30", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
+            , { .start = "2025-01-01", .end = "2025-02-01", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
         },
         stonks::broker::BacktestBroker{ starting_cash }
     };

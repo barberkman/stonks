@@ -5,6 +5,8 @@
 #include <optional>
 #include <vector>
 
+#include "stonks/core/log.h"
+#include "stonks/core/logfmt.h"
 #include "stonks/core/types.h"
 
 namespace stonks::broker {
@@ -14,7 +16,9 @@ BacktestBroker::BacktestBroker(core::Balance initial_cash)
   m_now{},
   m_next_order_id{ 1 },
   m_next_trade_id{ 1 }
-{}
+{
+    STONKS_LOG("broker", "ev=init cash={:.4f}", m_cash);
+}
 
 core::Balance BacktestBroker::cash() const { return m_cash; }
 
@@ -51,14 +55,18 @@ core::OrderID BacktestBroker::submit(const core::OrderParams& p, bool reduce_onl
     const core::OrderID id = m_next_order_id++;
 
     // The symbol's committed direction: a live position, else a working entry,
-    // else nullopt (the symbol is clear).
+    // else nullopt (the symbol is clear). When the context is a working entry,
+    // ctx_entry_ts records the tick it was placed on, to tell a fresh bracket's
+    // exits (same tick as their entry) from a superseded signal's (earlier tick).
     std::optional<bool> ctx_long;
+    std::optional<core::Timestamp> ctx_entry_ts;
     if (const auto it = m_positions.find(p.symbol); it != m_positions.end()) {
         ctx_long = it->second.quantity > 0.0;
     } else {
         for (const auto& [oid, o] : m_orders) {
             if (!o.reduce_only && o.symbol == p.symbol && o.status == core::OrderStatus::Open) {
                 ctx_long = (o.side == core::OrderSide::Buy);
+                ctx_entry_ts = o.timestamp;
                 break;
             }
         }
@@ -67,9 +75,18 @@ core::OrderID BacktestBroker::submit(const core::OrderParams& p, bool reduce_onl
     const bool structural = p.quantity > 0.0
         && (p.type == core::OrderType::Market || (p.price.has_value() && *p.price > 0.0));
     const bool role_ok = reduce_only
-        ? (ctx_long.has_value() && *ctx_long != (p.side == core::OrderSide::Buy))   // exit must oppose the context
+        ? (ctx_long.has_value() && *ctx_long != (p.side == core::OrderSide::Buy)   // exit must oppose the context
+            && (!ctx_entry_ts.has_value() || *ctx_entry_ts == m_now))              // and belong to the working entry's own bracket, not a superseded signal's
         : !ctx_long.has_value();                                                    // entry needs a clear symbol
     const bool ok = structural && role_ok;
+
+    STONKS_LOG("broker",
+        "ev=submit id={} ts={} sym={} role={} side={} type={} qty={:.8f} price={:.4f} "
+        "ctx={} structural={} role_ok={} status={}",
+        id, log::ts_ms(m_now), p.symbol, reduce_only ? "exit" : "entry",
+        log::side_str(p.side), log::type_str(p.type), p.quantity, p.price.value_or(-1.0),
+        (ctx_long ? (*ctx_long ? "long" : "short") : "clear"),
+        int(structural), int(role_ok), ok ? "Open" : "Rejected");
 
     m_orders.try_emplace(id, core::Order{
         id, m_now, p.symbol, p.side, p.type,
@@ -83,6 +100,12 @@ void BacktestBroker::on_tick(const core::KLine& bar)
 {
     m_now = bar.timestamp;
     m_last_prices[bar.symbol] = bar.close;
+
+    if (!m_open_orders.empty()) {
+        STONKS_LOG("broker", "ev=bar ts={} sym={} o={:.4f} h={:.4f} l={:.4f} c={:.4f} open_orders={}",
+                   log::ts_ms(bar.timestamp), bar.symbol, bar.open, bar.high, bar.low, bar.close,
+                   m_open_orders.size());
+    }
 
     std::vector<core::OrderID> to_remove;
     for (core::OrderID id : m_open_orders) {
@@ -109,44 +132,78 @@ void BacktestBroker::on_tick(const core::KLine& bar)
         }
         if (!price) { continue; }
 
+        STONKS_LOG("broker",
+            "ev=trigger id={} ts={} sym={} role={} type={} side={} order_px={:.4f} "
+            "bar_o={:.4f} bar_h={:.4f} bar_l={:.4f} fill_px={:.4f}",
+            id, log::ts_ms(bar.timestamp), order.symbol, order.reduce_only ? "exit" : "entry",
+            log::type_str(order.type), log::side_str(order.side), order.price.value_or(-1.0),
+            bar.open, bar.high, bar.low, *price);
+
         const auto pos_it = m_positions.find(order.symbol);
         const bool have_pos = (pos_it != m_positions.end());
 
         if (order.reduce_only) {
             // EXIT: reduce the opposing position; clamp to held size; never flips.
-            if (!have_pos) { continue; }
+            if (!have_pos) {
+                STONKS_LOG("broker", "ev=exit_skip id={} sym={} reason=no_position", id, order.symbol);
+                continue;
+            }
             core::Position& pos = pos_it->second;
             const bool pos_long = pos.quantity > 0.0;
-            if (pos_long == (order.side == core::OrderSide::Buy)) { continue; }   // not an opposing reducer
+            if (pos_long == (order.side == core::OrderSide::Buy)) {
+                STONKS_LOG("broker", "ev=exit_skip id={} sym={} reason=same_direction pos_long={}",
+                           id, order.symbol, int(pos_long));
+                continue;   // not an opposing reducer
+            }
 
             const core::Quantity fill_qty = std::min(order.quantity, std::abs(pos.quantity));
+            [[maybe_unused]] const core::Balance cash_before = m_cash;
+            [[maybe_unused]] const core::Quantity pos_before = pos.quantity;
             m_cash += fill_qty * pos.price
                     + (pos_long ? *price - pos.price : pos.price - *price) * fill_qty;   // collateral + pnl
             pos.quantity += (pos_long ? -fill_qty : fill_qty);
             record_fill(order, bar, fill_qty, *price);
+            STONKS_LOG("broker",
+                "ev=exit_fill id={} sym={} side={} fill_qty={:.8f} fill_px={:.4f} entry_px={:.4f} pnl={:.4f} "
+                "pos_before={:.8f} pos_after={:.8f} cash_before={:.4f} cash_after={:.4f}",
+                id, order.symbol, log::side_str(order.side), fill_qty, *price, pos.price,
+                (pos_long ? *price - pos.price : pos.price - *price) * fill_qty,
+                pos_before, pos.quantity, cash_before, m_cash);
             if (pos.quantity == 0.0) {
                 m_positions.erase(pos_it);
+                STONKS_LOG("broker", "ev=pos_flat sym={} by_order={}", order.symbol, id);
                 cancel_exits(order.symbol, to_remove, /*keep=*/id);   // flat -> OCO
             }
         } else if (have_pos) {
             // Defensive: submit() keeps one context per symbol, so an entry should
             // never fill into an existing position; reject rather than overwrite it.
+            STONKS_LOG("broker", "ev=entry_reject id={} sym={} reason=position_exists", id, order.symbol);
             order.status = core::OrderStatus::Rejected;
         } else {
             // ENTRY: open a fresh position on a clear symbol.
             const core::Balance cost = order.quantity * *price;
             if (cost > m_cash) {
+                STONKS_LOG("broker", "ev=entry_reject id={} sym={} reason=insufficient_cash cost={:.4f} cash={:.4f}",
+                           id, order.symbol, cost, m_cash);
                 order.status = core::OrderStatus::Rejected;
                 cancel_exits(order.symbol, to_remove, /*keep=*/0);   // its pre-placed exits are orphaned
             } else {
+                [[maybe_unused]] const core::Balance cash_before = m_cash;
                 m_cash -= cost;
                 const core::Quantity q = (order.side == core::OrderSide::Buy ? order.quantity : -order.quantity);
                 m_positions[order.symbol] = core::Position{ q, *price };
                 record_fill(order, bar, order.quantity, *price);
+                STONKS_LOG("broker",
+                    "ev=entry_fill id={} sym={} side={} qty={:.8f} fill_px={:.4f} cost={:.4f} "
+                    "cash_before={:.4f} cash_after={:.4f} pos_qty={:.8f}",
+                    id, order.symbol, log::side_str(order.side), order.quantity, *price, cost,
+                    cash_before, m_cash, q);
                 // Pre-placed exits go live next bar: stamp them so they cannot fire on this one.
                 for (auto& [oid, o] : m_orders) {
                     if (o.reduce_only && o.symbol == order.symbol && o.status == core::OrderStatus::Open) {
                         o.timestamp = bar.timestamp;
+                        STONKS_LOG("broker", "ev=arm_exit entry_id={} exit_id={} sym={} stamped_ts={}",
+                                   id, oid, order.symbol, log::ts_ms(bar.timestamp));
                     }
                 }
             }
@@ -164,6 +221,7 @@ void BacktestBroker::cancel_exits(const core::Symbol& sym, std::vector<core::Ord
     for (auto& [oid, o] : m_orders) {
         if (o.reduce_only && o.symbol == sym && o.status == core::OrderStatus::Open && oid != keep) {
             o.status = core::OrderStatus::Cancelled;
+            STONKS_LOG("broker", "ev=oco_cancel id={} sym={} keep={}", oid, sym, keep);
             gone.push_back(oid);
         }
     }
@@ -174,6 +232,9 @@ void BacktestBroker::record_fill(core::Order& order, const core::KLine& bar, cor
     order.status = core::OrderStatus::Filled;
     m_trades.try_emplace(m_next_trade_id,
         core::Trade{ m_next_trade_id, order.id, bar.timestamp, order.symbol, order.side, qty, price });
+    STONKS_LOG("broker", "ev=trade tid={} order_id={} ts={} sym={} side={} qty={:.8f} px={:.4f}",
+               m_next_trade_id, order.id, log::ts_ms(bar.timestamp), order.symbol,
+               log::side_str(order.side), qty, price);
     ++m_next_trade_id;
 }
 
