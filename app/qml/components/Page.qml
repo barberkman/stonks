@@ -7,10 +7,10 @@ import Stonks
 // For full-bleed views (Report/Trades/Logs) use maxWidth huge + sidePad 0.
 Item {
     id: root
-    property int maxWidth: 1180
-    property int sidePad: 40
-    property int topPad: 32
-    property int bottomPad: 60
+    property int maxWidth: Theme.sp(1180)
+    property int sidePad: Theme.sp(40)
+    property int topPad: Theme.sp(32)
+    property int bottomPad: Theme.sp(60)
     property int spacing: 0
     default property alias content: col.data
     readonly property real innerWidth: Math.min(width, maxWidth) - sidePad * 2

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -68,6 +69,10 @@ struct QMSignalsStrategy
     double adr_stop_mult = 1.0;   // stop distance from entry, in ADRs
     bool use_lod_stop = true;     // tighten the stop to the signal bar's extreme if closer
     double target_rr = 2.0;       // take-profit ("sell") target, in R multiples
+    // Sizing & leverage
+    double risk_fraction = 0.02;  // fraction of equity risked per trade (stop-out loss target)
+    double maint_margin = 0.0;    // maintenance-margin rate for the leverage calc (engine has none)
+    double max_leverage = 125.0;  // cap on computed isolated leverage
 
     // A fired setup on a closed bar, with the trade levels to print.
     struct Signal
@@ -86,8 +91,6 @@ struct QMSignalsStrategy
 
     void on_tick(auto& ctx)
     {
-        static constexpr double position_fraction{ 0.02 };
-
         for (const auto& series : ctx.history(lookback()).series) {
             const stonks::core::Symbol sym{ series.symbol };
             auto sigs = scan(series.bars);
@@ -102,15 +105,18 @@ struct QMSignalsStrategy
             if (!sigs.empty()) {
                 const auto& s = sigs.front();
                 const bool is_long = s.stop < s.entry;                 // long setups stop below entry
-                const double qty = ctx.equity() * position_fraction / s.entry;
+                // Risk-mode sizing: a stop-out loses risk_fraction of equity (no fees in this engine).
+                const double risk_per_unit = std::abs(s.entry - s.stop);
+                const double qty = risk_per_unit > 0.0 ? ctx.equity() * risk_fraction / risk_per_unit : 0.0;
                 if (qty > 0.0) {
-                    // Enter order
-                    auto order_id = ctx.place_order(stonks::core::LimitOrderParams{
+                    const double lev = entry_leverage(s.entry, s.stop, is_long);
+                    // Enter order (leverage sized so liquidation sits just past the stop)
+                    auto order_id = ctx.place_order(stonks::core::MarketOrderParams{
                         .symbol = sym,
                         .side = is_long ? stonks::core::OrderSide::Buy
                                         : stonks::core::OrderSide::Sell,
                         .quantity = qty,
-                        .price = s.entry
+                        .leverage = lev,
                     });
 
                     // Stop loss order
@@ -155,6 +161,20 @@ struct QMSignalsStrategy
         if (auto s = parabolic_short(b)) out.push_back(*s);
         if (auto s = orb(b)) out.push_back(*s);
         return out;
+    }
+
+    // Largest isolated leverage keeping liquidation just beyond the stop (formulas §9),
+    // floored with a one-step buffer, clamped to [1, max_leverage].
+    double entry_leverage(double entry, double stop, bool is_long) const
+    {
+        const double denom = is_long ? entry - stop * (1.0 - maint_margin)
+                                     : stop * (1.0 + maint_margin) - entry;
+        if (denom <= 0.0) return 1.0;
+        const double lmax = entry / denom;
+        double l = std::floor(lmax);
+        if (l == lmax) l -= 1.0;            // exact integer -> step below so liquidation stays under the stop
+        l = std::min(l, max_leverage);
+        return std::max(l, 1.0);           // broker requires leverage >= 1
     }
 
 private:

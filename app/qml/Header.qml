@@ -3,7 +3,7 @@ import Stonks
 
 // Top bar: section label (left) + status dot/label (right).
 Rectangle {
-    height: 56
+    height: Theme.headerH
     color: Theme.panel
 
     Rectangle {
@@ -16,26 +16,26 @@ Rectangle {
     Text {
         anchors.verticalCenter: parent.verticalCenter
         anchors.left: parent.left
-        anchors.leftMargin: 24
-        width: parent.width - 320
+        anchors.leftMargin: Theme.sp(24)
+        width: parent.width - Theme.sp(320)
         elide: Text.ElideRight
         text: App.sectionLabel()
         color: Theme.t4
         font.family: Theme.mono
         font.weight: Font.DemiBold
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontBody
     }
 
     Row {
         anchors.verticalCenter: parent.verticalCenter
         anchors.right: parent.right
-        anchors.rightMargin: 24
-        spacing: 9
+        anchors.rightMargin: Theme.sp(24)
+        spacing: Theme.sp(9)
 
         Rectangle {
-            width: 6
-            height: 6
-            radius: 3
+            width: Theme.sp(6)
+            height: Theme.sp(6)
+            radius: Theme.sp(3)
             anchors.verticalCenter: parent.verticalCenter
             color: App.view === "running" ? Theme.accent : Theme.positive
         }
@@ -45,7 +45,7 @@ Rectangle {
             color: Theme.t5
             font.family: Theme.mono
             font.weight: Font.Medium
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSmall
         }
     }
 }

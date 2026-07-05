@@ -31,13 +31,13 @@ struct StubBroker
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Market, OrderStatus::Open,
-                             std::nullopt, p.quantity, p.time_in_force });
+                             std::nullopt, p.quantity, p.time_in_force, p.leverage });
     }
     OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Limit, OrderStatus::Open,
-                             p.price, p.quantity, p.time_in_force });
+                             p.price, p.quantity, p.time_in_force, p.leverage });
     }
     void on_tick(const KLine&) {}
 

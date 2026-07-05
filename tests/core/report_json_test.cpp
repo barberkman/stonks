@@ -36,11 +36,12 @@ EquityPoint eq(std::int64_t ms, Balance equity)
     return EquityPoint{ Timestamp::from_millis(ms), equity };
 }
 
-Trade trade(std::int64_t ms, OrderSide side, core::Quantity qty, core::Price price)
+Trade trade(std::int64_t ms, OrderSide side, core::Quantity qty, core::Price price,
+            bool liquidation = false)
 {
     return Trade{
         core::TradeID{ 7 }, core::OrderID{ 3 }, Timestamp::from_millis(ms),
-        core::Symbol{ "BTCUSDT" }, side, qty, price,
+        core::Symbol{ "BTCUSDT" }, side, qty, price, liquidation,
     };
 }
 
@@ -104,6 +105,7 @@ TEST(ReportJson, MetricsMirrorComputeMetrics)
     EXPECT_EQ(m.at("winning_trades").get<std::size_t>(), expected.winning_trades);
     ASSERT_TRUE(expected.win_rate_pct.has_value());
     EXPECT_DOUBLE_EQ(m.at("win_rate_pct").get<double>(), *expected.win_rate_pct);
+    EXPECT_EQ(m.at("liquidations").get<std::size_t>(), expected.liquidations);
     EXPECT_DOUBLE_EQ(m.at("starting_cash").get<double>(), expected.starting_cash);
     EXPECT_DOUBLE_EQ(m.at("ending_cash").get<double>(), expected.ending_cash);
     EXPECT_DOUBLE_EQ(m.at("ending_equity").get<double>(), expected.ending_equity);
@@ -136,6 +138,27 @@ TEST(ReportJson, TradesSerializeFieldsAndEnums)
     EXPECT_EQ(t.at("side").get<std::string>(), "Sell");
     EXPECT_DOUBLE_EQ(t.at("quantity").get<double>(), 2.5);
     EXPECT_DOUBLE_EQ(t.at("price").get<double>(), 123.5);
+    EXPECT_FALSE(t.at("liquidation").get<bool>());
+}
+
+TEST(ReportJson, LiquidationTradeAndCountSerialize)
+{
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 2,
+        .trades = { trade(1000, OrderSide::Buy, 1.0, 100.0),
+                    trade(2000, OrderSide::Sell, 1.0, 40.0, true) },
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 940.0,
+        .ending_equity = 940.0,
+        .elapsed = {},
+    };
+    const auto j = serialize(in);
+    ASSERT_EQ(j.at("trades").size(), 2u);
+    EXPECT_FALSE(j.at("trades").at(0).at("liquidation").get<bool>());
+    EXPECT_TRUE(j.at("trades").at(1).at("liquidation").get<bool>());
+    EXPECT_EQ(j.at("metrics").at("liquidations").get<std::size_t>(), 1u);
 }
 
 TEST(ReportJson, OrderEnumsAndOptionalsWithValues)
@@ -171,6 +194,37 @@ TEST(ReportJson, OrderEnumsAndOptionalsWithValues)
     EXPECT_EQ(jo.at("status").get<std::string>(), "Rejected");
     EXPECT_DOUBLE_EQ(jo.at("price").get<double>(), 2'000.0);
     EXPECT_EQ(jo.at("time_in_force").get<std::string>(), "GTC");
+    // Designated init without .leverage must land on the default 1.0, not 0.0.
+    EXPECT_DOUBLE_EQ(jo.at("leverage").get<double>(), 1.0);
+}
+
+TEST(ReportJson, OrderLeverageRoundTrips)
+{
+    const Order o{
+        .id = 5,
+        .parent_id = std::nullopt,
+        .timestamp = Timestamp::from_millis(0),
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Buy,
+        .type = OrderType::Market,
+        .status = OrderStatus::Filled,
+        .price = std::nullopt,
+        .quantity = 2.0,
+        .time_in_force = TimeInForce::GTC,
+        .leverage = 3.0,
+    };
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 0,
+        .trades = {},
+        .orders = { o },
+        .equity_curve = {},
+        .ending_cash = 1'000.0,
+        .ending_equity = 1'000.0,
+        .elapsed = {},
+    };
+    const auto jo = serialize(in).at("orders").front();
+    EXPECT_DOUBLE_EQ(jo.at("leverage").get<double>(), 3.0);
 }
 
 TEST(ReportJson, OrderOptionalsSerializeAsNullWhenEmpty)

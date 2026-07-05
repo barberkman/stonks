@@ -111,8 +111,7 @@ std::size_t stride_for(std::size_t n, std::size_t cap)
     return (n + cap - 1) / cap;   // ceil(n / cap)
 }
 
-constexpr std::size_t kCandleCap = 1500;   // display candles per symbol
-constexpr std::size_t kSparkCap = 64;      // sparkline points per symbol
+constexpr std::size_t kSparkCap = 64;   // sparkline points per symbol
 
 } // namespace
 
@@ -153,18 +152,22 @@ QVariantMap build_result(const RunConfig& cfg,
         ? iso_date(*metrics.first_ts) + " → " + iso_date(*metrics.last_ts)   // →
         : std::string{ "—" });
 
-    // --- portfolio equity + drawdown numeric series ---
+    // --- portfolio equity + drawdown numeric series (+ shared timestamps) ---
     QVariantList equity;
     equity.reserve(static_cast<int>(input.equity_curve.size()));
+    QVariantList times;
+    times.reserve(static_cast<int>(input.equity_curve.size()));
     double peak = -1e300;
     QVariantList drawdown;
     drawdown.reserve(static_cast<int>(input.equity_curve.size()));
     for (const auto& point : input.equity_curve) {
         equity.append(point.equity);
+        times.append(static_cast<qlonglong>(point.timestamp.value.time_since_epoch().count()));
         peak = std::max(peak, point.equity);
         drawdown.append(peak > 0.0 ? (point.equity - peak) / peak : 0.0);
     }
     result["equity"] = equity;
+    result["equityT"] = times;
     result["drawdown"] = drawdown;
 
     // --- per-symbol: summary rows + drill-down (candles, trades, spark) ---
@@ -179,26 +182,41 @@ QVariantMap build_result(const RunConfig& cfg,
             if (rt.symbol == sym) { rows.push_back(annotate(rt, series, ++n)); }
         }
 
-        // Display candles: stride down to keep the hand-drawn Canvas responsive.
-        const std::size_t stride = stride_for(series.candles.size(), kCandleCap);
-        QVariantList candles;
-        for (std::size_t i = 0; i < series.candles.size(); i += stride) {
-            const Candle& c = series.candles[i];
-            QVariantMap cm;
-            cm["o"] = c.o; cm["h"] = c.h; cm["l"] = c.l; cm["c"] = c.c; cm["v"] = c.v;
-            cm["t"] = static_cast<qlonglong>(c.t);
-            candles.append(cm);
+        // Display candles: full resolution, columnar (t/o/h/l/c/v parallel
+        // arrays) so the chart can pan/zoom into real data without a per-candle
+        // QVariantMap allocation.
+        const int candle_count = static_cast<int>(series.candles.size());
+        QVariantList ts, opens, highs, lows, closes, vols;
+        ts.reserve(candle_count);
+        opens.reserve(candle_count);
+        highs.reserve(candle_count);
+        lows.reserve(candle_count);
+        closes.reserve(candle_count);
+        vols.reserve(candle_count);
+        for (const Candle& c : series.candles) {
+            ts.append(static_cast<qlonglong>(c.t));
+            opens.append(c.o);
+            highs.append(c.h);
+            lows.append(c.l);
+            closes.append(c.c);
+            vols.append(c.v);
         }
+        QVariantMap candles;
+        candles["t"] = ts;
+        candles["o"] = opens;
+        candles["h"] = highs;
+        candles["l"] = lows;
+        candles["c"] = closes;
+        candles["v"] = vols;
 
-        // Trades: re-index entry/exit onto the strided candle array (bars/MFE/MAE
-        // stay full-resolution).
+        // Trades carry natural full-resolution candle indices.
         QVariantList trades;
         for (const auto& row : rows) {
             QVariantMap tm;
             tm["n"] = row.n;
             tm["side"] = row.is_long ? "LONG" : "SHORT";
-            tm["entryIdx"] = static_cast<int>(row.entry_idx / static_cast<int>(stride));
-            tm["exitIdx"] = static_cast<int>(row.exit_idx / static_cast<int>(stride));
+            tm["entryIdx"] = row.entry_idx;
+            tm["exitIdx"] = row.exit_idx;
             tm["entryTs"] = static_cast<qlonglong>(row.entry_ts);
             tm["exitTs"] = static_cast<qlonglong>(row.exit_ts);
             tm["entryPrice"] = row.entry_price;

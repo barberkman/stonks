@@ -1,7 +1,9 @@
 pragma Singleton
 import QtQuick
 
-// Static visual system ported from the "Backtest Terminal" design.
+// Visual system ported from the "Backtest Terminal" design. Sizes and fonts
+// are scale-aware: main.qml pushes the window dimensions in, and sp()/fill()
+// derive every dimension from the clamped scale factors below.
 QtObject {
     // surfaces
     readonly property color bg: "#141414"
@@ -36,4 +38,40 @@ QtObject {
     // fonts (installed system families)
     readonly property string sans: "IBM Plex Sans"
     readonly property string mono: "IBM Plex Mono"
+
+    // responsive scale (window size pushed from main.qml via Binding)
+    property real windowWidth: 1440
+    property real windowHeight: 900
+
+    // fonts/spacing/radii/control sizes: min(w,h) ratio, clamped for legibility.
+    // At the enforced minimum window (1120x680) the raw ratio is 0.756.
+    readonly property real scale: Math.max(0.75, Math.min(1.4,
+        Math.min(windowWidth / 1440, windowHeight / 900)))
+
+    // chart-canvas growth: height-only and a wider clamp — more chart area is
+    // strictly useful, unlike bigger text
+    readonly property real fillScale: Math.max(0.75, Math.min(2.0, windowHeight / 900))
+
+    function sp(px) { return Math.round(px * scale) }
+    function fill(px) { return Math.round(px * fillScale) }
+
+    // type scale
+    readonly property int fontMicro: sp(10)      // table headers, tiny caps labels
+    readonly property int fontCaption: sp(11)    // meta text, canvas axis labels
+    readonly property int fontSmall: sp(12)      // secondary UI text
+    readonly property int fontBody: sp(13)       // primary UI text, buttons
+    readonly property int fontBodyLg: sp(14)     // data rows, inputs
+    readonly property int fontSub: sp(16)        // sub-headings
+    readonly property int fontHeading: sp(18)    // section headings
+    readonly property int fontTitle: sp(24)      // page H1
+    readonly property int fontMetric: sp(26)     // report metric values
+    readonly property int fontHero: sp(32)       // trade-detail P&L
+
+    // structural tokens
+    readonly property int radiusControl: sp(5)
+    readonly property int radiusCard: sp(6)
+    readonly property int controlH: sp(40)       // buttons, input rows
+    readonly property int controlHSm: sp(30)     // small buttons, pills
+    readonly property int sidebarW: sp(212)
+    readonly property int headerH: sp(56)
 }

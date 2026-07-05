@@ -28,10 +28,10 @@ void run_backtest() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     stonks::core::Engine engine
     {
-        PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
-        // QMSignalsStrategy{},
-        stonks::datafeed::KLineFeed{ "app/data/binance_5m.parquet"
-            , { .start = "2026-01-01", .end = "2026-01-30", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
+        // PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
+        QMSignalsStrategy{},
+        stonks::datafeed::KLineFeed{ "app/data/binance_1d.parquet"
+            , { .start = "2020-01-01", .end = "2026-01-30", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
         },
         stonks::broker::BacktestBroker{ starting_cash }
     };

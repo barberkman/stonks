@@ -29,11 +29,12 @@ EquityPoint eq(std::int64_t ms, Balance equity)
     return EquityPoint{ Timestamp::from_millis(ms), equity };
 }
 
-Trade trade(std::int64_t ms, OrderSide side, core::Quantity qty, core::Price price)
+Trade trade(std::int64_t ms, OrderSide side, core::Quantity qty, core::Price price,
+            bool liquidation = false)
 {
     return Trade{
         core::TradeID{ 1 }, core::OrderID{ 1 }, Timestamp::from_millis(ms),
-        core::Symbol{ "X" }, side, qty, price,
+        core::Symbol{ "X" }, side, qty, price, liquidation,
     };
 }
 
@@ -223,6 +224,34 @@ TEST(Report, WinRatePrintsZeroWhenNothingCloses)
     std::ostringstream os;
     print_report(os, m);
     EXPECT_NE(os.str().find("Win rate:        0.00 % (0/0)"), std::string::npos);
+}
+
+TEST(Report, LiquidationsCountedSeparatelyFromClosedTrades)
+{
+    // One ordinary round trip and one ending in a forced close: both count as
+    // closed trades, but only the forced fill counts as a liquidation.
+    std::vector<Trade> trades{
+        trade(1, OrderSide::Buy, 1.0, 100.0),
+        trade(2, OrderSide::Sell, 1.0, 110.0),
+        trade(3, OrderSide::Buy, 1.0, 110.0),
+        trade(4, OrderSide::Sell, 1.0, 55.0, true),   // liquidation fill
+    };
+    const auto m = compute_metrics(ReportInput{
+        .starting_cash = 1'000.0,
+        .bars_processed = 4,
+        .trades = trades,
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 955.0,
+        .ending_equity = 955.0,
+        .elapsed = {},
+    });
+    EXPECT_EQ(m.liquidations, 1u);
+    EXPECT_EQ(m.closed_trades, 2u);
+
+    std::ostringstream os;
+    print_report(os, m);
+    EXPECT_NE(os.str().find("Liquidations:    1"), std::string::npos);
 }
 
 TEST(Report, TimeRangeFromCurveEndpoints)

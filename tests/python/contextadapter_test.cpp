@@ -86,6 +86,50 @@ TEST(ContextAdapter, PlaceMarketOrderBuildsAndForwards)
     EXPECT_EQ(placed[0].type, core::OrderType::Market);
     EXPECT_FALSE(placed[0].price.has_value());
     EXPECT_FALSE(placed[0].parent_id.has_value());
+    EXPECT_DOUBLE_EQ(placed[0].leverage, 1.0);   // default when not specified
+}
+
+TEST(ContextAdapter, PlaceMarketOrderForwardsLeverage)
+{
+    StubFeed feed;
+    StubBroker broker;
+    std::vector<core::Order> placed;
+    broker.placed = &placed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    adapter.place_market_order(core::MarketOrderParams{
+        .symbol = "TEST",
+        .side = core::OrderSide::Buy,
+        .quantity = 1.5,
+        .leverage = 5.0,
+    }, std::nullopt);
+
+    ASSERT_EQ(placed.size(), 1u);
+    EXPECT_DOUBLE_EQ(placed[0].leverage, 5.0);
+}
+
+TEST(ContextAdapter, PlaceLimitOrderForwardsLeverage)
+{
+    StubFeed feed;
+    StubBroker broker;
+    std::vector<core::Order> placed;
+    broker.placed = &placed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    adapter.place_limit_order(core::LimitOrderParams{
+        .symbol = "TEST",
+        .side = core::OrderSide::Sell,
+        .quantity = 2.5,
+        .price = 99.5,
+        .leverage = 10.0,
+    }, std::nullopt);
+
+    ASSERT_EQ(placed.size(), 1u);
+    EXPECT_DOUBLE_EQ(placed[0].leverage, 10.0);
 }
 
 TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)

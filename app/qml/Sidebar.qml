@@ -1,10 +1,10 @@
 import QtQuick
 import Stonks
 
-// 212px fixed sidebar: logo, nav, latest-run footer.
+// Fixed-width sidebar: logo, nav, latest-run footer.
 Rectangle {
     id: root
-    width: 212
+    width: Theme.sidebarW
     color: Theme.panel
 
     // right divider
@@ -25,16 +25,16 @@ Rectangle {
         // logo block
         Item {
             width: parent.width
-            height: 67
+            height: Theme.sp(67)
             Row {
                 anchors.left: parent.left
-                anchors.leftMargin: 18
+                anchors.leftMargin: Theme.sp(18)
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 11
+                spacing: Theme.sp(11)
                 Rectangle {
-                    width: 26
-                    height: 26
-                    radius: 5
+                    width: Theme.sp(26)
+                    height: Theme.sp(26)
+                    radius: Theme.radiusControl
                     color: Theme.accent
                     Text {
                         anchors.centerIn: parent
@@ -42,24 +42,24 @@ Rectangle {
                         color: Theme.accentInk
                         font.family: Theme.mono
                         font.weight: Font.Bold
-                        font.pixelSize: 15
+                        font.pixelSize: Theme.fontSub
                     }
                 }
                 Column {
-                    spacing: 2
+                    spacing: Theme.sp(2)
                     anchors.verticalCenter: parent.verticalCenter
                     Text {
                         text: "Backtester"
                         color: Theme.textPrimary
                         font.family: Theme.sans
                         font.weight: Font.DemiBold
-                        font.pixelSize: 14
+                        font.pixelSize: Theme.fontBodyLg
                     }
                     Text {
                         text: "v0.9 · engine 2.3"
                         color: Theme.t6
                         font.family: Theme.mono
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontCaption
                     }
                 }
             }
@@ -71,7 +71,7 @@ Rectangle {
             }
         }
 
-        Item { width: 1; height: 12 } // nav top padding
+        Item { width: 1; height: Theme.sp(12) } // nav top padding
 
         NavButton {
             label: "Backtests"
@@ -90,7 +90,7 @@ Rectangle {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 84
+        height: Theme.sp(84)
 
         Rectangle {
             anchors.top: parent.top
@@ -101,32 +101,32 @@ Rectangle {
 
         Column {
             anchors.fill: parent
-            anchors.leftMargin: 18
-            anchors.rightMargin: 18
-            anchors.topMargin: 16
-            spacing: 6
+            anchors.leftMargin: Theme.sp(18)
+            anchors.rightMargin: Theme.sp(18)
+            anchors.topMargin: Theme.sp(16)
+            spacing: Theme.sp(6)
 
             Text {
                 text: "LATEST RUN"
                 color: Theme.t6
                 font.family: Theme.mono
                 font.weight: Font.Medium
-                font.pixelSize: 10
-                font.letterSpacing: 1
+                font.pixelSize: Theme.fontMicro
+                font.letterSpacing: 1 * Theme.scale
             }
             Text {
                 text: "#" + App.latestRun().id
                 color: Theme.t1
                 font.family: Theme.mono
                 font.weight: Font.Medium
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSmall
             }
             Row {
-                spacing: 7
+                spacing: Theme.sp(7)
                 Rectangle {
-                    width: 6
-                    height: 6
-                    radius: 3
+                    width: Theme.sp(6)
+                    height: Theme.sp(6)
+                    radius: Theme.sp(3)
                     anchors.verticalCenter: parent.verticalCenter
                     color: App.latestRun().status === "completed" ? Theme.positive : Theme.accent
                 }
@@ -135,7 +135,7 @@ Rectangle {
                     color: App.latestRun().status === "completed" ? Theme.positive : Theme.accent
                     font.family: Theme.mono
                     font.weight: Font.Medium
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontCaption
                     anchors.verticalCenter: parent.verticalCenter
                 }
             }

@@ -5,9 +5,9 @@ import Stonks
 // (symbols + date range), set starting cash, and run.
 Page {
     id: view
-    maxWidth: 1080
-    topPad: 36
-    spacing: 20
+    maxWidth: Theme.sp(1080)
+    topPad: Theme.sp(36)
+    spacing: Theme.sp(20)
 
     readonly property var strats: App.strategyList()    // [{display, module, cls}]
     readonly property var files: App.dataFileList()      // [{key, label, source}]
@@ -21,7 +21,7 @@ Page {
 
     // --- back + title ---
     Row {
-        spacing: 14
+        spacing: Theme.sp(14)
         GhostButton { anchors.verticalCenter: parent.verticalCenter; text: "‹ Backtests"; onClicked: App.goBacktests() }
         Text {
             anchors.verticalCenter: parent.verticalCenter
@@ -29,8 +29,8 @@ Page {
             color: Theme.accent
             font.family: Theme.mono
             font.weight: Font.Medium
-            font.pixelSize: 11
-            font.letterSpacing: 1.6
+            font.pixelSize: Theme.fontCaption
+            font.letterSpacing: 1.6 * Theme.scale
         }
     }
     Text {
@@ -38,28 +38,28 @@ Page {
         color: Theme.textBright
         font.family: Theme.sans
         font.weight: Font.Bold
-        font.pixelSize: 24
+        font.pixelSize: Theme.fontTitle
     }
 
     // --- strategy + data cards ---
     Row {
         width: view.innerWidth
-        spacing: 20
-        readonly property real cardW: (width - 20) / 2
+        spacing: Theme.sp(20)
+        readonly property real cardW: (width - Theme.sp(20)) / 2
 
         // strategy
         Rectangle {
             width: parent.cardW
-            height: 158
-            radius: 6
+            height: Theme.sp(158)
+            radius: Theme.radiusCard
             color: Theme.card
             border.color: Theme.border
             border.width: 1
             Column {
-                x: 22; y: 20
-                width: parent.width - 44
-                spacing: 14
-                Text { text: "STRATEGY"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
+                x: Theme.sp(22); y: Theme.sp(20)
+                width: parent.width - Theme.sp(44)
+                spacing: Theme.sp(14)
+                Text { text: "STRATEGY"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 1 * Theme.scale }
                 StyledSelect {
                     width: parent.width
                     model: view.strats.map(function (s) { return s.display })
@@ -68,9 +68,9 @@ Page {
                     onPicked: function (v) { App.strategy = v }
                 }
                 Column {
-                    spacing: 4
-                    Text { text: "SOURCE"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
-                    Text { text: App.strategySource(); color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
+                    spacing: Theme.sp(4)
+                    Text { text: "SOURCE"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
+                    Text { text: App.strategySource(); color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontSmall }
                 }
             }
         }
@@ -78,16 +78,16 @@ Page {
         // data
         Rectangle {
             width: parent.cardW
-            height: 158
-            radius: 6
+            height: Theme.sp(158)
+            radius: Theme.radiusCard
             color: Theme.card
             border.color: Theme.border
             border.width: 1
             Column {
-                x: 22; y: 20
-                width: parent.width - 44
-                spacing: 12
-                Text { text: "DATA"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
+                x: Theme.sp(22); y: Theme.sp(20)
+                width: parent.width - Theme.sp(44)
+                spacing: Theme.sp(12)
+                Text { text: "DATA"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 1 * Theme.scale }
                 StyledSelect {
                     width: parent.width
                     model: view.files.map(function (f) { return f.label })
@@ -97,18 +97,18 @@ Page {
                 }
                 Row {
                     width: parent.width
-                    spacing: 24
+                    spacing: Theme.sp(24)
                     Column {
-                        spacing: 4
-                        width: (parent.width - 24) / 2
-                        Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
-                        Text { width: parent.width; elide: Text.ElideRight; text: App.symbols.length + " of " + App.availableSymbols.length + " selected"; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
+                        spacing: Theme.sp(4)
+                        width: (parent.width - Theme.sp(24)) / 2
+                        Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
+                        Text { width: parent.width; elide: Text.ElideRight; text: App.symbols.length + " of " + App.availableSymbols.length + " selected"; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontSmall }
                     }
                     Column {
-                        spacing: 4
-                        width: (parent.width - 24) / 2
-                        Text { text: "SOURCE"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10 }
-                        Text { width: parent.width; elide: Text.ElideRight; text: (App.dataFilesObj()[App.dataFile] || {}).source || ""; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12 }
+                        spacing: Theme.sp(4)
+                        width: (parent.width - Theme.sp(24)) / 2
+                        Text { text: "SOURCE"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
+                        Text { width: parent.width; elide: Text.ElideRight; text: (App.dataFilesObj()[App.dataFile] || {}).source || ""; color: Theme.t2; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontSmall }
                     }
                 }
             }
@@ -118,36 +118,36 @@ Page {
     // --- filter: symbols + date range ---
     Rectangle {
         width: view.innerWidth
-        radius: 6
+        radius: Theme.radiusCard
         color: Theme.card
         border.color: Theme.border
         border.width: 1
-        implicitHeight: filterCol.implicitHeight + 40
+        implicitHeight: filterCol.implicitHeight + Theme.sp(40)
 
         Column {
             id: filterCol
-            x: 22; y: 20
-            width: parent.width - 44
-            spacing: 16
+            x: Theme.sp(22); y: Theme.sp(20)
+            width: parent.width - Theme.sp(44)
+            spacing: Theme.sp(16)
 
-            Text { text: "FILTER"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11; font.letterSpacing: 1 }
+            Text { text: "FILTER"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 1 * Theme.scale }
 
             // symbol multi-select pills
             Column {
                 width: parent.width
-                spacing: 8
-                Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10; font.letterSpacing: 0.6 }
+                spacing: Theme.sp(8)
+                Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
                 Flow {
                     width: parent.width
-                    spacing: 8
+                    spacing: Theme.sp(8)
                     Repeater {
                         model: App.availableSymbols
                         delegate: Rectangle {
                             required property var modelData
                             readonly property bool on: App.symbols.indexOf(modelData) >= 0
-                            width: pillT.implicitWidth + 28
-                            height: 30
-                            radius: 5
+                            width: pillT.implicitWidth + Theme.sp(28)
+                            height: Theme.controlHSm
+                            radius: Theme.radiusControl
                             color: on ? Theme.accent : "transparent"
                             border.width: 1
                             border.color: on ? Theme.accent : Theme.border
@@ -158,7 +158,7 @@ Page {
                                 color: parent.on ? Theme.accentInk : Theme.t3
                                 font.family: Theme.mono
                                 font.weight: Font.DemiBold
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSmall
                             }
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: App.toggleSymbol(modelData) }
                         }
@@ -169,16 +169,16 @@ Page {
             // date range
             Row {
                 width: parent.width
-                spacing: 18
+                spacing: Theme.sp(18)
                 ParamField {
-                    width: (parent.width - 18) / 2
+                    width: (parent.width - Theme.sp(18)) / 2
                     label: "Start date (YYYY-MM-DD)"
                     unit: ""
                     value: App.startDate
                     onEdited: function (v) { App.startDate = v }
                 }
                 ParamField {
-                    width: (parent.width - 18) / 2
+                    width: (parent.width - Theme.sp(18)) / 2
                     label: "End date (YYYY-MM-DD)"
                     unit: ""
                     value: App.endDate
@@ -191,31 +191,31 @@ Page {
     // --- starting cash + start ---
     Item {
         width: view.innerWidth
-        height: 44
+        height: Theme.sp(44)
         Row {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 11
-            Text { anchors.verticalCenter: parent.verticalCenter; text: "Starting cash"; color: Theme.t4; font.family: Theme.sans; font.pixelSize: 12 }
+            spacing: Theme.sp(11)
+            Text { anchors.verticalCenter: parent.verticalCenter; text: "Starting cash"; color: Theme.t4; font.family: Theme.sans; font.pixelSize: Theme.fontSmall }
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 160
-                height: 40
-                radius: 5
+                width: Theme.sp(160)
+                height: Theme.controlH
+                radius: Theme.radiusControl
                 color: Theme.input
                 border.color: "#3c3c3c"
                 border.width: 1
-                Text { id: dollar; anchors.left: parent.left; anchors.leftMargin: 11; anchors.verticalCenter: parent.verticalCenter; text: "$"; color: Theme.t5; font.family: Theme.mono; font.pixelSize: 13 }
+                Text { id: dollar; anchors.left: parent.left; anchors.leftMargin: Theme.sp(11); anchors.verticalCenter: parent.verticalCenter; text: "$"; color: Theme.t5; font.family: Theme.mono; font.pixelSize: Theme.fontBody }
                 TextInput {
                     anchors.left: dollar.right
-                    anchors.leftMargin: 4
+                    anchors.leftMargin: Theme.sp(4)
                     anchors.right: parent.right
-                    anchors.rightMargin: 8
+                    anchors.rightMargin: Theme.sp(8)
                     anchors.verticalCenter: parent.verticalCenter
                     text: App.startCash
                     color: Theme.textPrimary
                     font.family: Theme.mono
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.fontBodyLg
                     selectByMouse: true
                     clip: true
                     onEditingFinished: App.startCash = text
@@ -227,8 +227,8 @@ Page {
                 text: "⚠ " + App.runError
                 color: Theme.negative
                 font.family: Theme.mono
-                font.pixelSize: 12
-                width: 360
+                font.pixelSize: Theme.fontSmall
+                width: Theme.sp(360)
                 elide: Text.ElideRight
             }
         }
@@ -236,8 +236,8 @@ Page {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: "▸ Start backtest"
-            hpad: 26
-            fontPx: 14
+            hpad: Theme.sp(26)
+            fontPx: Theme.fontBodyLg
             onClicked: App.runBacktest()
         }
     }

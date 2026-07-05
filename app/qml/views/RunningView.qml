@@ -6,15 +6,15 @@ import "../js/format.js" as Fmt
 // Running backtest: progress + live log.
 Page {
     id: view
-    maxWidth: 720
-    topPad: 90
-    spacing: 30
+    maxWidth: Theme.sp(720)
+    topPad: Theme.sp(90)
+    spacing: Theme.sp(30)
 
     readonly property var bt: App.currentBacktest()
 
     // --- title ---
     Row {
-        spacing: 14
+        spacing: Theme.sp(14)
         Spinner { anchors.verticalCenter: parent.verticalCenter }
         Text {
             anchors.verticalCenter: parent.verticalCenter
@@ -22,49 +22,49 @@ Page {
             color: Theme.textBright
             font.family: Theme.sans
             font.weight: Font.DemiBold
-            font.pixelSize: 20
+            font.pixelSize: Theme.fontHeading
         }
     }
 
     // --- progress card ---
     Rectangle {
         width: view.innerWidth
-        radius: 8
+        radius: Theme.sp(8)
         color: Theme.card
         border.color: Theme.border
         border.width: 1
-        implicitHeight: card.implicitHeight + 52
+        implicitHeight: card.implicitHeight + Theme.sp(52)
 
         Column {
             id: card
-            x: 28; y: 26
-            width: parent.width - 56
+            x: Theme.sp(28); y: Theme.sp(26)
+            width: parent.width - Theme.sp(56)
             spacing: 0
 
             // progress label + pct
             Item {
                 width: parent.width
-                height: 22
-                Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "PROGRESS"; color: Theme.t4; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 12; font.letterSpacing: 0.7 }
-                Text { anchors.right: parent.right; anchors.bottom: parent.bottom; text: Math.round(App.progress) + "%"; color: Theme.accent; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: 18 }
+                height: Theme.sp(22)
+                Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "PROGRESS"; color: Theme.t4; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontSmall; font.letterSpacing: 0.7 * Theme.scale }
+                Text { anchors.right: parent.right; anchors.bottom: parent.bottom; text: Math.round(App.progress) + "%"; color: Theme.accent; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontHeading }
             }
-            Item { width: 1; height: 12 }
+            Item { width: 1; height: Theme.sp(12) }
 
             // bar
             Rectangle {
                 width: parent.width
-                height: 8
-                radius: 4
+                height: Theme.sp(8)
+                radius: Theme.sp(4)
                 color: Theme.input
                 Rectangle {
                     height: parent.height
-                    radius: 4
+                    radius: Theme.sp(4)
                     color: Theme.accent
                     width: parent.width * App.progress / 100
                     Behavior on width { NumberAnimation { duration: 110 } }
                 }
             }
-            Item { width: 1; height: 20 }
+            Item { width: 1; height: Theme.sp(20) }
 
             // stats
             Row {
@@ -78,27 +78,27 @@ Page {
                     delegate: Column {
                         required property var modelData
                         width: card.width / 3
-                        spacing: 5
-                        Text { text: modelData.l; color: Theme.t6; font.family: Theme.mono; font.pixelSize: 10; font.letterSpacing: 0.6 }
-                        Text { text: modelData.v; color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 15 }
+                        spacing: Theme.sp(5)
+                        Text { text: modelData.l; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
+                        Text { text: modelData.v; color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontSub }
                     }
                 }
             }
-            Item { width: 1; height: 22 }
+            Item { width: 1; height: Theme.sp(22) }
 
             // live log
             Item {
                 width: parent.width
-                height: 16
-                Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "LIVE LOG"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 10; font.letterSpacing: 1 }
-                Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: App.liveLogList().length + " events"; color: Theme.t7; font.family: Theme.mono; font.pixelSize: 10 }
+                height: Theme.sp(16)
+                Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "LIVE LOG"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
+                Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: App.liveLogList().length + " events"; color: Theme.t7; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
             }
-            Item { width: 1; height: 8 }
+            Item { width: 1; height: Theme.sp(8) }
 
             Rectangle {
                 width: parent.width
-                height: 184
-                radius: 5
+                height: Theme.sp(184)
+                radius: Theme.radiusControl
                 color: Theme.bg
                 border.color: "#272727"
                 border.width: 1
@@ -107,40 +107,40 @@ Page {
                 ListView {
                     id: logView
                     anchors.fill: parent
-                    anchors.margins: 10
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
+                    anchors.margins: Theme.sp(10)
+                    anchors.leftMargin: Theme.sp(14)
+                    anchors.rightMargin: Theme.sp(14)
                     clip: true
                     model: App.liveLogList()
                     onCountChanged: positionViewAtEnd()
                     delegate: Item {
                         required property var modelData
                         width: logView.width
-                        height: 21
+                        height: Theme.sp(21)
                         Row {
-                            spacing: 12
-                            Text { width: 60; text: modelData.t; color: Theme.t7; font.family: Theme.mono; font.pixelSize: 11 }
-                            Text { width: 48; text: modelData.lvl; color: modelData.lc; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: 11 }
-                            Text { width: logView.width - 120; elide: Text.ElideRight; text: modelData.m; color: Theme.t2; font.family: Theme.mono; font.pixelSize: 11 }
+                            spacing: Theme.sp(12)
+                            Text { width: Theme.sp(60); text: modelData.t; color: Theme.t7; font.family: Theme.mono; font.pixelSize: Theme.fontCaption }
+                            Text { width: Theme.sp(48); text: modelData.lvl; color: modelData.lc; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption }
+                            Text { width: logView.width - Theme.sp(120); elide: Text.ElideRight; text: modelData.m; color: Theme.t2; font.family: Theme.mono; font.pixelSize: Theme.fontCaption }
                         }
                     }
                 }
             }
-            Item { width: 1; height: 22 }
+            Item { width: 1; height: Theme.sp(22) }
 
             // cancel
             Item {
                 width: parent.width
-                height: 42
+                height: Theme.sp(42)
                 Rectangle {
                     anchors.right: parent.right
-                    width: cancelT.implicitWidth + 44
-                    height: 42
-                    radius: 6
+                    width: cancelT.implicitWidth + Theme.sp(44)
+                    height: Theme.sp(42)
+                    radius: Theme.sp(6)
                     color: cancelMa.containsMouse ? Qt.rgba(0.88, 0.34, 0.30, 0.10) : "transparent"
                     border.color: "#3a2326"
                     border.width: 1
-                    Text { id: cancelT; anchors.centerIn: parent; text: "✕ Cancel"; color: Theme.negative; font.family: Theme.sans; font.weight: Font.Medium; font.pixelSize: 13 }
+                    Text { id: cancelT; anchors.centerIn: parent; text: "✕ Cancel"; color: Theme.negative; font.family: Theme.sans; font.weight: Font.Medium; font.pixelSize: Theme.fontBody }
                     MouseArea { id: cancelMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: App.cancelRun() }
                 }
             }

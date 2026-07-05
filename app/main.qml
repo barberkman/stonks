@@ -12,6 +12,10 @@ ApplicationWindow {
     title: "Backtester"
     color: Theme.bg
 
+    // feed the window size into the Theme singleton's responsive scale
+    Binding { target: Theme; property: "windowWidth"; value: window.width }
+    Binding { target: Theme; property: "windowHeight"; value: window.height }
+
     Row {
         anchors.fill: parent
 

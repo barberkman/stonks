@@ -9,11 +9,11 @@ Item {
     signal clicked()
 
     width: parent ? parent.width : 200
-    height: 38
+    height: Theme.sp(38)
 
     Rectangle {
         anchors.left: parent.left
-        width: 2
+        width: Theme.sp(2)
         height: parent.height
         color: ctrl.active ? Theme.accent : "transparent"
     }
@@ -21,12 +21,12 @@ Item {
     Text {
         anchors.verticalCenter: parent.verticalCenter
         anchors.left: parent.left
-        anchors.leftMargin: 17
+        anchors.leftMargin: Theme.sp(17)
         text: ctrl.label
         color: ctrl.active ? Theme.textPrimary : (hover.hovered ? Theme.t3 : Theme.t5)
         font.family: Theme.mono
         font.weight: Font.Medium
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontBody
     }
 
     HoverHandler { id: hover }

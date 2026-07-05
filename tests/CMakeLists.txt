@@ -7,6 +7,7 @@ add_executable(core_tests
     core/report_json_test.cpp
     core/analytics_test.cpp
     core/backtestbroker_test.cpp
+    core/leverage_test.cpp
     core/scenarios_test.cpp
     core/lookahead_test.cpp
     core/determinism_test.cpp
@@ -46,7 +47,14 @@ target_link_libraries(datafeed_tests PRIVATE
     GTest::gtest_main
 )
 
-gtest_discover_tests(datafeed_tests)
+# Longer discovery timeout: the first exec loads the full Arrow/Parquet/AWS dylib
+# stack, which can exceed the 5s default on macOS (first-run dyld validation).
+gtest_discover_tests(datafeed_tests DISCOVERY_TIMEOUT 60)
+
+# App-layer tests: the QVariant result map the QML views consume. The app
+# target is an executable, so resultmap.cpp is compiled into the test binary
+# directly rather than linked from a library.
+add_subdirectory(app)
 
 if(STONKS_PYTHON)
     add_subdirectory(python)

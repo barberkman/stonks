@@ -136,8 +136,8 @@ def test_buys_on_uptrend():
 | `ctx.cash()` | `float` |
 | `ctx.equity()` | `float` |
 | `ctx.history(count: int)` | `MarketWindow` — every symbol that printed this tick, each with its last N bars, as one combined frame |
-| `ctx.place_market_order(symbol, side, quantity, time_in_force=GTC)` | `bool` |
-| `ctx.place_limit_order(symbol, side, quantity, price, time_in_force=GTC)` | `bool` |
+| `ctx.place_market_order(symbol, side, quantity, leverage=1.0, time_in_force=GTC)` | `bool` |
+| `ctx.place_limit_order(symbol, side, quantity, price, leverage=1.0, time_in_force=GTC)` | `bool` |
 
 `history(n)` returns a `MarketWindow` — a long frame over every symbol that
 printed at the current timestamp. `.symbol` is a per-row column; `.timestamp` is
@@ -169,11 +169,18 @@ Same rules as native strategies (the broker is shared):
 - **Market orders** fill at the **next bar's open**; **limit orders** fill once a
   later bar's range reaches the price. `place_*_order(...)` returns immediately — the
   order is queued, not filled, so its `bool` return means "accepted", not "filled".
-- **Cash-secured, one position per symbol.** Opening ties up `quantity * fill_price`
-  of cash; an unaffordable order is rejected (it does not wait). While you hold a
-  position in a symbol a same-side order is rejected (no adding — close first); an
-  opposite-side order closes it, clamping an oversized close to what you hold. Shorts
-  are allowed.
+- **Margin-collateralized, one position per symbol.** Opening posts
+  `quantity * fill_price / leverage` of cash as isolated margin (the default
+  `leverage=1.0` is fully cash-secured); an unaffordable order is rejected (it does
+  not wait). While you hold a position in a symbol a same-side order is rejected
+  (no adding — close first); an opposite-side order closes it, clamping an
+  oversized close to what you hold. Shorts are allowed. Leverage only matters on
+  the order that opens the position — it is ignored on closing legs.
+- **Isolated liquidation.** A position whose loss reaches its posted margin is
+  force-closed at its bankruptcy price (long `entry * (1 - 1/leverage)`, short
+  `entry * (1 + 1/leverage)`); a bar gapping through it fills at the open, and the
+  loss beyond the margin comes out of cash. If account equity ever reaches zero
+  the broker liquidates everything and rejects all further orders.
 
 ## IDE autocomplete
 

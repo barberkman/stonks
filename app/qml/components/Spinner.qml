@@ -4,8 +4,8 @@ import Stonks
 // Spinning ring (running indicator).
 Item {
     id: root
-    width: 22
-    height: 22
+    width: Theme.sp(22)
+    height: Theme.sp(22)
 
     Canvas {
         anchors.fill: parent

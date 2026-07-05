@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "stonks/core/clock.h"
@@ -111,6 +114,46 @@ std::vector<Signal> run(std::vector<KLine> bars)
     return s.last_signals("AAA");
 }
 
+// Broker double with a settable equity (StubBroker's is always 0, which zeroes
+// the risk-based quantity) that records every placed order for inspection.
+struct SizingBroker
+{
+    Balance equity_value{ 0.0 };
+    std::vector<Order>* placed{ nullptr };
+    std::unordered_map<TradeID, Trade> m_trades;
+    std::unordered_map<OrderID, Order> m_orders;
+    OrderID next_id{ 1 };
+
+    Balance cash() const { return equity_value; }
+    Balance equity() const { return equity_value; }
+    const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
+    const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
+
+    OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt)
+    {
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
+                             OrderType::Market, OrderStatus::Open,
+                             std::nullopt, p.quantity, p.time_in_force, p.leverage });
+    }
+    OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt)
+    {
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
+                             OrderType::Limit, OrderStatus::Open,
+                             p.price, p.quantity, p.time_in_force, p.leverage });
+    }
+    void on_tick(const KLine&) {}
+
+private:
+    OrderID record(Order o)
+    {
+        const OrderID id = o.id;
+        if (placed) { placed->push_back(o); }
+        m_orders.try_emplace(id, std::move(o));
+        ++next_id;
+        return id;
+    }
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 //  breakout (long)
 // ════════════════════════════════════════════════════════════════════════════
@@ -125,7 +168,8 @@ std::vector<Row> breakout_setup(double break_close = 51.0, double break_vol = 20
 
 TEST(QMSignals, BreakoutFiresWithLevels)
 {
-    const auto* b = find(run(to_klines("AAA", breakout_setup())), "breakout");
+    const auto sigs = run(to_klines("AAA", breakout_setup()));
+    const auto* b = find(sigs, "breakout");
     ASSERT_NE(b, nullptr);
     EXPECT_NEAR(b->entry, 50.5, 0.01);            // entry = the pivot
     EXPECT_NEAR(b->stop, 49.2923, 1e-3);
@@ -165,7 +209,8 @@ std::vector<Row> short_setup(double break_close = 9.5, double break_vol = 2000.0
 
 TEST(QMSignals, ShortBreakoutFiresWithLevels)
 {
-    const auto* s = find(run(to_klines("AAA", short_setup())), "short_breakout");
+    const auto sigs = run(to_klines("AAA", short_setup()));
+    const auto* s = find(sigs, "short_breakout");
     ASSERT_NE(s, nullptr);
     EXPECT_NEAR(s->entry, 9.9, 0.05);             // entry = the base-low pivot
     EXPECT_GT(s->stop, s->entry);                 // stop above entry (short)
@@ -190,8 +235,8 @@ std::vector<Row> ep_setup(Row gap)
 
 TEST(QMSignals, EpisodicPivotFiresWithLevels)
 {
-    const auto* e = find(run(to_klines("AAA", ep_setup(Row{ 21.0, 22.0, 21.4, 21.9, 2000.0 }))),
-                         "episodic_pivot");
+    const auto sigs = run(to_klines("AAA", ep_setup(Row{ 21.0, 22.0, 21.4, 21.9, 2000.0 })));
+    const auto* e = find(sigs, "episodic_pivot");
     ASSERT_NE(e, nullptr);
     EXPECT_DOUBLE_EQ(e->entry, 21.9);             // entry = the gap bar's close
     EXPECT_LT(e->stop, e->entry);
@@ -230,7 +275,8 @@ std::vector<Row> parabolic_base()
 
 TEST(QMSignals, ParabolicShortFiresWithLevels)
 {
-    const auto* p = find(run(to_klines("AAA", parabolic_base())), "parabolic_short");
+    const auto sigs = run(to_klines("AAA", parabolic_base()));
+    const auto* p = find(sigs, "parabolic_short");
     ASSERT_NE(p, nullptr);
     EXPECT_DOUBLE_EQ(p->entry, 33.0);             // entry = the first red bar's close
     EXPECT_NEAR(p->stop, 35.5, 1e-9);             // stop = highest high of the last 3 bars
@@ -250,7 +296,8 @@ TEST(QMSignals, ParabolicShortSilentWithoutRunup)
 // ════════════════════════════════════════════════════════════════════════════
 TEST(QMSignals, ORBFiresOnIntradayBreakout)
 {
-    const auto* o = find(run(intraday()), "orb");
+    const auto sigs = run(intraday());
+    const auto* o = find(sigs, "orb");
     ASSERT_NE(o, nullptr);
     EXPECT_LT(o->stop, o->entry);
     EXPECT_LT(o->entry, o->sell);
@@ -261,6 +308,96 @@ TEST(QMSignals, ORBSilentOnDailyData)
 {
     // Daily bars that pass the universe filter still never form a multi-bar session.
     EXPECT_EQ(find(run(to_klines("AAA", uptrend(60))), "orb"), nullptr);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  entry_leverage (formulas §9: max isolated leverage, floored below the stop)
+// ════════════════════════════════════════════════════════════════════════════
+TEST(QMSignalsLeverage, LongExactIntegerStepsDownBelowStop)
+{
+    QMSignalsStrategy s;
+    // Lmax = 100/(100-95) = 20 exactly -> step one below so liquidation stays under the stop.
+    EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 95.0, true), 19.0);
+}
+
+TEST(QMSignalsLeverage, LongNonIntegerFloors)
+{
+    QMSignalsStrategy s;
+    EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 94.0, true), 16.0);   // Lmax = 16.67 -> 16
+}
+
+TEST(QMSignalsLeverage, ShortMirrorsLong)
+{
+    QMSignalsStrategy s;
+    EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 106.0, false), 16.0); // Lmax = 100/6 -> 16
+}
+
+TEST(QMSignalsLeverage, CapsAtMaxLeverage)
+{
+    QMSignalsStrategy s;
+    EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 99.5, true), 125.0);  // Lmax = 200, capped
+}
+
+TEST(QMSignalsLeverage, ClampsToOneForWideStop)
+{
+    QMSignalsStrategy s;
+    EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 40.0, true), 1.0);    // Lmax = 1.67 -> floor 1
+}
+
+TEST(QMSignalsLeverage, MaintenanceMarginLowersLeverage)
+{
+    QMSignalsStrategy s;
+    s.maint_margin = 0.004;                                        // denom 5.38 -> 18.59 -> 18
+    EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 95.0, true), 18.0);
+}
+
+TEST(QMSignals, EntryOrderCarriesRiskQuantityAndComputedLeverage)
+{
+    QMSignalsStrategy strat;
+    std::vector<Order> placed;
+    SizingBroker broker;
+    broker.equity_value = 100'000.0;
+    broker.placed = &placed;
+    StubFeed feed;
+    feed.bars = to_klines("AAA", breakout_setup());
+    Clock clock;
+    Context<SizingBroker, StubFeed> ctx{ broker, feed, clock };
+    while (auto ts = feed.next_timestamp()) {
+        clock.set(*ts);
+        strat.on_tick(ctx);
+        feed.advance();
+    }
+
+    // The breakout fires on the final bar; its 3 legs are the last placed orders.
+    ASSERT_GE(placed.size(), 3u);
+    const auto& entry = placed[placed.size() - 3];
+    const auto& stop = placed[placed.size() - 2];
+    const auto& tp = placed[placed.size() - 1];
+
+    const auto sigs = strat.last_signals("AAA");
+    const auto* b = find(sigs, "breakout");
+    ASSERT_NE(b, nullptr);
+    ASSERT_EQ(sigs.front().setup, "breakout");   // the long setup that drove these orders
+
+    const double expected_qty = 100'000.0 * strat.risk_fraction / std::abs(b->entry - b->stop);
+    const double expected_lev = strat.entry_leverage(b->entry, b->stop, true);
+    ASSERT_GT(expected_lev, 1.0);                // the fixture's stop is tight enough to leverage
+
+    // Entry: risk-sized quantity, market order, computed isolated leverage.
+    EXPECT_EQ(entry.type, OrderType::Market);
+    EXPECT_EQ(entry.side, OrderSide::Buy);
+    EXPECT_NEAR(entry.quantity, expected_qty, 1e-6);
+    EXPECT_DOUBLE_EQ(entry.leverage, expected_lev);
+
+    // Protective legs: same quantity, default 1x leverage, bracketed under the entry.
+    EXPECT_NEAR(stop.quantity, expected_qty, 1e-6);
+    EXPECT_NEAR(tp.quantity, expected_qty, 1e-6);
+    EXPECT_DOUBLE_EQ(stop.leverage, 1.0);
+    EXPECT_DOUBLE_EQ(tp.leverage, 1.0);
+    ASSERT_TRUE(stop.parent_id.has_value());
+    ASSERT_TRUE(tp.parent_id.has_value());
+    EXPECT_EQ(*stop.parent_id, entry.id);
+    EXPECT_EQ(*tp.parent_id, entry.id);
 }
 
 } // namespace

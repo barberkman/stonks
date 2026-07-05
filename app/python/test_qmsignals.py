@@ -81,9 +81,9 @@ def test_short_levels():
 
 
 # ─── Integration via FakeContext ─────────────────────────────────────────────
-def _run(bars):
+def _run(bars, strategy=None):
     ctx = FakeContext(bars)
-    s = QMSignalsStrategy()
+    s = strategy or QMSignalsStrategy()
     s.on_start(ctx)
     for _ in {b.timestamp for b in bars}:
         ctx.advance()
@@ -183,6 +183,44 @@ def test_short_breakout_fires_short_bracket():
     assert tp.parent == entry.id
     assert sig.entry == pytest.approx(98.0)
     assert sig.sell < sig.entry < sig.stop      # short: stop above, target below
+
+
+def test_entry_leverage_formula():
+    s = QMSignalsStrategy()
+    assert s.entry_leverage(100.0, 95.0, True) == pytest.approx(19.0)    # Lmax=20 -> step below
+    assert s.entry_leverage(100.0, 94.0, True) == pytest.approx(16.0)    # 16.67 -> 16
+    assert s.entry_leverage(100.0, 106.0, False) == pytest.approx(16.0)  # short mirror
+    assert s.entry_leverage(100.0, 99.5, True) == pytest.approx(125.0)   # capped at max_leverage
+    assert s.entry_leverage(100.0, 40.0, True) == pytest.approx(1.0)     # wide stop -> no leverage
+
+
+def test_entry_leverage_maintenance_margin():
+    s = QMSignalsStrategy()
+    s.maint_margin = 0.004
+    assert s.entry_leverage(100.0, 95.0, True) == pytest.approx(18.0)
+
+
+def test_entry_uses_computed_risk_leverage():
+    ctx, s = _run(_breakout_bars())
+
+    assert len(ctx.orders) == 3
+    entry, stop, tp = ctx.orders
+    sig = s.last_signals("TEST")[0]
+    assert sig.setup == "breakout"
+
+    # Risk-sized quantity and the isolated leverage that keeps liquidation past the stop.
+    expected_qty = 100_000.0 * s.risk_fraction / abs(sig.entry - sig.stop)
+    expected_lev = s.entry_leverage(sig.entry, sig.stop, True)
+    assert expected_lev > 1.0
+
+    assert entry.side == OrderSide.Buy
+    assert entry.quantity == pytest.approx(expected_qty)
+    assert entry.leverage == pytest.approx(expected_lev)
+    # Protective legs: same quantity, default 1x leverage (ignored on closes).
+    assert stop.quantity == pytest.approx(expected_qty)
+    assert tp.quantity == pytest.approx(expected_qty)
+    assert stop.leverage == pytest.approx(1.0)
+    assert tp.leverage == pytest.approx(1.0)
 
 
 def test_no_signal_stays_flat():

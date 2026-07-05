@@ -20,6 +20,7 @@ Fire-and-forget, like the C++: no holdings are tracked. The broker's
 one-position-per-symbol semantics reject duplicate same-side entries.
 """
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -113,11 +114,14 @@ class QMSignalsStrategy(stonks.Strategy):
     adr_stop_mult = 1.0     # stop distance from entry, in ADRs
     use_lod_stop = True     # tighten the stop to the signal bar's extreme if closer
     target_rr = 2.0         # take-profit ("sell") target, in R multiples
+    # Sizing & leverage
+    risk_fraction = 0.02    # fraction of equity risked per trade (stop-out loss target)
+    maint_margin = 0.0      # maintenance-margin rate for the leverage calc (engine has none)
+    max_leverage = 125.0    # cap on computed isolated leverage
 
     # The dataset carries no tick size, so the "buffer beyond the pivot" is zero.
     MINTICK = 0.0
     MS_PER_DAY = 86_400_000
-    POSITION_FRACTION = 0.02
 
     def on_start(self, ctx):
         # The setups that fired on each symbol's last processed bar (for tests).
@@ -151,16 +155,20 @@ class QMSignalsStrategy(stonks.Strategy):
             if sigs:
                 s = sigs[0]
                 is_long = s.stop < s.entry              # long setups stop below entry
-                qty = ctx.equity() * self.POSITION_FRACTION / s.entry
+                # Risk-mode sizing: a stop-out loses risk_fraction of equity (no fees in this engine).
+                risk_per_unit = abs(s.entry - s.stop)
+                qty = ctx.equity() * self.risk_fraction / risk_per_unit if risk_per_unit > 0.0 else 0.0
                 if qty > 0.0:
                     entry_side = OrderSide.Buy if is_long else OrderSide.Sell
                     exit_side = OrderSide.Sell if is_long else OrderSide.Buy
+                    lev = self.entry_leverage(s.entry, s.stop, is_long)
 
                     # Entry order — its id parents the protective legs, so the
                     # broker keeps them dormant until the entry fills and then
                     # OCO-cancels the loser once one side closes the position.
                     entry_id = ctx.place_limit_order(symbol=symbol, side=entry_side,
-                                                     quantity=qty, price=s.entry)
+                                                     quantity=qty, price=s.entry,
+                                                     leverage=lev)
                     # Stop loss order (child of the entry)
                     ctx.place_limit_order(symbol=symbol, side=exit_side,
                                           quantity=qty, price=s.stop, parent=entry_id)
@@ -183,6 +191,20 @@ class QMSignalsStrategy(stonks.Strategy):
             if s is not None:
                 out.append(s)
         return out
+
+    # Largest isolated leverage keeping liquidation just beyond the stop (formulas §9),
+    # floored with a one-step buffer, clamped to [1, max_leverage].
+    def entry_leverage(self, entry: float, stop: float, is_long: bool) -> float:
+        denom = (entry - stop * (1.0 - self.maint_margin)) if is_long \
+            else (stop * (1.0 + self.maint_margin) - entry)
+        if denom <= 0.0:
+            return 1.0
+        lmax = entry / denom
+        l = math.floor(lmax)
+        if l == lmax:
+            l -= 1                          # exact integer -> step below so liquidation stays under the stop
+        l = min(float(l), self.max_leverage)
+        return max(l, 1.0)                  # broker requires leverage >= 1
 
     # ─── Setup 1 — momentum breakout (long) ──────────────────────────────────
     def breakout(self, op, hi, lo, cl, vo, ts) -> Optional[Signal]:

@@ -63,6 +63,7 @@ inline void to_json(nlohmann::json& j, const Trade& t)
         { "side", to_string(t.side) },
         { "quantity", t.quantity },
         { "price", t.price },
+        { "liquidation", t.liquidation },
     };
 }
 
@@ -79,6 +80,7 @@ inline void to_json(nlohmann::json& j, const Order& o)
         { "price", o.price ? nlohmann::json(*o.price) : nlohmann::json(nullptr) },
         { "quantity", o.quantity },
         { "time_in_force", to_string(o.time_in_force) },
+        { "leverage", o.leverage },
     };
 }
 
@@ -107,6 +109,7 @@ inline void to_json(nlohmann::json& j, const ReportMetrics& m)
         { "closed_trades", m.closed_trades },
         { "winning_trades", m.winning_trades },
         { "win_rate_pct", m.win_rate_pct ? nlohmann::json(*m.win_rate_pct) : nlohmann::json(nullptr) },
+        { "liquidations", m.liquidations },
         { "starting_cash", m.starting_cash },
         { "ending_cash", m.ending_cash },
         { "ending_equity", m.ending_equity },

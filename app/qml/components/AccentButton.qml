@@ -5,14 +5,14 @@ import Stonks
 Rectangle {
     id: ctrl
     property alias text: label.text
-    property int hpad: 20
-    property int fontPx: 13
+    property int hpad: Theme.sp(20)
+    property int fontPx: Theme.fontBody
     property int fontWeight: Font.DemiBold
     signal clicked()
 
     implicitWidth: label.implicitWidth + hpad * 2
-    implicitHeight: 40
-    radius: 6
+    implicitHeight: Theme.controlH
+    radius: Theme.sp(6)
     color: ma.pressed ? Qt.darker(Theme.accent, 1.12) : (ma.containsMouse ? Qt.lighter(Theme.accent, 1.06) : Theme.accent)
 
     Text {

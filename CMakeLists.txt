@@ -17,6 +17,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# Qt 6's FindWrapOpenGL forces "-framework AGL" onto the link line when it can't
+# locate AGL, but Apple removed AGL.framework from recent macOS SDKs, which breaks
+# linking the Qt app. Point the AGL lookup at OpenGL.framework (still present) so
+# Qt links that harmless stand-in instead. No effect on non-Apple platforms.
+if(APPLE)
+    set(WrapOpenGL_AGL "/System/Library/Frameworks/OpenGL.framework"
+        CACHE FILEPATH "AGL shim: OpenGL.framework (AGL removed from modern macOS SDKs)" FORCE)
+endif()
+
 include(cmake/Dependencies.cmake)
 
 add_subdirectory(src/core)

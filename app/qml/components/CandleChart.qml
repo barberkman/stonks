@@ -1,117 +1,290 @@
 import QtQuick
 import Stonks
 import "../js/format.js" as Fmt
+import "../js/chartview.js" as CV
 
-// Candlestick chart with volume + trade markers (ports support.js drawChart).
-// When a trade is selected, zooms to its window and overlays entry/exit guides + tags.
-Canvas {
+// TradingView-style candlestick chart: volume pane + trade markers, drag to
+// pan, wheel/trackpad/pinch zoom anchored at the cursor, crosshair with an
+// OHLCV readout. The visible window [viewLo, viewHi] lives in fractional
+// candle-index space and the price axis auto-fits the visible slice; when the
+// window shows more candles than ~2px each, the paint draws per-pixel OHLC
+// buckets instead of raw candles (see chartview.js). Selecting a trade seeks
+// the view to its range once and overlays entry/exit guides + the P&L band;
+// the camera stays free afterwards.
+Item {
     id: cv
     property string symbol: "NVDA"
     property var selectedTrade: null
     property string accentHex: "#4eb36e"
 
-    onSymbolChanged: requestPaint()
-    onSelectedTradeChanged: requestPaint()
-    onWidthChanged: requestPaint()
-    onHeightChanged: requestPaint()
+    readonly property var series: App.candlesFor(symbol)   // columnar {t,o,h,l,c,v}
+    readonly property var trades: App.tradesFor(symbol)
+    readonly property int candleCount: (series && series.t) ? series.t.length : 0
 
-    onPaint: {
-        var ctx = getContext('2d');
-        var w = width, h = height;
-        ctx.clearRect(0, 0, w, h);
+    // visible window (fractional candle indices) + zoom bounds
+    property real viewLo: 0
+    property real viewHi: Math.max(0, candleCount - 1)
+    readonly property real minSpan: 8
 
-        var candles = App.candlesFor(symbol), trades = App.tradesFor(symbol);
-        if (!candles || candles.length === 0) return;
-        var sel = (selectedTrade === null || selectedTrade === undefined) ? null : selectedTrade;
+    // plot gutters shared by both canvases and the pixel<->index mapping
+    readonly property real padL: Theme.sp(10)
+    readonly property real padR: Theme.sp(64)
+    readonly property real padB: Theme.sp(24)
+    readonly property real volH: Theme.sp(40)
+    readonly property real plotW: width - padL - padR
 
-        var lo = 0, hi = candles.length - 1;
-        if (sel !== null && trades[sel]) { var ts = trades[sel]; lo = Math.max(0, ts.entryIdx - 9); hi = Math.min(candles.length - 1, ts.exitIdx + 9); }
+    property real hoverX: -1
+    property real hoverY: -1
+    property bool hoverActive: false
+    property var _view: null   // geometry/scale cache written by dataCanvas for the crosshair
 
-        var pmin = Infinity, pmax = -Infinity;
-        for (var i = lo; i <= hi; i++) { pmin = Math.min(pmin, candles[i].l); pmax = Math.max(pmax, candles[i].h); }
-        var pd = (pmax - pmin) * 0.10; pmin -= pd; pmax += pd;
+    onSeriesChanged: { fit(); repaint() }
+    onSelectedTradeChanged: { seekToTrade(); repaint() }
+    onViewLoChanged: repaint()
+    onViewHiChanged: repaint()
+    onWidthChanged: repaint()
+    onHeightChanged: repaint()
+    onHoverXChanged: crosshairCanvas.requestPaint()
+    onHoverYChanged: crosshairCanvas.requestPaint()
+    onHoverActiveChanged: crosshairCanvas.requestPaint()
 
-        var padL = 10, padR = 64, padB = 24, volH = 40;
-        var cTop = 14, cBot = h - padB - volH - 8, cH = cBot - cTop, plotW = w - padL - padR, n = hi - lo + 1, step = plotW / n;
-        var cw = Math.min(Math.max(step * 0.6, 2), 16);
-        function X(i) { return padL + (i - lo + 0.5) * step; }
-        function Y(p) { return cTop + (1 - (p - pmin) / (pmax - pmin)) * cH; }
-        var ACC = accentHex;
+    function repaint() { dataCanvas.requestPaint(); crosshairCanvas.requestPaint() }
+    function fit() { viewLo = 0; viewHi = Math.max(0, candleCount - 1) }
+    function seekToTrade() {
+        var sel = selectedTrade
+        if (sel === null || sel === undefined || !trades[sel]) return
+        var t = trades[sel]
+        var r = CV.clampPan(t.entryIdx - 9, t.exitIdx + 9, candleCount, minSpan)
+        viewLo = r.lo; viewHi = r.hi
+    }
+    function pan(dCandles) {
+        var r = CV.clampPan(viewLo + dCandles, viewHi + dCandles, candleCount, minSpan)
+        viewLo = r.lo; viewHi = r.hi
+    }
+    function zoomAt(px, factor) {
+        var r = CV.zoomedRange(viewLo, viewHi, (px - padL) / plotW, factor, candleCount, minSpan)
+        viewLo = r.lo; viewHi = r.hi
+    }
 
-        // price grid + axis labels
-        ctx.font = "11px 'IBM Plex Mono'"; ctx.textBaseline = 'middle';
-        for (var g = 0; g <= 4; g++) {
-            var gp = pmin + (g / 4) * (pmax - pmin), yy = Y(gp);
-            ctx.strokeStyle = 'rgba(255,255,255,0.045)'; ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
-            ctx.fillStyle = '#5b626c'; ctx.textAlign = 'left';
-            ctx.fillText('$' + gp.toFixed(gp < 5 ? 3 : 1), w - padR + 9, yy);
-        }
+    Canvas {
+        id: dataCanvas
+        anchors.fill: parent
+        onPaint: {
+            var ctx = getContext('2d');
+            var w = width, h = height;
+            ctx.clearRect(0, 0, w, h);
 
-        // selected-trade overlay: P&L band + dashed guides + tags
-        if (sel !== null && trades[sel]) {
-            var t = trades[sel]; var x1 = X(t.entryIdx), x2 = X(t.exitIdx); var win = t.pnlNum >= 0; var c = win ? '#4eb36e' : '#e1574c';
-            ctx.fillStyle = Fmt.hexA(c, 0.06); ctx.fillRect(x1, cTop, x2 - x1, cH);
-            var yE = Y(t.entryPrice), yX = Y(t.exitPrice);
-            ctx.save(); ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
-            ctx.strokeStyle = Fmt.hexA(ACC, 0.7); ctx.beginPath(); ctx.moveTo(padL, yE); ctx.lineTo(w - padR, yE); ctx.stroke();
-            ctx.strokeStyle = Fmt.hexA(c, 0.7); ctx.beginPath(); ctx.moveTo(padL, yX); ctx.lineTo(w - padR, yX); ctx.stroke();
-            ctx.restore();
-            var tag = function (y, txt, col) {
-                ctx.font = "bold 11px 'IBM Plex Mono'";
-                var tw = ctx.measureText(txt).width + 12;
-                ctx.fillStyle = col; ctx.fillRect(padL, y - 9, tw, 18);
-                ctx.fillStyle = '#181818'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-                ctx.fillText(txt, padL + 6, y + 1);
-            };
-            tag(yE, 'ENTRY ' + t.entryPrice.toFixed(2), ACC);
-            tag(yX, 'EXIT ' + t.exitPrice.toFixed(2), c);
-        }
+            var s = cv.series, trades = cv.trades;
+            if (!s || !s.t || s.t.length === 0) { cv._view = null; return; }
+            var sel = (cv.selectedTrade === null || cv.selectedTrade === undefined) ? null : cv.selectedTrade;
 
-        // volume bars
-        var vmax = 0; for (var iv = lo; iv <= hi; iv++) vmax = Math.max(vmax, candles[iv].v);
-        var volBot = h - padB;
-        for (var ib = lo; ib <= hi; ib++) {
-            var cb = candles[ib], upb = cb.c >= cb.o, xb = X(ib), vh = (cb.v / vmax) * volH;
-            ctx.fillStyle = upb ? 'rgba(78,179,110,0.20)' : 'rgba(225,87,76,0.20)';
-            ctx.fillRect(xb - cw / 2, volBot - vh, cw, vh);
-        }
+            var lo = cv.viewLo, hi = cv.viewHi;
+            if (!(hi - lo > 0)) { cv._view = null; return; }
+            var ds = CV.visibleSeries(s.t, s.o, s.h, s.l, s.c, s.v, lo, hi, cv.plotW);
+            if (ds.t.length === 0) { cv._view = null; return; }
 
-        // candles
-        for (var ic = lo; ic <= hi; ic++) {
-            var cc = candles[ic], up = cc.c >= cc.o, col = up ? '#4eb36e' : '#e1574c', xc = X(ic);
-            ctx.strokeStyle = col; ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.moveTo(xc, Y(cc.h)); ctx.lineTo(xc, Y(cc.l)); ctx.stroke();
-            var yo = Y(cc.o), yc = Y(cc.c), top = Math.min(yo, yc), bh = Math.abs(yc - yo); if (bh < 1) bh = 1;
-            ctx.fillStyle = col; ctx.fillRect(xc - cw / 2, top, cw, bh);
-        }
+            var pmin = ds.pmin, pmax = ds.pmax;
+            var pd = (pmax - pmin) * 0.10;
+            if (pd <= 0) pd = Math.max(Math.abs(pmax) * 0.01, 1e-9);   // flat window
+            pmin -= pd; pmax += pd;
 
-        // date ticks
-        ctx.fillStyle = '#5b626c'; ctx.font = "11px 'IBM Plex Mono'"; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-        var ticks = Math.min(6, n - 1);
-        for (var k = 0; k <= ticks; k++) {
-            var it = Math.round(lo + (k / ticks) * (hi - lo));
-            ctx.fillText(Fmt.tsShort(candles[it].t), Math.max(padL + 14, Math.min(w - padR - 14, X(it))), h - 7);
-        }
+            var padL = cv.padL, padR = cv.padR, padB = cv.padB, volH = cv.volH;
+            var cTop = Theme.sp(14), cBot = h - padB - volH - Theme.sp(8), cH = cBot - cTop;
+            var step = cv.plotW / (hi - lo);
+            var cw = Math.min(Math.max((cv.plotW / ds.t.length) * 0.6, 1), Theme.sp(16));
+            function X(i) { return padL + (i - lo) * step; }
+            function Y(p) { return cTop + (1 - (p - pmin) / (pmax - pmin)) * cH; }
+            var ACC = cv.accentHex;
 
-        // trade markers
-        var tri = function (x, y, s, dir, color) {
-            ctx.fillStyle = color; ctx.beginPath();
-            if (dir === 'up') { ctx.moveTo(x, y); ctx.lineTo(x - s, y + s * 1.4); ctx.lineTo(x + s, y + s * 1.4); }
-            else { ctx.moveTo(x, y); ctx.lineTo(x - s, y - s * 1.4); ctx.lineTo(x + s, y - s * 1.4); }
-            ctx.closePath(); ctx.fill();
-        };
-        for (var ti = 0; ti < trades.length; ti++) {
-            var tt = trades[ti];
-            if (sel !== null && ti !== sel) continue;
-            if (tt.exitIdx < lo || tt.entryIdx > hi) continue;
-            var eX = X(tt.entryIdx), xX = X(tt.exitIdx), win2 = tt.pnlNum >= 0, tc = win2 ? '#4eb36e' : '#e1574c';
-            if (sel === null) {
-                ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = Fmt.hexA(tc, 0.45); ctx.lineWidth = 1;
-                ctx.beginPath(); ctx.moveTo(eX, Y(tt.entryPrice)); ctx.lineTo(xX, Y(tt.exitPrice)); ctx.stroke(); ctx.restore();
+            // price grid + axis labels
+            ctx.font = Theme.sp(11) + "px '" + Theme.mono + "'"; ctx.textBaseline = 'middle';
+            for (var g = 0; g <= 4; g++) {
+                var gp = pmin + (g / 4) * (pmax - pmin), yy = Y(gp);
+                ctx.strokeStyle = 'rgba(255,255,255,0.045)'; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
+                ctx.fillStyle = '#5b626c'; ctx.textAlign = 'left';
+                ctx.fillText('$' + gp.toFixed(gp < 5 ? 3 : 1), w - padR + Theme.sp(9), yy);
             }
-            tri(eX, Y(candles[tt.entryIdx].l) + 13, 6, 'up', ACC);
-            tri(xX, Y(candles[tt.exitIdx].h) - 13, 6, 'down', tc);
+
+            // selected-trade overlay: P&L band + dashed guides + tags (culled off-view)
+            if (sel !== null && trades[sel] && !(trades[sel].exitIdx < lo || trades[sel].entryIdx > hi)) {
+                var t = trades[sel]; var x1 = X(t.entryIdx), x2 = X(t.exitIdx); var win = t.pnlNum >= 0; var c = win ? '#4eb36e' : '#e1574c';
+                ctx.fillStyle = Fmt.hexA(c, 0.06); ctx.fillRect(x1, cTop, x2 - x1, cH);
+                var yE = Y(t.entryPrice), yX = Y(t.exitPrice);
+                ctx.save(); ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+                ctx.strokeStyle = Fmt.hexA(ACC, 0.7); ctx.beginPath(); ctx.moveTo(padL, yE); ctx.lineTo(w - padR, yE); ctx.stroke();
+                ctx.strokeStyle = Fmt.hexA(c, 0.7); ctx.beginPath(); ctx.moveTo(padL, yX); ctx.lineTo(w - padR, yX); ctx.stroke();
+                ctx.restore();
+                var tag = function (y, txt, col) {
+                    ctx.font = "bold " + Theme.sp(11) + "px '" + Theme.mono + "'";
+                    var tw = ctx.measureText(txt).width + Theme.sp(12);
+                    ctx.fillStyle = col; ctx.fillRect(padL, y - Theme.sp(9), tw, Theme.sp(18));
+                    ctx.fillStyle = '#181818'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+                    ctx.fillText(txt, padL + Theme.sp(6), y + 1);
+                };
+                tag(yE, 'ENTRY ' + t.entryPrice.toFixed(2), ACC);
+                tag(yX, 'EXIT ' + t.exitPrice.toFixed(2), c);
+                ctx.font = Theme.sp(11) + "px '" + Theme.mono + "'";
+            }
+
+            // volume bars
+            var volBot = h - padB;
+            for (var ib = 0; ib < ds.t.length; ib++) {
+                var upb = ds.c[ib] >= ds.o[ib], xb = X(ds.xi[ib]), vh = ds.vmax > 0 ? (ds.v[ib] / ds.vmax) * volH : 0;
+                ctx.fillStyle = upb ? 'rgba(78,179,110,0.20)' : 'rgba(225,87,76,0.20)';
+                ctx.fillRect(xb - cw / 2, volBot - vh, cw, vh);
+            }
+
+            // candles (raw or LOD buckets — same drawing either way)
+            for (var ic = 0; ic < ds.t.length; ic++) {
+                var up = ds.c[ic] >= ds.o[ic], col = up ? '#4eb36e' : '#e1574c', xc = X(ds.xi[ic]);
+                ctx.strokeStyle = col; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(xc, Y(ds.h[ic])); ctx.lineTo(xc, Y(ds.l[ic])); ctx.stroke();
+                var yo = Y(ds.o[ic]), yc = Y(ds.c[ic]), top = Math.min(yo, yc), bh = Math.abs(yc - yo); if (bh < 1) bh = 1;
+                ctx.fillStyle = col; ctx.fillRect(xc - cw / 2, top, cw, bh);
+            }
+
+            // date ticks
+            ctx.fillStyle = '#5b626c'; ctx.font = Theme.sp(11) + "px '" + Theme.mono + "'"; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+            var ticks = Math.min(6, ds.t.length - 1);
+            for (var k = 0; k <= ticks; k++) {
+                var di = Math.round((k / Math.max(1, ticks)) * (ds.t.length - 1));
+                ctx.fillText(Fmt.tsShort(ds.t[di]), Math.max(padL + Theme.sp(14), Math.min(w - padR - Theme.sp(14), X(ds.xi[di]))), h - Theme.sp(7));
+            }
+
+            // trade markers (raw indices through the same X/Y mapping)
+            var tri = function (x, y, sz, dir, color) {
+                ctx.fillStyle = color; ctx.beginPath();
+                if (dir === 'up') { ctx.moveTo(x, y); ctx.lineTo(x - sz, y + sz * 1.4); ctx.lineTo(x + sz, y + sz * 1.4); }
+                else { ctx.moveTo(x, y); ctx.lineTo(x - sz, y - sz * 1.4); ctx.lineTo(x + sz, y - sz * 1.4); }
+                ctx.closePath(); ctx.fill();
+            };
+            for (var ti = 0; ti < trades.length; ti++) {
+                var tt = trades[ti];
+                if (sel !== null && ti !== sel) continue;
+                if (tt.exitIdx < lo || tt.entryIdx > hi) continue;
+                var eX = X(tt.entryIdx), xX = X(tt.exitIdx), win2 = tt.pnlNum >= 0, tc = win2 ? '#4eb36e' : '#e1574c';
+                if (sel === null) {
+                    ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = Fmt.hexA(tc, 0.45); ctx.lineWidth = 1;
+                    ctx.beginPath(); ctx.moveTo(eX, Y(tt.entryPrice)); ctx.lineTo(xX, Y(tt.exitPrice)); ctx.stroke(); ctx.restore();
+                }
+                tri(eX, Y(s.l[tt.entryIdx]) + Theme.sp(13), Theme.sp(6), 'up', ACC);
+                tri(xX, Y(s.h[tt.exitIdx]) - Theme.sp(13), Theme.sp(6), 'down', tc);
+            }
+
+            cv._view = { pmin: pmin, pmax: pmax, cTop: cTop, cBot: cBot, cH: cH, volBot: volBot };
         }
+    }
+
+    // cheap overlay: repaints on hover moves so the data canvas never has to
+    Canvas {
+        id: crosshairCanvas
+        anchors.fill: parent
+        onPaint: {
+            var ctx = getContext('2d');
+            var w = width, h = height;
+            ctx.clearRect(0, 0, w, h);
+            var v = cv._view;
+            if (!cv.hoverActive || !v || cv.candleCount === 0) return;
+
+            var s = cv.series;
+            var lo = cv.viewLo, hi = cv.viewHi, span = hi - lo;
+            var iMin = Math.max(0, Math.ceil(lo)), iMax = Math.min(cv.candleCount - 1, Math.floor(hi));
+            if (iMax < iMin) return;
+            var idx = Math.round(lo + (cv.hoverX - cv.padL) / cv.plotW * span);
+            idx = Math.max(iMin, Math.min(iMax, idx));
+            var x = cv.padL + (idx - lo) / span * cv.plotW;
+
+            ctx.font = Theme.sp(11) + "px '" + Theme.mono + "'";
+            var inPricePane = cv.hoverY >= v.cTop && cv.hoverY <= v.cBot;
+
+            // crosshair lines snapped to the hovered candle
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(x, v.cTop); ctx.lineTo(x, v.volBot); ctx.stroke();
+            if (inPricePane) {
+                ctx.beginPath(); ctx.moveTo(cv.padL, cv.hoverY); ctx.lineTo(w - cv.padR, cv.hoverY); ctx.stroke();
+            }
+            ctx.restore();
+
+            // price tag on the right axis
+            if (inPricePane) {
+                var price = v.pmin + (1 - (cv.hoverY - v.cTop) / v.cH) * (v.pmax - v.pmin);
+                var ptxt = '$' + price.toFixed(price < 5 ? 3 : 2);
+                var pw = ctx.measureText(ptxt).width + Theme.sp(10);
+                ctx.fillStyle = '#323232';
+                ctx.fillRect(w - cv.padR + Theme.sp(4), cv.hoverY - Theme.sp(9), pw, Theme.sp(18));
+                ctx.fillStyle = '#e6e8ea'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+                ctx.fillText(ptxt, w - cv.padR + Theme.sp(9), cv.hoverY + 1);
+            }
+
+            // date tag on the bottom axis
+            var dtxt = Fmt.tsShort(s.t[idx]);
+            var dw = ctx.measureText(dtxt).width + Theme.sp(12);
+            var dx = Math.max(cv.padL, Math.min(w - cv.padR - dw, x - dw / 2));
+            ctx.fillStyle = '#323232';
+            ctx.fillRect(dx, h - Theme.sp(20), dw, Theme.sp(18));
+            ctx.fillStyle = '#e6e8ea'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(dtxt, dx + dw / 2, h - Theme.sp(11) + 1);
+
+            // OHLCV readout, top-left (raw full-resolution values even when LOD draws)
+            var up = s.c[idx] >= s.o[idx];
+            var vcol = up ? '#4eb36e' : '#e1574c';
+            var ry = Math.max(Theme.sp(8), v.cTop - Theme.sp(6));
+            var rx = cv.padL + Theme.sp(2);
+            ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+            var fields = [['O', s.o[idx]], ['H', s.h[idx]], ['L', s.l[idx]], ['C', s.c[idx]]];
+            for (var f = 0; f < fields.length; f++) {
+                ctx.fillStyle = '#5b626c'; ctx.fillText(fields[f][0], rx, ry);
+                rx += ctx.measureText(fields[f][0]).width + Theme.sp(4);
+                var vtxt = fields[f][1].toFixed(fields[f][1] < 5 ? 3 : 2);
+                ctx.fillStyle = vcol; ctx.fillText(vtxt, rx, ry);
+                rx += ctx.measureText(vtxt).width + Theme.sp(10);
+            }
+            ctx.fillStyle = '#5b626c'; ctx.fillText('V', rx, ry);
+            rx += ctx.measureText('V').width + Theme.sp(4);
+            ctx.fillStyle = vcol; ctx.fillText(Fmt.commas(Math.round(s.v[idx])), rx, ry);
+        }
+    }
+
+    MouseArea {
+        id: ma
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.CrossCursor
+        property real lastX: 0
+        onPressed: function (mouse) { lastX = mouse.x }
+        onPositionChanged: function (mouse) {
+            cv.hoverX = mouse.x; cv.hoverY = mouse.y; cv.hoverActive = true
+            if (pressed) {
+                var step = cv.plotW / (cv.viewHi - cv.viewLo)
+                cv.pan((lastX - mouse.x) / step)
+                lastX = mouse.x
+            }
+        }
+        onExited: cv.hoverActive = false
+        onDoubleClicked: cv.fit()
+    }
+
+    WheelHandler {
+        target: null   // handle the numbers ourselves; never transform the Item
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        onWheel: function (event) {
+            if (Math.abs(event.pixelDelta.x) > Math.abs(event.pixelDelta.y)) {
+                // trackpad horizontal scroll pans, content follows the fingers
+                var step = cv.plotW / (cv.viewHi - cv.viewLo)
+                cv.pan(-event.pixelDelta.x / step)
+            } else {
+                var dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : (event.angleDelta.y / 120) * 20
+                cv.zoomAt(event.x, Math.pow(1.005, -dy))
+            }
+        }
+    }
+
+    PinchHandler {
+        id: pinch
+        target: null
+        onScaleChanged: function (delta) { cv.zoomAt(pinch.centroid.position.x, 1 / delta) }
     }
 }

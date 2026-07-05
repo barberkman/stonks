@@ -5,13 +5,13 @@ import Stonks
 Rectangle {
     id: ctrl
     property alias text: label.text
-    property int hpad: 13
-    property int fontPx: 12
+    property int hpad: Theme.sp(13)
+    property int fontPx: Theme.fontSmall
     signal clicked()
 
     implicitWidth: label.implicitWidth + hpad * 2
-    implicitHeight: 30
-    radius: 5
+    implicitHeight: Theme.controlHSm
+    radius: Theme.radiusControl
     color: ma.containsMouse ? Theme.input : "transparent"
     border.color: Theme.border
     border.width: 1

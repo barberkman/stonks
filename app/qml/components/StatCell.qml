@@ -6,15 +6,15 @@ Column {
     property string label: ""
     property string value: ""
     property color valueColor: Theme.t1
-    property int valuePx: 14
-    spacing: 5
+    property int valuePx: Theme.fontBodyLg
+    spacing: Theme.sp(5)
     Text {
         text: label
         color: Theme.t5
         font.family: Theme.mono
         font.weight: Font.Medium
-        font.pixelSize: 10
-        font.letterSpacing: 0.6
+        font.pixelSize: Theme.fontMicro
+        font.letterSpacing: 0.6 * Theme.scale
     }
     Text {
         text: value

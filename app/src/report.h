@@ -46,6 +46,7 @@ struct ReportMetrics
     std::size_t closed_trades;            // round-trip positions reconstructed from fills
     std::size_t winning_trades;           // closed trades with realized P&L > 0
     std::optional<double> win_rate_pct;   // nullopt when nothing closed
+    std::size_t liquidations;             // fills from forced closes (margin exhausted / bankruptcy)
     core::Balance starting_cash;
     core::Balance ending_cash;
     core::Balance ending_equity;
@@ -57,7 +58,11 @@ struct ReportMetrics
 inline ReportMetrics compute_metrics(const ReportInput& in)
 {
     core::Balance notional = 0.0;
-    for (const auto& t : in.trades) { notional += t.quantity * t.price; }
+    std::size_t liquidations = 0;
+    for (const auto& t : in.trades) {
+        notional += t.quantity * t.price;
+        if (t.liquidation) { ++liquidations; }
+    }
 
     // Win rate over *closed* round-trip positions reconstructed from the fill
     // stream. Per symbol we carry a signed position (+long/-short), its
@@ -157,8 +162,8 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         return_pct = (in.ending_equity - in.starting_cash) / in.starting_cash * 100.0;
     }
 
-    STONKS_LOG("report", "ev=metrics notional={:.4f} closed={} winning={} starting={:.4f} ending_cash={:.4f} ending_equity={:.4f} max_dd={:.4f}",
-               notional, closed_trades, winning_trades, in.starting_cash, in.ending_cash, in.ending_equity, max_drawdown_pct);
+    STONKS_LOG("report", "ev=metrics notional={:.4f} closed={} winning={} liquidations={} starting={:.4f} ending_cash={:.4f} ending_equity={:.4f} max_dd={:.4f}",
+               notional, closed_trades, winning_trades, liquidations, in.starting_cash, in.ending_cash, in.ending_equity, max_drawdown_pct);
     return ReportMetrics{
         in.bars_processed,
         first_ts,
@@ -169,6 +174,7 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         closed_trades,
         winning_trades,
         win_rate_pct,
+        liquidations,
         in.starting_cash,
         in.ending_cash,
         in.ending_equity,
@@ -194,6 +200,7 @@ inline void print_report(std::ostream& os, const ReportMetrics& m)
     os << "Notional traded: " << m.notional << '\n';
     os << "Win rate:        " << m.win_rate_pct.value_or(0.0) << " % ("
        << m.winning_trades << "/" << m.closed_trades << ")\n";
+    os << "Liquidations:    " << m.liquidations << '\n';
     os << "Starting cash:   " << m.starting_cash << '\n';
     os << "Ending cash:     " << m.ending_cash << '\n';
     os << "Ending equity:   " << m.ending_equity << '\n';

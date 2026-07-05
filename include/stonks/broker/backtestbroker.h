@@ -15,6 +15,7 @@ public:
 
     core::Balance cash() const;
     core::Balance equity() const;
+    bool bankrupt() const;
     const std::unordered_map<core::TradeID, core::Trade>& trades() const;
     const std::unordered_map<core::OrderID, core::Order>& orders() const;
 
@@ -33,6 +34,12 @@ private:
     void cancel_subtree(core::OrderID parent, std::vector<core::OrderID>& to_remove,
                         core::OrderID keep = 0);
 
+    // Force-close the whole position at `fill_price`: realize the P&L, return the
+    // posted margin, record a liquidation Trade backed by a synthetic Filled order,
+    // and cancel the position's bracket subtree.
+    void liquidate_position(const core::Symbol& symbol, core::Price fill_price,
+                            std::vector<core::OrderID>& to_remove);
+
     core::Balance m_cash;
     core::Timestamp m_now;
     std::unordered_map<core::Symbol, core::Position> m_positions;
@@ -43,6 +50,7 @@ private:
     
     core::OrderID m_next_order_id;
     core::TradeID m_next_trade_id;
+    bool m_bankrupt{ false };
 };
 
 } // namespace stonks::broker

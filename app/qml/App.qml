@@ -77,6 +77,7 @@ QtObject {
     function candlesFor(id) { return _drill(id).candles || []; }
     function tradesFor(id) { return _drill(id).trades || []; }
     function equityFor(bt) { return (bt && bt.equity) ? bt.equity : []; }
+    function equityTimes(bt) { return (bt && bt.equityT) ? bt.equityT : []; }
     function drawdownFor(bt) { return (bt && bt.drawdown) ? bt.drawdown : []; }
     function sparkSeries(seed, bias) { return _drill(seed).spark || []; }
 

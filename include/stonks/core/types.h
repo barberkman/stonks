@@ -117,6 +117,7 @@ struct Order
     std::optional<Price> price;
     Quantity quantity;
     TimeInForce time_in_force;
+    double leverage = 1.0;   // isolated margin: applies when this order opens a position; ignored on closes
 
     auto operator<=>(const Order&) const = default;
 };
@@ -130,6 +131,7 @@ struct Trade
     OrderSide side;
     Quantity quantity;
     Price price;
+    bool liquidation = false;   // fill came from a forced close, not a strategy order
 
     auto operator<=>(const Trade&) const = default;
 };
@@ -139,6 +141,7 @@ struct Position
     Quantity quantity;
     Price price;
     OrderID entry_id;
+    double leverage = 1.0;   // margin divisor, fixed by the order that opened the position
 
     auto operator<=>(const Position&) const = default;
 };
@@ -160,6 +163,7 @@ struct MarketOrderParams
     OrderSide side;
     Quantity quantity;
     TimeInForce time_in_force = TimeInForce::GTC;
+    double leverage = 1.0;
 };
 
 struct LimitOrderParams
@@ -169,6 +173,7 @@ struct LimitOrderParams
     Quantity quantity;
     Price price;
     TimeInForce time_in_force = TimeInForce::GTC;
+    double leverage = 1.0;
 };
 
 inline std::ostream& operator<<(std::ostream& os, Timestamp ts)

@@ -31,9 +31,11 @@ qt_add_qml_module(app
         qml/components/DrawdownChart.qml
         qml/components/Sparkline.qml
         qml/components/CandleChart.qml
+        qml/components/LineCrosshair.qml
         qml/components/StyledSelect.qml
         qml/components/ParamField.qml
         qml/components/Spinner.qml
+        qml/components/ThinScrollBar.qml
         qml/views/BacktestsView.qml
         qml/views/LogsView.qml
         qml/views/DetailView.qml
@@ -42,6 +44,7 @@ qt_add_qml_module(app
         qml/views/SetupView.qml
         qml/views/RunningView.qml
         qml/js/format.js
+        qml/js/chartview.js
         qml/js/mockdata.js
 )
 

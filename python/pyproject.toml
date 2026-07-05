@@ -12,7 +12,10 @@ readme = "README.md"
 dependencies = ["numpy>=1.21"]
 
 [project.optional-dependencies]
-test = ["pandas", "pyarrow"]
+# pandas is pinned <3: pandas 3.0 defaults string columns to a PyArrow-backed
+# dtype that corrupts the pybind11 symbol strings from Context.history(), so
+# groupby("symbol") raises UnicodeDecodeError. pandas 2.x keeps object strings.
+test = ["pandas<3", "pyarrow"]
 
 [tool.setuptools]
 packages = ["stonks"]
