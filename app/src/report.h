@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "stonks/broker/backtestbroker.h"
 #include "stonks/core/log.h"
 #include "stonks/core/logfmt.h"
 #include "stonks/core/types.h"
@@ -33,6 +34,7 @@ struct ReportInput
     core::Balance ending_cash;
     core::Balance ending_equity;
     std::chrono::nanoseconds elapsed;
+    broker::BrokerConfig config{};   // the run's broker knobs, stamped into the JSON for reproducibility
 };
 
 struct ReportMetrics
@@ -43,6 +45,7 @@ struct ReportMetrics
     std::size_t trade_count;
     std::size_t orders_placed;
     core::Balance notional;
+    core::Balance total_fees;             // sum of per-fill fees (already deducted from cash)
     std::size_t closed_trades;            // round-trip positions reconstructed from fills
     std::size_t winning_trades;           // closed trades with realized P&L > 0
     std::optional<double> win_rate_pct;   // nullopt when nothing closed
@@ -58,9 +61,11 @@ struct ReportMetrics
 inline ReportMetrics compute_metrics(const ReportInput& in)
 {
     core::Balance notional = 0.0;
+    core::Balance total_fees = 0.0;
     std::size_t liquidations = 0;
     for (const auto& t : in.trades) {
         notional += t.quantity * t.price;
+        total_fees += t.fee;
         if (t.liquidation) { ++liquidations; }
     }
 
@@ -85,6 +90,10 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
     for (const auto& t : in.trades) {
         const double fill = (t.side == core::OrderSide::Buy ? t.quantity : -t.quantity);
         auto& pos = positions[t.symbol];
+
+        // Every fill's fee belongs to the cycle it opens, scales, or closes, so
+        // the win/loss classification is net of costs.
+        pos.realized -= t.fee;
 
         if (pos.qty == 0.0) {
             pos.qty = fill;
@@ -171,6 +180,7 @@ inline ReportMetrics compute_metrics(const ReportInput& in)
         in.trades.size(),
         in.orders.size(),
         notional,
+        total_fees,
         closed_trades,
         winning_trades,
         win_rate_pct,
@@ -198,6 +208,7 @@ inline void print_report(std::ostream& os, const ReportMetrics& m)
     os << "Orders placed:   " << m.orders_placed << '\n';
     os << "Trades:          " << m.trade_count << '\n';
     os << "Notional traded: " << m.notional << '\n';
+    os << "Fees paid:       " << m.total_fees << '\n';
     os << "Win rate:        " << m.win_rate_pct.value_or(0.0) << " % ("
        << m.winning_trades << "/" << m.closed_trades << ")\n";
     os << "Liquidations:    " << m.liquidations << '\n';

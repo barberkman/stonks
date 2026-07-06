@@ -198,6 +198,31 @@ TEST(ReportJson, OrderEnumsAndOptionalsWithValues)
     EXPECT_DOUBLE_EQ(jo.at("leverage").get<double>(), 1.0);
 }
 
+TEST(ReportJson, TradeFeeTotalFeesAndConfigSerialize)
+{
+    const Trade t{ 1, 1, Timestamp::from_millis(0), "X", OrderSide::Buy, 1.0, 100.0, false, 0.25 };
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 1,
+        .trades = { t },
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 999.75,
+        .ending_equity = 999.75,
+        .elapsed = {},
+        .config = broker::BrokerConfig{ .maker_fee_bps = 2.0, .taker_fee_bps = 5.0, .fee_per_fill = 0.1 },
+    };
+    const auto j = serialize(in);
+    EXPECT_DOUBLE_EQ(j.at("trades").front().at("fee").get<double>(), 0.25);
+    EXPECT_DOUBLE_EQ(j.at("metrics").at("total_fees").get<double>(), 0.25);
+    EXPECT_EQ(j.at("config").at("fill_policy").get<std::string>(), "Conservative");
+    EXPECT_DOUBLE_EQ(j.at("config").at("maker_fee_bps").get<double>(), 2.0);
+    EXPECT_DOUBLE_EQ(j.at("config").at("taker_fee_bps").get<double>(), 5.0);
+    EXPECT_DOUBLE_EQ(j.at("config").at("fee_per_fill").get<double>(), 0.1);
+    EXPECT_DOUBLE_EQ(j.at("config").at("flat_epsilon").get<double>(), 1e-9);
+    EXPECT_FALSE(j.at("config").at("isolated_loss_cap").get<bool>());
+}
+
 TEST(ReportJson, StopOrderTypeSerializes)
 {
     const Order o{

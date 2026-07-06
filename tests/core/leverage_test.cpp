@@ -344,6 +344,100 @@ TEST(BacktestBrokerLeverage, PositionOpenedAndLiquidatedOnTheSameBar)
     EXPECT_DOUBLE_EQ(broker.cash(), 900.0);   // the position's whole margin, gone in one bar
 }
 
+// --- Maintenance margin & isolated loss cap ------------------------------------------
+
+TEST(BacktestBrokerLeverage, MaintenanceMarginMovesLiquidationPriceCloserToEntry)
+{
+    // Formulas doc §8: P_liq = entry*(1 - 1/L)/(1 - m). At m=5% a long 10x
+    // liquidates at 94.74, a level the old bankruptcy price (90) ignores.
+    BacktestBroker broker{ Balance{ 1'000.0 }, BrokerConfig{ .maintenance_margin_rate = 0.05 } };
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
+    broker.on_tick(flat(2000, 100.0));
+    broker.on_tick(bar(3000, 96.0, 97.0, 94.0, 95.0));     // low 94 <= 94.74, but > 90
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_TRUE(trades[1].liquidation);
+    const double liq = 100.0 * 0.9 / 0.95;
+    EXPECT_DOUBLE_EQ(trades[1].price, liq);
+    EXPECT_DOUBLE_EQ(broker.cash(), 900.0 + 100.0 + (liq - 100.0) * 10.0);
+}
+
+TEST(BacktestBrokerLeverage, ZeroMaintenanceMarginMatchesLegacyBankruptcyPrice)
+{
+    BacktestBroker broker{ Balance{ 1'000.0 }, BrokerConfig{} };   // explicit defaults
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
+    broker.on_tick(flat(2000, 100.0));
+    broker.on_tick(bar(3000, 96.0, 97.0, 94.0, 95.0));     // low 94 > B(90): no liquidation at m=0
+    EXPECT_EQ(broker.trades().size(), 1u);
+    broker.on_tick(bar(4000, 95.0, 96.0, 89.0, 94.0));     // low 89 <= 90 -> liquidated @90
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_DOUBLE_EQ(trades[1].price, 90.0);
+}
+
+TEST(BacktestBrokerLeverage, IsolatedLossCapBoundsGapThroughLossAtPostedMargin)
+{
+    // Same gap-through as LongLiquidationGapThroughFillsAtOpen..., but with the
+    // cap: the forced close loses exactly the margin, never more.
+    BacktestBroker broker{ Balance{ 1'000.0 }, BrokerConfig{ .isolated_loss_cap = true } };
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
+    broker.on_tick(flat(2000, 100.0));                     // margin 100 -> cash 900, B = 90
+    broker.on_tick(bar(3000, 85.0, 88.0, 84.0, 86.0));     // gaps open below B -> fills @85
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_TRUE(trades[1].liquidation);
+    EXPECT_DOUBLE_EQ(broker.cash(), 900.0);                // raw pnl -150 capped at the -100 margin
+}
+
+TEST(BacktestBrokerLeverage, IsolatedLossCapDoesNotAffectAVoluntaryClose)
+{
+    // A strategy's own stop gapping through carries the full loss — only
+    // *forced* closes are margin-capped.
+    BacktestBroker broker{ Balance{ 1'000.0 }, BrokerConfig{ .isolated_loss_cap = true } };
+    const auto entry = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
+    broker.place_order(StopOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 95.0, .reduce_only = true }, entry);
+    broker.on_tick(flat(2000, 100.0));
+    broker.on_tick(bar(3000, 85.0, 88.0, 84.0, 86.0));     // SL gaps through -> fills @85 in the sweep
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_FALSE(trades[1].liquidation);
+    EXPECT_DOUBLE_EQ(broker.cash(), 850.0);                // full -150, uncapped
+}
+
+TEST(BacktestBrokerLeverage, IsolatedLossCapPreventsCrossPositionContagion)
+{
+    // The BankruptcySweep scenario with the cap on: A's gap loss stops at its
+    // own margin, so the account survives and B is untouched.
+    BacktestBroker broker{ Balance{ 100.0 }, BrokerConfig{ .isolated_loss_cap = true } };
+    broker.place_order(MarketOrderParams{ .symbol = "A", .side = OrderSide::Buy, .quantity = 50.0, .leverage = 10.0 });
+    broker.place_order(MarketOrderParams{ .symbol = "B", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
+    broker.on_tick(flat(2000, Symbol{ "A" }, 10.0));       // margin 50 -> cash 50
+    broker.on_tick(flat(2000, Symbol{ "B" }, 10.0));       // margin 10 -> cash 40
+    broker.on_tick(bar(3000, Symbol{ "A" }, 1.0, 1.5, 0.8, 1.2));   // 90% gap through A's B-price(9)
+
+    EXPECT_FALSE(broker.bankrupt());                       // capped loss can't sink the account
+    EXPECT_DOUBLE_EQ(broker.cash(), 40.0);                 // A: margin 50 back, pnl capped -50
+    ASSERT_TRUE(broker.position("B").has_value());         // B untouched
+    EXPECT_DOUBLE_EQ(broker.equity(), 50.0);               // 40 cash + B's 10 margin, flat mark
+}
+
+// --- Equity floor ---------------------------------------------------------------------
+
+TEST(BacktestBrokerLeverage, MinEquityFloorHaltsTheAccountEarly)
+{
+    // Fraction-of-equity sizing decays geometrically and never crosses zero; a
+    // floor turns "effectively ruined" into an actual halt.
+    BacktestBroker broker{ Balance{ 1'000.0 }, BrokerConfig{ .min_equity = 500.0 } };
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0 });
+    broker.on_tick(flat(2000, 100.0));                     // 1x long: liquidation price is 0
+    broker.on_tick(flat(3000, 40.0));                      // equity 400 <= 500 -> sweep
+    EXPECT_TRUE(broker.bankrupt());
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_TRUE(trades[1].liquidation);
+    EXPECT_DOUBLE_EQ(broker.cash(), 400.0);
+}
+
 // --- Liquidation trade/order synthesis ---------------------------------------------
 
 TEST(BacktestBrokerLeverage, LiquidationTradeReferencesASyntheticFilledMarketOrder)

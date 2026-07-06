@@ -30,11 +30,11 @@ EquityPoint eq(std::int64_t ms, Balance equity)
 }
 
 Trade trade(std::int64_t ms, OrderSide side, core::Quantity qty, core::Price price,
-            bool liquidation = false)
+            bool liquidation = false, double fee = 0.0)
 {
     return Trade{
         core::TradeID{ 1 }, core::OrderID{ 1 }, Timestamp::from_millis(ms),
-        core::Symbol{ "X" }, side, qty, price, liquidation,
+        core::Symbol{ "X" }, side, qty, price, liquidation, fee,
     };
 }
 
@@ -101,6 +101,31 @@ TEST(Report, NotionalSumsTradeValue)
     });
     EXPECT_EQ(m.trade_count, 2u);
     EXPECT_DOUBLE_EQ(m.notional, 2.0 * 100.0 + 2.0 * 110.0);
+}
+
+TEST(Report, TotalFeesSummedAndWinRateIsNetOfFees)
+{
+    // One cycle: +1 gross, but 0.6 of fees on each leg -> -0.2 net = a loss.
+    // The control cycle has the same prices with no fees -> a win.
+    std::vector<Trade> trades{
+        trade(1, OrderSide::Buy, 1.0, 100.0, false, 0.6),
+        trade(2, OrderSide::Sell, 1.0, 101.0, false, 0.6),
+        trade(3, OrderSide::Buy, 1.0, 100.0),
+        trade(4, OrderSide::Sell, 1.0, 101.0),
+    };
+    const auto m = compute_metrics(ReportInput{
+        .starting_cash = 1'000.0,
+        .bars_processed = 4,
+        .trades = trades,
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 1'000.8,
+        .ending_equity = 1'000.8,
+        .elapsed = {},
+    });
+    EXPECT_DOUBLE_EQ(m.total_fees, 1.2);
+    EXPECT_EQ(m.closed_trades, 2u);
+    EXPECT_EQ(m.winning_trades, 1u);   // the fee-laden cycle is a loss net of costs
 }
 
 TEST(Report, WinRateCountsProfitableRoundTrips)

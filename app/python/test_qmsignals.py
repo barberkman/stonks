@@ -266,6 +266,38 @@ def test_replaces_stale_pending_entry_on_new_signal():
     assert entry1.price != entry2.price     # fresh levels, not a duplicate
 
 
+def test_reanchors_bracket_when_entry_fill_gaps_past_the_plan():
+    bars = _breakout_bars()
+    # A benign extra tick (low volume, no new breakout) on which the strategy
+    # observes the gapped fill and re-anchors.
+    bars.append(FakeKLine(56 * DAY, "TEST", 143.0, 143.5, 142.5, 143.0, 1000.0))
+    ctx = FakeContext(bars)
+    s = QMSignalsStrategy()
+    s.on_start(ctx)
+    n = len({b.timestamp for b in bars})
+    for tick in range(n):
+        ctx.advance()
+        if tick == n - 1:
+            # Simulate the broker: the stop-entry gapped and filled 3% above plan.
+            entry = ctx.orders[0]
+            entry.status = OrderStatus.Filled
+            ctx.positions["TEST"] = FakePosition(quantity=entry.quantity,
+                                                 price=entry.price * 1.03,
+                                                 entry_id=entry.id)
+        s.on_tick(ctx)
+
+    assert len(ctx.orders) == 5                 # bracket + two re-anchored legs
+    entry, sl, tp, new_sl, new_tp = ctx.orders
+    assert sl.status == OrderStatus.Cancelled   # originals replaced
+    assert tp.status == OrderStatus.Cancelled
+    assert new_sl.order_type == "stop" and new_sl.reduce_only is True
+    assert new_tp.order_type == "limit" and new_tp.reduce_only is True
+    assert new_sl.parent == entry.id and new_tp.parent == entry.id
+    assert new_sl.price == pytest.approx(sl.price * 1.03)
+    assert new_tp.price == pytest.approx(tp.price * 1.03)
+    assert new_sl.quantity == pytest.approx(entry.quantity)
+
+
 def test_entry_leverage_formula():
     s = QMSignalsStrategy()
     assert s.entry_leverage(100.0, 95.0, True) == pytest.approx(19.0)    # Lmax=20 -> step below

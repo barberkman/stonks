@@ -113,6 +113,7 @@ inline std::vector<RoundTrip> reconstruct_round_trips(const std::vector<core::Tr
 
         if (p.qty == 0.0) {
             open_cycle(p, t, fill);
+            p.realized -= t.fee;   // the entry's fee belongs to this cycle (net-of-cost, like report.h)
             continue;
         }
         if ((p.qty > 0.0) == (fill > 0.0)) {
@@ -122,12 +123,14 @@ inline std::vector<RoundTrip> reconstruct_round_trips(const std::vector<core::Tr
             p.avg_price = (p.avg_price * prev + t.price * add) / (prev + add);
             p.qty += fill;
             p.peak_qty = std::max(p.peak_qty, std::abs(p.qty));
+            p.realized -= t.fee;
             continue;
         }
 
         // Opposing fill: close against the open position.
         const double closing = std::min(std::abs(fill), std::abs(p.qty));
         p.realized += (p.qty > 0.0 ? (t.price - p.avg_price) : (p.avg_price - t.price)) * closing;
+        p.realized -= t.fee;
         p.close_qty += closing;
         p.close_notional += closing * t.price;
         p.qty += (p.qty > 0.0 ? -closing : closing);

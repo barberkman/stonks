@@ -25,6 +25,9 @@ QtObject {
     property string startDate: ""
     property string endDate: ""
     property string startCash: "1,000"
+    property string makerFeeBps: "2"       // Binance USDT-M VIP0 defaults
+    property string takerFeeBps: "5"
+    property string feePerFill: "0"
 
     // --- results (populated from the controller) ---
     property var results: ({})             // runId -> full result object
@@ -139,7 +142,10 @@ QtObject {
             symbols: symbols,
             start: startDate,
             end: endDate,
-            startCash: parseFloat(String(startCash).replace(/[^0-9.]/g, '')) || 0
+            startCash: parseFloat(String(startCash).replace(/[^0-9.]/g, '')) || 0,
+            makerFeeBps: parseFloat(String(makerFeeBps).replace(/[^0-9.]/g, '')) || 0,
+            takerFeeBps: parseFloat(String(takerFeeBps).replace(/[^0-9.]/g, '')) || 0,
+            feePerFill: parseFloat(String(feePerFill).replace(/[^0-9.]/g, '')) || 0
         });
     }
     function runSaved() { runBacktest(); }

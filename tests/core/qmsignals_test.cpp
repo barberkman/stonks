@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "stonks/broker/backtestbroker.h"
 #include "stonks/core/clock.h"
 #include "stonks/core/context.h"
 #include "stonks/core/types.h"
@@ -483,6 +484,63 @@ TEST(QMSignalsGating, ReplacesStalePendingEntryOnNewSignal)
     ASSERT_TRUE(entry1.price.has_value());
     ASSERT_TRUE(entry2.price.has_value());
     EXPECT_NE(*entry1.price, *entry2.price);          // fresh levels, not a duplicate
+}
+
+TEST(QMSignalsGating, ReanchorsBracketWhenEntryFillGapsPastThePlan)
+{
+    // The planned levels come from the signal; the entry stop then gaps and
+    // fills above them. The strategy must observe the actual fill via
+    // ctx.position() and replace both legs at plan × (fill / planned_entry) —
+    // the proportional shift that keeps the stop inside the liquidation price.
+    QMSignalsStrategy strat;
+    strat.ps_min_gain = 1e9;                       // silence the fixture's tick-51 parabolic_short
+    stonks::broker::BacktestBroker broker{ Balance{ 10'000.0 } };
+    auto rows = breakout_setup();
+    rows.push_back(Row{ 52.0, 52.5, 51.5, 52.2, 1000.0 });   // gaps open above the 50.5 trigger -> fills @52
+    rows.push_back(Row{ 52.2, 52.4, 52.0, 52.1, 1000.0 });   // quiet bar: the strategy reacts to the fill
+    StubFeed feed;
+    feed.bars = to_klines("AAA", rows);
+    Clock clock;
+    Context<stonks::broker::BacktestBroker, StubFeed> ctx{ broker, feed, clock };
+    while (auto ts = feed.next_timestamp()) {
+        clock.set(*ts);
+        for (const auto& b : feed.current_bars()) { broker.on_tick(b); }
+        strat.on_tick(ctx);
+        feed.advance();
+    }
+
+    // Planned levels, recomputed from the signal fixture alone.
+    const auto planned = run(to_klines("AAA", breakout_setup()));
+    const auto* b = find(planned, "breakout");
+    ASSERT_NE(b, nullptr);
+    const double ratio = 52.0 / b->entry;
+    ASSERT_GT(ratio, 1.0);
+
+    std::vector<Order> all;
+    for (const auto& [id, o] : broker.orders()) { all.push_back(o); }
+    std::ranges::sort(all, {}, &Order::id);
+    ASSERT_EQ(all.size(), 5u);                     // entry + original legs + re-anchored legs
+    const auto& entry = all[0];
+    EXPECT_EQ(entry.status, OrderStatus::Filled);
+    ASSERT_TRUE(broker.position("AAA").has_value());
+    EXPECT_DOUBLE_EQ(broker.position("AAA")->price, 52.0);   // the gapped fill
+
+    EXPECT_EQ(all[1].status, OrderStatus::Cancelled);        // original SL replaced
+    EXPECT_EQ(all[2].status, OrderStatus::Cancelled);        // original TP replaced
+    const auto& new_sl = all[3];
+    const auto& new_tp = all[4];
+    EXPECT_EQ(new_sl.type, OrderType::Stop);
+    EXPECT_EQ(new_tp.type, OrderType::Limit);
+    EXPECT_TRUE(new_sl.reduce_only);
+    EXPECT_TRUE(new_tp.reduce_only);
+    ASSERT_TRUE(new_sl.parent_id.has_value());
+    EXPECT_EQ(*new_sl.parent_id, entry.id);
+    ASSERT_TRUE(new_sl.price.has_value());
+    ASSERT_TRUE(new_tp.price.has_value());
+    EXPECT_NEAR(*new_sl.price, b->stop * ratio, 1e-9);
+    EXPECT_NEAR(*new_tp.price, b->sell * ratio, 1e-9);
+    EXPECT_EQ(new_sl.status, OrderStatus::Open);             // live protection at the new levels
+    EXPECT_EQ(new_tp.status, OrderStatus::Open);
 }
 
 TEST(QMSignals, EntryOrderCarriesRiskQuantityAndComputedLeverage)

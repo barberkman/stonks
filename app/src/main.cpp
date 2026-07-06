@@ -26,6 +26,11 @@ namespace stonks::app {
 // The scanner places no orders — it prints each fired setup's signal to stdout.
 void run_backtest() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
+    // Binance USDT-M VIP0 fee schedule; stamped into the report JSON.
+    const stonks::broker::BrokerConfig broker_config{
+        .maker_fee_bps = 2.0,
+        .taker_fee_bps = 5.0,
+    };
     stonks::core::Engine engine
     {
         PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
@@ -33,7 +38,7 @@ void run_backtest() {
         stonks::datafeed::KLineFeed{ "app/data/binance_1d.parquet"
             , { .start = "2024-01-01", .end = "2026-01-30", .symbols = { "BTCUSDT", "ETHUSDT", "SOLUSDT" } }
         },
-        stonks::broker::BacktestBroker{ starting_cash }
+        stonks::broker::BacktestBroker{ starting_cash, broker_config }
     };
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -49,6 +54,7 @@ void run_backtest() {
         engine.cash(),
         engine.equity(),
         elapsed,
+        broker_config,
     };
     const ReportMetrics metrics = compute_metrics(input);
     print_report(std::cout, metrics);

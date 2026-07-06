@@ -406,6 +406,72 @@ TEST(BacktestBroker, ChainedOrderStaysDormantUntilParentFills)
     EXPECT_DOUBLE_EQ(broker.equity(), broker.cash());   // flat
 }
 
+// --- Float-dust flat snap & notional floor -------------------------------------
+
+TEST(BacktestBroker, ThreeWayScaleOutSnapsDustFlatAndAllowsReentry)
+{
+    // 0.3 - 0.1 - 0.1 - 0.1 leaves ~ -2.8e-17 in doubles; without the snap the
+    // symbol reads as positioned forever and same-side entries stay rejected.
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 0.3 });
+    broker.on_tick(flat(1000, 100.0));
+    for (std::int64_t ms : { 2000, 3000, 4000 }) {
+        broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 0.1 });
+        broker.on_tick(flat(ms, 100.0));
+    }
+    EXPECT_FALSE(broker.position("X").has_value());        // snapped to exactly flat
+
+    const auto reentry = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 0.5 });
+    broker.on_tick(flat(5000, 100.0));
+    EXPECT_EQ(broker.orders().at(reentry).status, OrderStatus::Filled);   // not same_side_add
+    ASSERT_TRUE(broker.position("X").has_value());
+    EXPECT_DOUBLE_EQ(broker.position("X")->quantity, 0.5);
+}
+
+TEST(BacktestBroker, DustSnapTriggersCancelOnFlatForSiblingLeg)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    const auto entry = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 0.3 });
+    const auto sl = broker.place_order(StopOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 0.3, .price = 90.0, .reduce_only = true }, entry);
+    for (double tp_price : { 105.0, 110.0, 115.0 }) {
+        broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 0.1, .price = tp_price, .reduce_only = true }, entry);
+    }
+    broker.on_tick(flat(1000, 100.0));                     // entry fills, legs armed
+    broker.on_tick(bar(2000, 104.0, 106.0, 103.0, 105.0)); // TP1 -> 0.2 left
+    broker.on_tick(bar(3000, 109.0, 111.0, 108.0, 110.0)); // TP2 -> 0.1 left
+    broker.on_tick(bar(4000, 114.0, 116.0, 113.0, 115.0)); // TP3 -> dust -> snapped flat
+    EXPECT_FALSE(broker.position("X").has_value());
+    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Cancelled);   // cancel-on-flat fired
+}
+
+TEST(BacktestBroker, GenuineLeftoverAboveEpsilonSurvives)
+{
+    // The snap is for float dust only: a real 1e-7 remainder (>> the relative
+    // 1e-9 default) stays a live position.
+    BacktestBroker broker{ Balance{ 10'000.0 } };
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
+    broker.on_tick(flat(1000, 100.0));
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 0.9999999 });
+    broker.on_tick(flat(2000, 100.0));
+    ASSERT_TRUE(broker.position("X").has_value());
+    EXPECT_NEAR(broker.position("X")->quantity, 1e-7, 1e-12);
+}
+
+TEST(BacktestBroker, MinNotionalRejectsTinyOpensButNeverBlocksCloses)
+{
+    BacktestBroker broker{ Balance{ 10'000.0 }, BrokerConfig{ .min_notional = 50.0 } };
+    const auto tiny = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 0.4 });
+    broker.on_tick(flat(1000, 100.0));                     // notional 40 < 50
+    EXPECT_EQ(broker.orders().at(tiny).status, OrderStatus::Rejected);
+
+    broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 1.0 });
+    broker.on_tick(flat(2000, 100.0));                     // notional 100: fills
+    const auto small_close = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 0.1 });
+    broker.on_tick(flat(3000, 100.0));                     // notional 10, but it's a close
+    EXPECT_EQ(broker.orders().at(small_close).status, OrderStatus::Filled);
+    EXPECT_DOUBLE_EQ(broker.position("X")->quantity, 0.9);
+}
+
 // --- Bracket cancellation (cancel-on-reject & cancel-on-flat) -----------------
 
 TEST(BacktestBroker, RejectedEntryCancelsDormantChildren)

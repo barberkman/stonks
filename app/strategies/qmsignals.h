@@ -100,17 +100,53 @@ struct QMSignalsStrategy
 
             // ─── Gating state: one trade at a time per symbol, plus a cooldown ──
             SymbolState& st = m_state[sym];
-            const bool in_position = ctx.position(sym).has_value();
+            const auto position = ctx.position(sym);
+            const bool in_position = position.has_value();
             bool closed_since_last_look = st.was_in_position && !in_position;
             if (st.pending_entry.has_value()) {
                 const auto entry_order = ctx.order(*st.pending_entry);
                 const auto status = entry_order.has_value() ? entry_order->status
                                                             : stonks::core::OrderStatus::Cancelled;
                 if (status == stonks::core::OrderStatus::Filled) {
-                    // Entered; flat again already means the round trip completed
-                    // within one bar (a same-bar stop-out).
-                    if (!in_position) { closed_since_last_look = true; }
-                    st.pending_entry.reset();
+                    if (in_position) {
+                        // The stop-entry can gap and fill worse than the signal
+                        // price, dragging the liquidation price inside the stop.
+                        // Re-anchor the bracket proportionally to the actual
+                        // fill — the planned stop-inside-liquidation geometry is
+                        // scale-invariant, so stop×(fill/planned) restores it.
+                        const double fill = position->price;
+                        if (st.planned_entry > 0.0 && fill != st.planned_entry) {
+                            const double ratio = fill / st.planned_entry;
+                            const auto exit_side = position->quantity > 0.0
+                                ? stonks::core::OrderSide::Sell
+                                : stonks::core::OrderSide::Buy;
+                            const double held = std::abs(position->quantity);
+                            STONKS_LOG("qm", "ev=reanchor sym={} fill={:.4f} planned={:.4f} new_stop={:.4f} new_tp={:.4f}",
+                                       sym, fill, st.planned_entry, st.planned_stop * ratio, st.planned_sell * ratio);
+                            if (st.sl_id) { ctx.cancel_order(*st.sl_id); }
+                            if (st.tp_id) { ctx.cancel_order(*st.tp_id); }
+                            st.sl_id = ctx.place_order(stonks::core::StopOrderParams{
+                                .symbol = sym,
+                                .side = exit_side,
+                                .quantity = held,
+                                .price = st.planned_stop * ratio,
+                                .reduce_only = true,
+                            }, *st.pending_entry);
+                            st.tp_id = ctx.place_order(stonks::core::LimitOrderParams{
+                                .symbol = sym,
+                                .side = exit_side,
+                                .quantity = held,
+                                .price = st.planned_sell * ratio,
+                                .reduce_only = true,
+                            }, *st.pending_entry);
+                        }
+                        st.pending_entry.reset();
+                    } else {
+                        // Entered and flat again already: the round trip
+                        // completed within one bar (a same-bar stop-out).
+                        closed_since_last_look = true;
+                        st.pending_entry.reset();
+                    }
                 } else if (status != stonks::core::OrderStatus::Open) {
                     st.pending_entry.reset();   // rejected or cancelled; forget it
                 }
@@ -157,7 +193,7 @@ struct QMSignalsStrategy
                         });
 
                         // Stop loss order (reduce-only: an orphaned leg may never open)
-                        ctx.place_order(stonks::core::StopOrderParams{
+                        st.sl_id = ctx.place_order(stonks::core::StopOrderParams{
                             .symbol = sym,
                             .side = is_long ? stonks::core::OrderSide::Sell
                                             : stonks::core::OrderSide::Buy,
@@ -167,7 +203,7 @@ struct QMSignalsStrategy
                         }, order_id);
 
                         // Take profit order (reduce-only, same reason)
-                        ctx.place_order(stonks::core::LimitOrderParams{
+                        st.tp_id = ctx.place_order(stonks::core::LimitOrderParams{
                             .symbol = sym,
                             .side = is_long ? stonks::core::OrderSide::Sell
                                             : stonks::core::OrderSide::Buy,
@@ -177,6 +213,9 @@ struct QMSignalsStrategy
                         }, order_id);
 
                         st.pending_entry = order_id;
+                        st.planned_entry = s.entry;
+                        st.planned_stop = s.stop;
+                        st.planned_sell = s.sell;
                     }
                 }
             }
@@ -480,11 +519,17 @@ private:
         return std::chrono::sys_time<std::chrono::milliseconds>{ std::chrono::milliseconds{ ms } };
     }
 
-    // Per-symbol re-entry gating: the resting entry (if any), whether the last
+    // Per-symbol re-entry gating: the resting entry (if any), its planned
+    // levels and protective-leg ids (for gap re-anchoring), whether the last
     // look saw a position, and how many printed bars of cooldown remain.
     struct SymbolState
     {
         std::optional<stonks::core::OrderID> pending_entry;
+        std::optional<stonks::core::OrderID> sl_id;
+        std::optional<stonks::core::OrderID> tp_id;
+        double planned_entry = 0.0;
+        double planned_stop = 0.0;
+        double planned_sell = 0.0;
         bool was_in_position = false;
         int cooldown_remaining = 0;
     };

@@ -20,10 +20,31 @@ enum class IntrabarFillPolicy : std::uint8_t
     Optimistic,
 };
 
-// Knobs for the fill simulation; later phases add theirs as they are wired in.
+// Knobs for the fill simulation. Zero/false defaults reproduce the fee-free,
+// bankruptcy-price-liquidation behavior; flat_epsilon deliberately defaults on
+// (it only rounds float dust on closes).
 struct BrokerConfig
 {
     IntrabarFillPolicy fill_policy = IntrabarFillPolicy::Conservative;
+    // Fees, charged per fill on the filled notional plus a flat amount. Maker
+    // rate applies to a limit filled at its own price (it rested and was hit);
+    // everything that crosses on arrival — market, stop, a limit filled at the
+    // open, forced closes — pays the taker rate.
+    double maker_fee_bps = 0.0;
+    double taker_fee_bps = 0.0;
+    double fee_per_fill = 0.0;            // flat amount in quote currency
+    // Forced-close model (formulas doc §8): liquidation triggers at
+    // entry*(1∓1/L)/(1∓m); at m = 0 this is the bankruptcy price. The loss cap
+    // bounds a forced close's loss at the posted margin (isolated semantics).
+    double maintenance_margin_rate = 0.0;
+    bool isolated_loss_cap = false;
+    // Float-dust guard: a close leaving |quantity| within this fraction of the
+    // pre-close size snaps to exactly flat.
+    double flat_epsilon = 1e-9;
+    // Floors: account halts once equity <= min_equity; opening fills below
+    // min_notional are rejected (closes are never blocked).
+    double min_equity = 0.0;
+    double min_notional = 0.0;
 };
 
 class BacktestBroker

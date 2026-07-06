@@ -188,6 +188,51 @@ Page {
         }
     }
 
+    // --- fees ---
+    Rectangle {
+        width: view.innerWidth
+        radius: Theme.radiusCard
+        color: Theme.card
+        border.color: Theme.border
+        border.width: 1
+        implicitHeight: feeCol.implicitHeight + Theme.sp(40)
+
+        Column {
+            id: feeCol
+            x: Theme.sp(22); y: Theme.sp(20)
+            width: parent.width - Theme.sp(44)
+            spacing: Theme.sp(16)
+
+            Text { text: "FEES"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 1 * Theme.scale }
+
+            Row {
+                width: parent.width
+                spacing: Theme.sp(18)
+                ParamField {
+                    width: (parent.width - Theme.sp(36)) / 3
+                    label: "Maker fee (resting fills)"
+                    unit: "bps"
+                    value: App.makerFeeBps
+                    onEdited: function (v) { App.makerFeeBps = v }
+                }
+                ParamField {
+                    width: (parent.width - Theme.sp(36)) / 3
+                    label: "Taker fee (crossing fills)"
+                    unit: "bps"
+                    value: App.takerFeeBps
+                    onEdited: function (v) { App.takerFeeBps = v }
+                }
+                ParamField {
+                    width: (parent.width - Theme.sp(36)) / 3
+                    label: "Flat fee per fill"
+                    unit: "$"
+                    value: App.feePerFill
+                    onEdited: function (v) { App.feePerFill = v }
+                }
+            }
+        }
+    }
+
     // --- starting cash + start ---
     Item {
         width: view.innerWidth

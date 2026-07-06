@@ -134,6 +134,7 @@ struct Trade
     Quantity quantity;
     Price price;
     bool liquidation = false;   // fill came from a forced close, not a strategy order
+    double fee = 0.0;           // charged on this fill (already deducted from cash)
 
     auto operator<=>(const Trade&) const = default;
 };

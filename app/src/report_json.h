@@ -69,6 +69,7 @@ inline void to_json(nlohmann::json& j, const Trade& t)
         { "quantity", t.quantity },
         { "price", t.price },
         { "liquidation", t.liquidation },
+        { "fee", t.fee },
     };
 }
 
@@ -99,6 +100,29 @@ inline void to_json(nlohmann::json& j, const EquityPoint& p)
 
 } // namespace stonks::core
 
+namespace stonks::broker {
+
+// The run's broker knobs, so an archived report is reproducible/auditable on
+// its own (an external verifier reads these instead of guessing). Lives in
+// stonks::broker so nlohmann finds it via ADL.
+inline void to_json(nlohmann::json& j, const BrokerConfig& c)
+{
+    j = nlohmann::json{
+        { "fill_policy", c.fill_policy == IntrabarFillPolicy::Conservative
+                             ? "Conservative" : "Optimistic" },
+        { "maker_fee_bps", c.maker_fee_bps },
+        { "taker_fee_bps", c.taker_fee_bps },
+        { "fee_per_fill", c.fee_per_fill },
+        { "maintenance_margin_rate", c.maintenance_margin_rate },
+        { "isolated_loss_cap", c.isolated_loss_cap },
+        { "flat_epsilon", c.flat_epsilon },
+        { "min_equity", c.min_equity },
+        { "min_notional", c.min_notional },
+    };
+}
+
+} // namespace stonks::broker
+
 namespace stonks::app {
 
 inline void to_json(nlohmann::json& j, const ReportMetrics& m)
@@ -111,6 +135,7 @@ inline void to_json(nlohmann::json& j, const ReportMetrics& m)
         { "trade_count", m.trade_count },
         { "orders_placed", m.orders_placed },
         { "notional", m.notional },
+        { "total_fees", m.total_fees },
         { "closed_trades", m.closed_trades },
         { "winning_trades", m.winning_trades },
         { "win_rate_pct", m.win_rate_pct ? nlohmann::json(*m.win_rate_pct) : nlohmann::json(nullptr) },
@@ -129,6 +154,7 @@ inline void write_report_json(std::ostream& os, const ReportInput& in, const Rep
 {
     const nlohmann::json j{
         { "metrics", m },
+        { "config", in.config },
         { "trades", in.trades },
         { "orders", in.orders },
         { "equity_curve", in.equity_curve },

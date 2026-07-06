@@ -119,7 +119,15 @@ void BacktestWorker::runImpl(QVariantMap params)
         // (no re-init thanks to the pin). The engine polls &cancel each timestamp.
         PythonStrategy strategy{ module, cls };
         datafeed::KLineFeed feed{ data_file, filter };
-        broker::BacktestBroker broker{ cash };
+        // Fee schedule from the setup screen (bps of notional + flat per fill),
+        // defaulting to Binance USDT-M VIP0 when the params omit it; stamped
+        // into the report JSON.
+        const broker::BrokerConfig broker_config{
+            .maker_fee_bps = params.value("makerFeeBps", 2.0).toDouble(),
+            .taker_fee_bps = params.value("takerFeeBps", 5.0).toDouble(),
+            .fee_per_fill = params.value("feePerFill", 0.0).toDouble(),
+        };
+        broker::BacktestBroker broker{ cash, broker_config };
         auto engine = std::make_shared<EngineT>(
             std::move(strategy), std::move(feed), broker,
             core::ProgressOutput::Silent, &m_impl->cancel);
@@ -143,6 +151,7 @@ void BacktestWorker::runImpl(QVariantMap params)
             engine->cash(),
             engine->equity(),
             elapsed,
+            broker_config,
         };
         const ReportMetrics metrics = compute_metrics(input);
 

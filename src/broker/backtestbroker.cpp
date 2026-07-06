@@ -29,6 +29,14 @@ int fill_priority(core::OrderType type, IntrabarFillPolicy policy)
     return 3;
 }
 
+// Fee for one fill: bps of the filled notional (maker or taker rate) plus the
+// flat per-fill amount.
+core::Balance fill_fee(core::Balance notional, bool maker, const BrokerConfig& config)
+{
+    const double bps = maker ? config.maker_fee_bps : config.taker_fee_bps;
+    return notional * bps / 10'000.0 + config.fee_per_fill;
+}
+
 } // namespace
 
 BacktestBroker::BacktestBroker(core::Balance initial_cash, BrokerConfig config)
@@ -228,26 +236,32 @@ void BacktestBroker::on_tick(const core::KLine& bar)
     if (pos_it != m_positions.end()) {
         const core::Position& position = pos_it->second;
         const bool is_long = position.quantity > 0.0;
-        const core::Price bankruptcy_price = is_long
-            ? position.price * (1.0 - 1.0 / position.leverage)
-            : position.price * (1.0 + 1.0 / position.leverage);
-        const bool breached = is_long ? bar.low <= bankruptcy_price
-                                      : bar.high >= bankruptcy_price;
+        // Formulas doc §8: P_liq = entry * (1 ∓ 1/L) / (1 ∓ m). At m = 0 this
+        // is the bankruptcy price (100% margin loss).
+        const double m = m_config.maintenance_margin_rate;
+        const core::Price liquidation_price = is_long
+            ? position.price * (1.0 - 1.0 / position.leverage) / (1.0 - m)
+            : position.price * (1.0 + 1.0 / position.leverage) / (1.0 + m);
+        const bool breached = is_long ? bar.low <= liquidation_price
+                                      : bar.high >= liquidation_price;
         if (breached) {
-            // Stop-style fill: the worse of the bankruptcy price and the open. A
-            // gap through the bankruptcy price fills at the open, so the loss can
-            // exceed the posted margin and the excess comes out of cash.
-            const core::Price fill_price = is_long ? std::min(bankruptcy_price, bar.open)
-                                                   : std::max(bankruptcy_price, bar.open);
+            // Stop-style fill: the worse of the liquidation price and the open.
+            // A gap through it fills at the open, so the loss can exceed the
+            // posted margin (unless isolated_loss_cap bounds it) and the excess
+            // comes out of cash.
+            const core::Price fill_price = is_long ? std::min(liquidation_price, bar.open)
+                                                   : std::max(liquidation_price, bar.open);
             liquidate_position(bar.symbol, fill_price, to_remove);
         }
     }
 
     // Bankruptcy stop: gap-through losses can exceed one position's margin and
     // sink the whole account. Close everything at the current marks, cancel all
-    // resting orders, and refuse any further business.
+    // resting orders, and refuse any further business. min_equity raises the
+    // floor above zero for fraction-of-equity sizing, whose losses decay
+    // geometrically and never cross an exact zero.
     const core::Balance eq = equity();
-    if (eq <= 0.0) {
+    if (eq <= m_config.min_equity) {
         STONKS_LOG("broker", "ev=bankrupt ts={} cash={:.4f} equity={:.4f} npos={}",
                    log::ts_ms(bar.timestamp), m_cash, eq, m_positions.size());
         std::vector<core::Symbol> remaining;
@@ -284,8 +298,10 @@ bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
 {
     const core::OrderID id = order.id;
 
-    // Calculate the fill price
+    // Calculate the fill price. A limit filled at its own price rested and was
+    // hit (maker); everything that crosses on arrival pays the taker rate.
     core::Price price;
+    bool maker = false;
     switch (order.type)
     {
     case core::OrderType::Market:
@@ -309,6 +325,7 @@ bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
             }
             price = std::max(limit, bar.open);
         }
+        maker = (price == limit);
         break;
     }
     case core::OrderType::Stop:
@@ -365,19 +382,29 @@ bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
     // Position logic
     const auto position_it = m_positions.find(order.symbol);
     core::Quantity filled_qty;
+    core::Balance fee = 0.0;
     if (position_it == m_positions.end()) {
         // No position: post the initial margin (full notional at leverage 1).
         const core::Balance notional = order.quantity * price;
         const core::Balance cost = notional / order.leverage;
-        if (cost > m_cash) {
-            STONKS_LOG("broker", "ev=reject id={} why=insufficient_cash cost={:.4f} cash={:.4f} leverage={:.2f}",
-                       id, cost, m_cash, order.leverage);
+        if (notional < m_config.min_notional) {
+            STONKS_LOG("broker", "ev=reject id={} why=notional_too_small notional={:.4f} min={:.4f}",
+                       id, notional, m_config.min_notional);
+            order.status = core::OrderStatus::Rejected;
+            cancel_subtree(id, to_remove);              // entry died -> kill its dormant children
+            to_remove.push_back(id);
+            return true;
+        }
+        fee = fill_fee(notional, maker, m_config);
+        if (cost + fee > m_cash) {
+            STONKS_LOG("broker", "ev=reject id={} why=insufficient_cash cost={:.4f} fee={:.4f} cash={:.4f} leverage={:.2f}",
+                       id, cost, fee, m_cash, order.leverage);
             order.status = core::OrderStatus::Rejected; // Not enough cash
             cancel_subtree(id, to_remove);              // entry died -> kill its dormant children
             to_remove.push_back(id);
             return true;
         }
-        m_cash -= cost;
+        m_cash -= cost + fee;
         const core::Quantity qty = (order.side == core::OrderSide::Buy ? order.quantity
                                                                        : -order.quantity);
         m_positions[order.symbol] = core::Position{ qty, price, order.id, order.leverage };
@@ -410,10 +437,17 @@ bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
         filled_qty = std::min(order.quantity, std::abs(position.quantity));
         const core::Balance pnl = (position_is_long ? price - position.price
                                                     : position.price - price) * filled_qty;
+        fee = fill_fee(filled_qty * price, maker, m_config);
         // Return the closed slice's margin at the position's leverage — the
         // closing order's own leverage is irrelevant here.
-        m_cash += filled_qty * position.price / position.leverage + pnl;
+        m_cash += filled_qty * position.price / position.leverage + pnl - fee;
         position.quantity += (position_is_long ? -filled_qty : filled_qty);
+
+        // Snap float dust to exactly flat, relative to the pre-close size, so a
+        // residual 1e-16 can never wedge the symbol (same-side rejects forever).
+        if (std::abs(position.quantity) <= m_config.flat_epsilon * std::max(std::abs(pos_before_close), 1.0)) {
+            position.quantity = 0.0;
+        }
 
         // Observational state for the ev=fill log; read before any erase below.
         fill_kind = (position.quantity == 0.0 ? "close_full" : "close_partial");
@@ -436,14 +470,15 @@ bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
     STONKS_LOG("broker",
         "ev=fill trade={} id={} ts={} sym={} side={} type={} kind={} req_qty={:.6f} fill_qty={:.6f} "
         "price={:.4f} bar_open={:.4f} limit={:.4f} entry={:.4f} cost={:.4f} collateral={:.4f} pnl={:.4f} "
-        "leverage={:.2f} cash_before={:.4f} cash_after={:.4f} pos_before={:.6f} pos_after={:.6f}",
+        "fee={:.4f} maker={} leverage={:.2f} cash_before={:.4f} cash_after={:.4f} pos_before={:.6f} pos_after={:.6f}",
         m_next_trade_id, order.id, log::ts_ms(bar.timestamp), order.symbol,
         log::side_str(order.side), log::type_str(order.type), fill_kind,
         order.quantity, filled_qty, price, bar.open, order.price.value_or(0.0),
-        fill_entry, fill_cost, fill_collateral, fill_pnl, fill_leverage, cash_before, m_cash,
+        fill_entry, fill_cost, fill_collateral, fill_pnl, fee, int(maker), fill_leverage, cash_before, m_cash,
         pos_qty_before, pos_qty_after);
     m_trades.try_emplace(m_next_trade_id, core::Trade{
-        m_next_trade_id, order.id, bar.timestamp, order.symbol, order.side, filled_qty, price
+        m_next_trade_id, order.id, bar.timestamp, order.symbol, order.side, filled_qty, price,
+        false, fee
     });
     ++m_next_trade_id;
 
@@ -522,10 +557,14 @@ void BacktestBroker::liquidate_position(const core::Symbol& symbol, core::Price 
     const bool position_is_long = position.quantity > 0.0;
     const core::Quantity qty = std::abs(position.quantity);
     const core::OrderSide close_side = position_is_long ? core::OrderSide::Sell : core::OrderSide::Buy;
-    const core::Balance pnl = (position_is_long ? fill_price - position.price
-                                                : position.price - fill_price) * qty;
+    core::Balance pnl = (position_is_long ? fill_price - position.price
+                                          : position.price - fill_price) * qty;
     const core::Balance margin = qty * position.price / position.leverage;
-    m_cash += margin + pnl;
+    // Isolated semantics: a *forced* close can lose at most the posted margin
+    // (a voluntary close through a gap still carries the full loss).
+    if (m_config.isolated_loss_cap) { pnl = std::max(pnl, -margin); }
+    const core::Balance fee = fill_fee(qty * fill_price, false, m_config);   // forced closes take liquidity
+    m_cash += margin + pnl - fee;
 
     // The Trade needs a backing order, so the forced close synthesizes one: born
     // Filled, never registered in the open-order working set.
@@ -535,13 +574,13 @@ void BacktestBroker::liquidate_position(const core::Symbol& symbol, core::Price 
         core::OrderType::Market, core::OrderStatus::Filled, std::nullopt, qty, core::TimeInForce::GTC
     });
     m_trades.try_emplace(m_next_trade_id, core::Trade{
-        m_next_trade_id, synthetic_id, m_now, symbol, close_side, qty, fill_price, true
+        m_next_trade_id, synthetic_id, m_now, symbol, close_side, qty, fill_price, true, fee
     });
     STONKS_LOG("broker",
         "ev=liquidate trade={} id={} ts={} sym={} side={} qty={:.6f} price={:.4f} entry={:.4f} "
-        "leverage={:.2f} margin={:.4f} pnl={:.4f} cash_after={:.4f}",
+        "leverage={:.2f} margin={:.4f} pnl={:.4f} fee={:.4f} cash_after={:.4f}",
         m_next_trade_id, synthetic_id, log::ts_ms(m_now), symbol, log::side_str(close_side),
-        qty, fill_price, position.price, position.leverage, margin, pnl, m_cash);
+        qty, fill_price, position.price, position.leverage, margin, pnl, fee, m_cash);
     ++m_next_trade_id;
 
     cancel_subtree(position.entry_id, to_remove);   // no keep: nothing survives a liquidation
