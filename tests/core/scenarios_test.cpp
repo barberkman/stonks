@@ -40,6 +40,8 @@ struct BrokerSpy
     OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
     OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
     OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
+    std::optional<Position> position(const Symbol& symbol) const { return impl->position(symbol); }
+    bool cancel_order(OrderID id) { return impl->cancel_order(id); }
     void on_tick(const KLine& bar) { impl->on_tick(bar); }
 };
 static_assert(Broker<BrokerSpy>);

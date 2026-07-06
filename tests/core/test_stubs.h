@@ -20,6 +20,7 @@ struct StubBroker
     std::vector<Order>* placed{ nullptr };
     std::unordered_map<TradeID, Trade> m_trades;
     std::unordered_map<OrderID, Order> m_orders;
+    std::unordered_map<Symbol, Position> fake_positions;   // test-settable; position() reads it
     OrderID next_id{ 1 };
 
     Balance cash() const { return {}; }
@@ -27,23 +28,41 @@ struct StubBroker
     const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
     const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
 
+    std::optional<Position> position(const Symbol& symbol) const
+    {
+        const auto it = fake_positions.find(symbol);
+        if (it == fake_positions.end()) { return std::nullopt; }
+        return it->second;
+    }
+
+    bool cancel_order(OrderID id)
+    {
+        const auto it = m_orders.find(id);
+        if (it == m_orders.end() || it->second.status != OrderStatus::Open) { return false; }
+        it->second.status = OrderStatus::Cancelled;
+        for (auto& [oid, o] : m_orders) {   // cascade to dormant children, like the broker
+            if (o.parent_id == id && o.status == OrderStatus::Open) { o.status = OrderStatus::Cancelled; }
+        }
+        return true;
+    }
+
     OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Market, OrderStatus::Open,
-                             std::nullopt, p.quantity, p.time_in_force, p.leverage });
+                             std::nullopt, p.quantity, p.time_in_force, p.leverage, p.reduce_only });
     }
     OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Limit, OrderStatus::Open,
-                             p.price, p.quantity, p.time_in_force, p.leverage });
+                             p.price, p.quantity, p.time_in_force, p.leverage, p.reduce_only });
     }
     OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Stop, OrderStatus::Open,
-                             p.price, p.quantity, p.time_in_force, p.leverage });
+                             p.price, p.quantity, p.time_in_force, p.leverage, p.reduce_only });
     }
     void on_tick(const KLine&) {}
 

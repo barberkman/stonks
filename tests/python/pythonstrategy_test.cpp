@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -6,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "core/test_stubs.h"
+#include "stonks/broker/backtestbroker.h"
 #include "stonks/core/clock.h"
 #include "stonks/core/context.h"
 #include "stonks/core/types.h"
@@ -151,6 +153,29 @@ TEST_F(PythonStrategyTest, PythonStrategyMovableForEngineByValueConstruct)
 
     ASSERT_EQ(placed.size(), 1u);
     EXPECT_EQ(placed[0].quantity, 2.0);
+}
+
+TEST_F(PythonStrategyTest, ObservabilityApiRoundTripsThroughBindings)
+{
+    PythonStrategy strat{ "fixturestrats", "ApiProbe" };
+
+    // A real broker: the probe exercises actual cancel/status transitions.
+    broker::BacktestBroker broker{ core::Balance{ 10'000.0 } };
+    StubFeed feed;
+    core::Clock clock;
+    core::Context<broker::BacktestBroker, StubFeed> ctx{ broker, feed, clock };
+
+    ASSERT_NO_THROW(strat.on_tick(ctx));   // the probe asserts internally
+
+    // It cancelled its limit order and left one reduce-only stop marker.
+    std::vector<core::Order> all;
+    for (const auto& [id, o] : broker.orders()) { all.push_back(o); }
+    std::ranges::sort(all, {}, &core::Order::id);
+    ASSERT_EQ(all.size(), 2u);
+    EXPECT_EQ(all[0].status, core::OrderStatus::Cancelled);
+    EXPECT_EQ(all[1].type, core::OrderType::Stop);
+    EXPECT_TRUE(all[1].reduce_only);
+    EXPECT_DOUBLE_EQ(all[1].quantity, 7.0);
 }
 
 TEST_F(PythonStrategyTest, StopAndLimitOrdersRoundTripThroughBindings)

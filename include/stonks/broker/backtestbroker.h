@@ -37,6 +37,9 @@ public:
     const std::unordered_map<core::TradeID, core::Trade>& trades() const;
     const std::unordered_map<core::OrderID, core::Order>& orders() const;
 
+    // The open position on `symbol`, or nullopt when flat (one per symbol).
+    std::optional<core::Position> position(const core::Symbol& symbol) const;
+
     core::OrderID place_order(const core::MarketOrderParams& parameters,
                               std::optional<core::OrderID> parent = std::nullopt);
     core::OrderID place_order(const core::LimitOrderParams& parameters,
@@ -45,6 +48,10 @@ public:
                               std::optional<core::OrderID> parent = std::nullopt);
 
     void on_tick(const core::KLine& bar);
+
+    // Cancel a still-Open order and its dormant bracket subtree. Returns false
+    // when the id is unknown, already terminal, or the account is bankrupt.
+    bool cancel_order(core::OrderID id);
 
 private:
     core::OrderID register_order(core::Order order);
@@ -65,6 +72,9 @@ private:
     // and cancel the position's bracket subtree.
     void liquidate_position(const core::Symbol& symbol, core::Price fill_price,
                             std::vector<core::OrderID>& to_remove);
+
+    // Drop the given ids from the m_open_orders working set.
+    void prune_open_orders(const std::vector<core::OrderID>& to_remove);
 
     core::Balance m_cash;
     BrokerConfig m_config;

@@ -6,11 +6,11 @@ strategies can be exercised without spinning up the C++ binary.
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from stonks import OrderSide, TimeInForce
+from stonks import OrderSide, OrderStatus, TimeInForce
 
 
 @dataclass
@@ -64,6 +64,19 @@ class FakeOrder:
     id: Optional[int] = None       # the OrderID place_*_order handed back
     leverage: float = 1.0          # isolated-margin leverage (used when the order opens)
     order_type: str = "market"     # which place_*_order call produced it: "market" / "limit" / "stop"
+    reduce_only: bool = False      # may only reduce an existing position
+    status: OrderStatus = OrderStatus.Open   # FakeContext never fills; cancel_order() flips this
+
+
+@dataclass
+class FakePosition:
+    """Stand-in for the C++-bound Position returned by Context.position().
+    Tests set FakeContext.positions[symbol] to one of these directly."""
+
+    quantity: float          # signed: + long, - short
+    price: float             # average entry
+    entry_id: int = 0
+    leverage: float = 1.0
 
 
 class FakeContext:
@@ -78,6 +91,7 @@ class FakeContext:
         self._bars = bars
         self._cash = cash
         self.orders: List[FakeOrder] = []
+        self.positions: Dict[str, FakePosition] = {}   # test-settable; position() reads it
         self._timestamps = sorted({_to_ms(b.timestamp) for b in bars})
         self._group = -1   # advance() steps to the first timestamp
         self._next_order_id = 1   # broker hands back monotonic OrderIDs
@@ -95,6 +109,25 @@ class FakeContext:
 
     def equity(self) -> float:
         return self._cash
+
+    def position(self, symbol: str) -> Optional[FakePosition]:
+        return self.positions.get(symbol)
+
+    def order(self, order_id: int) -> Optional[FakeOrder]:
+        for o in self.orders:
+            if o.id == order_id:
+                return o
+        return None
+
+    def cancel_order(self, order_id: int) -> bool:
+        target = self.order(order_id)
+        if target is None or target.status != OrderStatus.Open:
+            return False
+        target.status = OrderStatus.Cancelled
+        for o in self.orders:   # cascade to dormant children, like the broker
+            if o.parent == order_id and o.status == OrderStatus.Open:
+                o.status = OrderStatus.Cancelled
+        return True
 
     def history(self, count: int) -> FakeMarketWindow:
         now_ms = self.now()
@@ -132,11 +165,13 @@ class FakeContext:
         leverage: float = 1.0,
         time_in_force: TimeInForce = TimeInForce.GTC,
         parent: Optional[int] = None,
+        reduce_only: bool = False,
     ) -> int:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, None, time_in_force, parent, oid, leverage, "market")
+            FakeOrder(symbol, side, quantity, None, time_in_force, parent, oid, leverage,
+                      "market", reduce_only)
         )
         return oid
 
@@ -149,11 +184,13 @@ class FakeContext:
         leverage: float = 1.0,
         time_in_force: TimeInForce = TimeInForce.GTC,
         parent: Optional[int] = None,
+        reduce_only: bool = False,
     ) -> int:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage, "limit")
+            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage,
+                      "limit", reduce_only)
         )
         return oid
 
@@ -166,10 +203,12 @@ class FakeContext:
         leverage: float = 1.0,
         time_in_force: TimeInForce = TimeInForce.GTC,
         parent: Optional[int] = None,
+        reduce_only: bool = False,
     ) -> int:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage, "stop")
+            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage,
+                      "stop", reduce_only)
         )
         return oid

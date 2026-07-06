@@ -34,6 +34,13 @@ public:
                                             std::optional<core::OrderID> parent) = 0;
     virtual core::OrderID place_stop_order(core::StopOrderParams params,
                                            std::optional<core::OrderID> parent) = 0;
+
+    // Observability: the open position on a symbol (nullopt when flat), a copy
+    // of an order as the broker last saw it (nullopt for unknown ids), and
+    // cancellation of a still-open order (cascades to its bracket children).
+    virtual std::optional<core::Position> position(const core::Symbol& symbol) const = 0;
+    virtual std::optional<core::Order> order(core::OrderID id) const = 0;
+    virtual bool cancel_order(core::OrderID id) = 0;
 };
 
 } // namespace stonks::python

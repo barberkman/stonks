@@ -12,8 +12,8 @@ loader would.
 import numpy as np
 import pytest
 
-from stonks import OrderSide
-from stonks.testing import FakeContext, FakeKLine
+from stonks import OrderSide, OrderStatus
+from stonks.testing import FakeContext, FakeKLine, FakePosition
 
 from qmsignals import (
     QMSignalsStrategy,
@@ -159,6 +159,10 @@ def test_breakout_fires_long_bracket():
     assert entry.order_type == "stop"
     assert stop.order_type == "stop"
     assert tp.order_type == "limit"
+    # Protective legs are reduce-only: an orphaned leg may never open a position.
+    assert entry.reduce_only is False
+    assert stop.reduce_only is True
+    assert tp.reduce_only is True
     # The protective legs are bracketed under the entry's OrderID.
     assert entry.parent is None
     assert stop.parent == entry.id
@@ -191,6 +195,75 @@ def test_short_breakout_fires_short_bracket():
     assert tp.parent == entry.id
     assert sig.entry == pytest.approx(98.0)
     assert sig.sell < sig.entry < sig.stop      # short: stop above, target below
+
+
+def test_does_not_fire_while_position_is_open():
+    bars = _breakout_bars()
+    ctx = FakeContext(bars)
+    ctx.positions["TEST"] = FakePosition(quantity=5.0, price=130.0)
+    s = QMSignalsStrategy()
+    s.on_start(ctx)
+    for _ in {b.timestamp for b in bars}:
+        ctx.advance()
+        s.on_tick(ctx)
+    assert ctx.orders == []                                       # gated
+    assert [x.setup for x in s.last_signals("TEST")] == ["breakout"]   # scanner still fired
+
+
+def test_opposite_side_signal_suppressed_not_netted_while_in_a_trade():
+    bars = _breakout_bars()
+    ctx = FakeContext(bars)
+    ctx.positions["TEST"] = FakePosition(quantity=-5.0, price=150.0)   # short vs a long signal
+    s = QMSignalsStrategy()
+    s.on_start(ctx)
+    for _ in {b.timestamp for b in bars}:
+        ctx.advance()
+        s.on_tick(ctx)
+    assert ctx.orders == []
+
+
+def _run_with_close_at(bars, close_tick, cooldown):
+    """Hold a fake position on every tick before `close_tick`, then drop it —
+    the strategy detects the close there and starts its cooldown."""
+    ctx = FakeContext(bars)
+    s = QMSignalsStrategy()
+    s.cooldown_bars = cooldown
+    s.on_start(ctx)
+    for tick in range(len({b.timestamp for b in bars})):
+        if tick < close_tick:
+            ctx.positions["TEST"] = FakePosition(quantity=5.0, price=130.0)
+        else:
+            ctx.positions.pop("TEST", None)
+        ctx.advance()
+        s.on_tick(ctx)
+    return ctx
+
+
+def test_cooldown_after_close_suppresses_the_signal():
+    # Close detected at tick 53; cooldown 5 still has bars left on the signal tick (55).
+    assert _run_with_close_at(_breakout_bars(), 53, 5).orders == []
+
+
+def test_fires_again_after_cooldown_elapses():
+    # Cooldown 1 expires by the signal tick: the bracket goes out.
+    assert len(_run_with_close_at(_breakout_bars(), 53, 1).orders) == 3
+
+
+def test_replaces_stale_pending_entry_on_new_signal():
+    bars = _breakout_bars()
+    bars.append(FakeKLine(56 * DAY, "TEST", 143.0, 145.5, 142.5, 145.0, 2000.0))
+    s = QMSignalsStrategy()
+    s.min_base_days = 0                     # let the very next bar re-qualify
+    ctx, s = _run(bars, s)
+
+    assert len(ctx.orders) == 6             # two full brackets
+    entry1, sl1, tp1, entry2, sl2, tp2 = ctx.orders
+    # The unfilled first bracket was cancelled wholesale before the second went out.
+    assert entry1.status == OrderStatus.Cancelled
+    assert sl1.status == OrderStatus.Cancelled
+    assert tp1.status == OrderStatus.Cancelled
+    assert entry2.status == OrderStatus.Open
+    assert entry1.price != entry2.price     # fresh levels, not a duplicate
 
 
 def test_entry_leverage_formula():

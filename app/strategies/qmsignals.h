@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <stonks/core/log.h>
 #include <stonks/core/types.h>
 
 // Qullamaggie momentum scanner — all five setups in one strategy, print-only.
@@ -73,6 +74,8 @@ struct QMSignalsStrategy
     double risk_fraction = 0.02;  // fraction of equity risked per trade (stop-out loss target)
     double maint_margin = 0.0;    // maintenance-margin rate for the leverage calc (engine has none)
     double max_leverage = 125.0;  // cap on computed isolated leverage
+    // Re-entry gating
+    int cooldown_bars = 5;        // printed bars to sit out after a position closes
 
     // A fired setup on a closed bar, with the trade levels to print.
     struct Signal
@@ -95,50 +98,86 @@ struct QMSignalsStrategy
             const stonks::core::Symbol sym{ series.symbol };
             auto sigs = scan(series.bars);
 
-            /*
-            for (const auto& s : sigs) {
-                std::cout << std::format("[qm] {:%F %T} {} {} entry={:.4f} stop={:.4f} sell={:.4f}\n",
-                as_time(s.timestamp), s.setup, sym, s.entry, s.stop, s.sell);
+            // ─── Gating state: one trade at a time per symbol, plus a cooldown ──
+            SymbolState& st = m_state[sym];
+            const bool in_position = ctx.position(sym).has_value();
+            bool closed_since_last_look = st.was_in_position && !in_position;
+            if (st.pending_entry.has_value()) {
+                const auto entry_order = ctx.order(*st.pending_entry);
+                const auto status = entry_order.has_value() ? entry_order->status
+                                                            : stonks::core::OrderStatus::Cancelled;
+                if (status == stonks::core::OrderStatus::Filled) {
+                    // Entered; flat again already means the round trip completed
+                    // within one bar (a same-bar stop-out).
+                    if (!in_position) { closed_since_last_look = true; }
+                    st.pending_entry.reset();
+                } else if (status != stonks::core::OrderStatus::Open) {
+                    st.pending_entry.reset();   // rejected or cancelled; forget it
+                }
             }
-            */
+            if (closed_since_last_look) {
+                st.cooldown_remaining = cooldown_bars;
+                STONKS_LOG("qm", "ev=cooldown_start sym={} bars={}", sym, cooldown_bars);
+            } else if (!in_position && st.cooldown_remaining > 0) {
+                --st.cooldown_remaining;
+            }
+            st.was_in_position = in_position;
 
             if (!sigs.empty()) {
-                const auto& s = sigs.front();
-                const bool is_long = s.stop < s.entry;                 // long setups stop below entry
-                // Risk-mode sizing: a stop-out loses risk_fraction of equity (no fees in this engine).
-                const double risk_per_unit = std::abs(s.entry - s.stop);
-                const double qty = risk_per_unit > 0.0 ? ctx.equity() * risk_fraction / risk_per_unit : 0.0;
-                if (qty > 0.0) {
-                    const double lev = entry_leverage(s.entry, s.stop, is_long);
-                    // Stop-entry at the signal price (leverage sized so liquidation
-                    // sits just past the stop): fills at s.entry when reached, so the
-                    // risk math stays calibrated; a reversal leaves it unfilled.
-                    auto order_id = ctx.place_order(stonks::core::StopOrderParams{
-                        .symbol = sym,
-                        .side = is_long ? stonks::core::OrderSide::Buy
-                                        : stonks::core::OrderSide::Sell,
-                        .quantity = qty,
-                        .price = s.entry,
-                        .leverage = lev,
-                    });
+                if (in_position) {
+                    STONKS_LOG("qm", "ev=skip sym={} why=positioned", sym);
+                } else if (st.cooldown_remaining > 0) {
+                    STONKS_LOG("qm", "ev=skip sym={} why=cooldown remaining={}", sym, st.cooldown_remaining);
+                } else {
+                    const auto& s = sigs.front();
+                    const bool is_long = s.stop < s.entry;             // long setups stop below entry
+                    // Risk-mode sizing: a stop-out loses risk_fraction of equity (no fees in this engine).
+                    const double risk_per_unit = std::abs(s.entry - s.stop);
+                    const double qty = risk_per_unit > 0.0 ? ctx.equity() * risk_fraction / risk_per_unit : 0.0;
+                    if (qty > 0.0) {
+                        // A stale unfilled entry from an earlier signal: replace it
+                        // with the fresh levels (its bracket dies with it).
+                        if (st.pending_entry.has_value()) {
+                            STONKS_LOG("qm", "ev=replace_pending sym={} old_entry={}", sym, *st.pending_entry);
+                            ctx.cancel_order(*st.pending_entry);
+                            st.pending_entry.reset();
+                        }
 
-                    // Stop loss order
-                    ctx.place_order(stonks::core::StopOrderParams{
-                        .symbol = sym,
-                        .side = is_long ? stonks::core::OrderSide::Sell
-                                        : stonks::core::OrderSide::Buy,
-                        .quantity = qty,
-                        .price = s.stop,
-                    }, order_id);
+                        const double lev = entry_leverage(s.entry, s.stop, is_long);
+                        // Stop-entry at the signal price (leverage sized so liquidation
+                        // sits just past the stop): fills at s.entry when reached, so the
+                        // risk math stays calibrated; a reversal leaves it unfilled.
+                        auto order_id = ctx.place_order(stonks::core::StopOrderParams{
+                            .symbol = sym,
+                            .side = is_long ? stonks::core::OrderSide::Buy
+                                            : stonks::core::OrderSide::Sell,
+                            .quantity = qty,
+                            .price = s.entry,
+                            .leverage = lev,
+                        });
 
-                    // Take profit order
-                    ctx.place_order(stonks::core::LimitOrderParams{
-                        .symbol = sym,
-                        .side = is_long ? stonks::core::OrderSide::Sell
-                                        : stonks::core::OrderSide::Buy,
-                        .quantity = qty,
-                        .price = s.sell
-                    }, order_id);
+                        // Stop loss order (reduce-only: an orphaned leg may never open)
+                        ctx.place_order(stonks::core::StopOrderParams{
+                            .symbol = sym,
+                            .side = is_long ? stonks::core::OrderSide::Sell
+                                            : stonks::core::OrderSide::Buy,
+                            .quantity = qty,
+                            .price = s.stop,
+                            .reduce_only = true,
+                        }, order_id);
+
+                        // Take profit order (reduce-only, same reason)
+                        ctx.place_order(stonks::core::LimitOrderParams{
+                            .symbol = sym,
+                            .side = is_long ? stonks::core::OrderSide::Sell
+                                            : stonks::core::OrderSide::Buy,
+                            .quantity = qty,
+                            .price = s.sell,
+                            .reduce_only = true,
+                        }, order_id);
+
+                        st.pending_entry = order_id;
+                    }
                 }
             }
 
@@ -441,5 +480,15 @@ private:
         return std::chrono::sys_time<std::chrono::milliseconds>{ std::chrono::milliseconds{ ms } };
     }
 
+    // Per-symbol re-entry gating: the resting entry (if any), whether the last
+    // look saw a position, and how many printed bars of cooldown remain.
+    struct SymbolState
+    {
+        std::optional<stonks::core::OrderID> pending_entry;
+        bool was_in_position = false;
+        int cooldown_remaining = 0;
+    };
+
     std::unordered_map<stonks::core::Symbol, std::vector<Signal>> m_last;
+    std::unordered_map<stonks::core::Symbol, SymbolState> m_state;
 };

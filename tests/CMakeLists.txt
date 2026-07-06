@@ -7,6 +7,7 @@ add_executable(core_tests
     core/report_json_test.cpp
     core/analytics_test.cpp
     core/backtestbroker_test.cpp
+    core/brokerapi_test.cpp
     core/stoporder_test.cpp
     core/intrabarfillpolicy_test.cpp
     core/leverage_test.cpp

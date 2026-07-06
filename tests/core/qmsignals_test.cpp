@@ -122,6 +122,7 @@ struct SizingBroker
     std::vector<Order>* placed{ nullptr };
     std::unordered_map<TradeID, Trade> m_trades;
     std::unordered_map<OrderID, Order> m_orders;
+    std::unordered_map<Symbol, Position> fake_positions;   // test-settable; position() reads it
     OrderID next_id{ 1 };
 
     Balance cash() const { return equity_value; }
@@ -129,23 +130,41 @@ struct SizingBroker
     const std::unordered_map<TradeID, Trade>& trades() const { return m_trades; }
     const std::unordered_map<OrderID, Order>& orders() const { return m_orders; }
 
+    std::optional<Position> position(const Symbol& symbol) const
+    {
+        const auto it = fake_positions.find(symbol);
+        if (it == fake_positions.end()) { return std::nullopt; }
+        return it->second;
+    }
+
+    bool cancel_order(OrderID id)
+    {
+        const auto it = m_orders.find(id);
+        if (it == m_orders.end() || it->second.status != OrderStatus::Open) { return false; }
+        it->second.status = OrderStatus::Cancelled;
+        for (auto& [oid, o] : m_orders) {   // cascade to dormant children, like the broker
+            if (o.parent_id == id && o.status == OrderStatus::Open) { o.status = OrderStatus::Cancelled; }
+        }
+        return true;
+    }
+
     OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Market, OrderStatus::Open,
-                             std::nullopt, p.quantity, p.time_in_force, p.leverage });
+                             std::nullopt, p.quantity, p.time_in_force, p.leverage, p.reduce_only });
     }
     OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Limit, OrderStatus::Open,
-                             p.price, p.quantity, p.time_in_force, p.leverage });
+                             p.price, p.quantity, p.time_in_force, p.leverage, p.reduce_only });
     }
     OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt)
     {
         return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
                              OrderType::Stop, OrderStatus::Open,
-                             p.price, p.quantity, p.time_in_force, p.leverage });
+                             p.price, p.quantity, p.time_in_force, p.leverage, p.reduce_only });
     }
     void on_tick(const KLine&) {}
 
@@ -357,6 +376,115 @@ TEST(QMSignalsLeverage, MaintenanceMarginLowersLeverage)
     EXPECT_DOUBLE_EQ(s.entry_leverage(100.0, 95.0, true), 18.0);
 }
 
+// Drive the strategy over `bars` against a SizingBroker, invoking `pre_tick`
+// before each strategy tick so tests can toggle fake positions mid-run.
+template <class PreTick>
+std::vector<Order> drive_sized(QMSignalsStrategy& strat, std::vector<KLine> bars,
+                               SizingBroker& broker, PreTick&& pre_tick)
+{
+    std::vector<Order> placed;
+    broker.placed = &placed;
+    StubFeed feed;
+    feed.bars = std::move(bars);
+    Clock clock;
+    Context<SizingBroker, StubFeed> ctx{ broker, feed, clock };
+    int tick = 0;
+    while (auto ts = feed.next_timestamp()) {
+        clock.set(*ts);
+        pre_tick(tick, broker);
+        strat.on_tick(ctx);
+        feed.advance();
+        ++tick;
+    }
+    return placed;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  P8 gating: one trade at a time, cooldown, pending-entry replacement
+// ════════════════════════════════════════════════════════════════════════════
+TEST(QMSignalsGating, DoesNotFireWhilePositionIsOpen)
+{
+    QMSignalsStrategy strat;
+    SizingBroker broker;
+    broker.equity_value = 100'000.0;
+    broker.fake_positions["AAA"] = Position{ 5.0, 48.0, 1, 10.0 };   // already long
+    const auto placed = drive_sized(strat, to_klines("AAA", breakout_setup()), broker,
+                                    [](int, SizingBroker&) {});
+    EXPECT_TRUE(placed.empty());                      // in a trade -> no new bracket
+    EXPECT_FALSE(strat.last_signals("AAA").empty());  // though the scanner did fire
+}
+
+TEST(QMSignalsGating, OppositeSideSignalSuppressedNotNettedWhileInATrade)
+{
+    // A LONG breakout fires while we hold a SHORT: the gate must suppress it
+    // rather than let the "entry" silently net out the open position.
+    QMSignalsStrategy strat;
+    SizingBroker broker;
+    broker.equity_value = 100'000.0;
+    broker.fake_positions["AAA"] = Position{ -5.0, 55.0, 1, 10.0 };   // short
+    const auto placed = drive_sized(strat, to_klines("AAA", breakout_setup()), broker,
+                                    [](int, SizingBroker&) {});
+    EXPECT_TRUE(placed.empty());
+}
+
+TEST(QMSignalsGating, CooldownAfterCloseSuppressesTheSignal)
+{
+    // Position held from the start through tick 56 (which also gates the
+    // fixture's incidental parabolic_short at tick 51), gone at 57 ->
+    // cooldown(5) starts there and still has 3 bars left on the breakout
+    // signal bar (59): suppressed.
+    QMSignalsStrategy strat;
+    SizingBroker broker;
+    broker.equity_value = 100'000.0;
+    const auto placed = drive_sized(strat, to_klines("AAA", breakout_setup()), broker,
+        [](int tick, SizingBroker& b) {
+            if (tick <= 56) { b.fake_positions["AAA"] = Position{ 5.0, 48.0, 1, 10.0 }; }
+            else { b.fake_positions.erase("AAA"); }
+        });
+    EXPECT_TRUE(placed.empty());
+}
+
+TEST(QMSignalsGating, FiresAgainAfterCooldownElapses)
+{
+    // Same shape, but the close comes early and the cooldown is short: by the
+    // breakout signal bar (59) the cooldown has run out and the bracket goes out.
+    QMSignalsStrategy strat;
+    strat.cooldown_bars = 1;
+    SizingBroker broker;
+    broker.equity_value = 100'000.0;
+    const auto placed = drive_sized(strat, to_klines("AAA", breakout_setup()), broker,
+        [](int tick, SizingBroker& b) {
+            if (tick <= 51) { b.fake_positions["AAA"] = Position{ 5.0, 48.0, 1, 10.0 }; }
+            else { b.fake_positions.erase("AAA"); }
+        });
+    EXPECT_EQ(placed.size(), 3u);
+}
+
+TEST(QMSignalsGating, ReplacesStalePendingEntryOnNewSignal)
+{
+    QMSignalsStrategy strat;
+    strat.min_base_days = 0;                          // let the very next bar re-qualify
+    strat.ps_min_gain = 1e9;                          // silence the fixture's tick-51 parabolic_short
+    SizingBroker broker;
+    broker.equity_value = 100'000.0;
+    auto rows = breakout_setup();
+    rows.push_back(Row{ 51.2, 52.4, 51.0, 52.0, 2000.0 });   // second breakout bar
+    const auto placed = drive_sized(strat, to_klines("AAA", rows), broker,
+                                    [](int, SizingBroker&) {});
+
+    ASSERT_EQ(placed.size(), 6u);                     // two full brackets
+    const auto& entry1 = placed[0];
+    const auto& entry2 = placed[3];
+    // The unfilled first bracket was cancelled wholesale before the second went out.
+    EXPECT_EQ(broker.m_orders.at(entry1.id).status, OrderStatus::Cancelled);
+    EXPECT_EQ(broker.m_orders.at(placed[1].id).status, OrderStatus::Cancelled);
+    EXPECT_EQ(broker.m_orders.at(placed[2].id).status, OrderStatus::Cancelled);
+    EXPECT_EQ(broker.m_orders.at(entry2.id).status, OrderStatus::Open);
+    ASSERT_TRUE(entry1.price.has_value());
+    ASSERT_TRUE(entry2.price.has_value());
+    EXPECT_NE(*entry1.price, *entry2.price);          // fresh levels, not a duplicate
+}
+
 TEST(QMSignals, EntryOrderCarriesRiskQuantityAndComputedLeverage)
 {
     QMSignalsStrategy strat;
@@ -409,6 +537,9 @@ TEST(QMSignals, EntryOrderCarriesRiskQuantityAndComputedLeverage)
     EXPECT_NEAR(tp.quantity, expected_qty, 1e-6);
     EXPECT_DOUBLE_EQ(stop.leverage, 1.0);
     EXPECT_DOUBLE_EQ(tp.leverage, 1.0);
+    EXPECT_FALSE(entry.reduce_only);
+    EXPECT_TRUE(stop.reduce_only);                    // orphaned legs may never open
+    EXPECT_TRUE(tp.reduce_only);
     ASSERT_TRUE(stop.parent_id.has_value());
     ASSERT_TRUE(tp.parent_id.has_value());
     EXPECT_EQ(*stop.parent_id, entry.id);

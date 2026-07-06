@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 import stonks
-from stonks import OrderSide
+from stonks import OrderSide, OrderStatus
 
 
 @dataclass
@@ -118,6 +118,8 @@ class QMSignalsStrategy(stonks.Strategy):
     risk_fraction = 0.02    # fraction of equity risked per trade (stop-out loss target)
     maint_margin = 0.0      # maintenance-margin rate for the leverage calc (engine has none)
     max_leverage = 125.0    # cap on computed isolated leverage
+    # Re-entry gating
+    cooldown_bars = 5       # printed bars to sit out after a position closes
 
     # The dataset carries no tick size, so the "buffer beyond the pivot" is zero.
     MINTICK = 0.0
@@ -126,6 +128,9 @@ class QMSignalsStrategy(stonks.Strategy):
     def on_start(self, ctx):
         # The setups that fired on each symbol's last processed bar (for tests).
         self._last = {}
+        # Per-symbol re-entry gating: the resting entry OrderID (if any), whether
+        # the last look saw a position, and remaining cooldown bars.
+        self._state = {}
 
     def lookback(self) -> int:
         return max(self.base_max_len, 51, self.mom_len, self.adr_len,
@@ -152,13 +157,41 @@ class QMSignalsStrategy(stonks.Strategy):
             ts = sub["timestamp"].to_numpy()
 
             sigs = self.scan(op, hi, lo, cl, vo, ts)
-            if sigs:
+
+            # ─── Gating state: one trade at a time per symbol, plus a cooldown ──
+            st = self._state.setdefault(symbol, {"pending": None, "was_in": False, "cooldown": 0})
+            in_position = ctx.position(symbol) is not None
+            closed_since_last_look = st["was_in"] and not in_position
+            if st["pending"] is not None:
+                entry_order = ctx.order(st["pending"])
+                status = entry_order.status if entry_order is not None else OrderStatus.Cancelled
+                if status == OrderStatus.Filled:
+                    # Entered; flat again already means the round trip completed
+                    # within one bar (a same-bar stop-out).
+                    if not in_position:
+                        closed_since_last_look = True
+                    st["pending"] = None
+                elif status != OrderStatus.Open:
+                    st["pending"] = None                # rejected or cancelled; forget it
+            if closed_since_last_look:
+                st["cooldown"] = self.cooldown_bars
+            elif not in_position and st["cooldown"] > 0:
+                st["cooldown"] -= 1
+            st["was_in"] = in_position
+
+            if sigs and not in_position and st["cooldown"] == 0:
                 s = sigs[0]
                 is_long = s.stop < s.entry              # long setups stop below entry
                 # Risk-mode sizing: a stop-out loses risk_fraction of equity (no fees in this engine).
                 risk_per_unit = abs(s.entry - s.stop)
                 qty = ctx.equity() * self.risk_fraction / risk_per_unit if risk_per_unit > 0.0 else 0.0
                 if qty > 0.0:
+                    # A stale unfilled entry from an earlier signal: replace it
+                    # with the fresh levels (its bracket dies with it).
+                    if st["pending"] is not None:
+                        ctx.cancel_order(st["pending"])
+                        st["pending"] = None
+
                     entry_side = OrderSide.Buy if is_long else OrderSide.Sell
                     exit_side = OrderSide.Sell if is_long else OrderSide.Buy
                     lev = self.entry_leverage(s.entry, s.stop, is_long)
@@ -171,12 +204,15 @@ class QMSignalsStrategy(stonks.Strategy):
                     entry_id = ctx.place_stop_order(symbol=symbol, side=entry_side,
                                                     quantity=qty, price=s.entry,
                                                     leverage=lev)
-                    # Stop loss order (child of the entry)
+                    # Stop loss order (reduce-only child: an orphaned leg may never open)
                     ctx.place_stop_order(symbol=symbol, side=exit_side,
-                                         quantity=qty, price=s.stop, parent=entry_id)
-                    # Take profit order (child of the entry)
+                                         quantity=qty, price=s.stop, parent=entry_id,
+                                         reduce_only=True)
+                    # Take profit order (reduce-only child, same reason)
                     ctx.place_limit_order(symbol=symbol, side=exit_side,
-                                          quantity=qty, price=s.sell, parent=entry_id)
+                                          quantity=qty, price=s.sell, parent=entry_id,
+                                          reduce_only=True)
+                    st["pending"] = entry_id
 
             self._last[symbol] = sigs
 

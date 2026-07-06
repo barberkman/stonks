@@ -1,6 +1,7 @@
 #pragma once
 
 #include <concepts>
+#include <optional>
 #include <unordered_map>
 
 #include "stonks/core/types.h"
@@ -33,6 +34,16 @@ concept HasOnTickBar = requires(BrokerT& broker, const KLine& bar) {
 };
 
 template <class BrokerT>
+concept HasPositionQuery = requires(const BrokerT& broker, const Symbol& symbol) {
+    { broker.position(symbol) } -> std::convertible_to<std::optional<Position>>;
+};
+
+template <class BrokerT>
+concept HasCancelOrder = requires(BrokerT& broker, OrderID id) {
+    { broker.cancel_order(id) } -> std::same_as<bool>;
+};
+
+template <class BrokerT>
 concept HasTrades = requires(const BrokerT& broker) {
     { broker.trades() } -> std::convertible_to<std::unordered_map<TradeID, Trade>>;
 };
@@ -49,6 +60,8 @@ concept Broker = std::movable<BrokerT>
     && HasPlaceOrder<BrokerT>
     && HasOnTickBar<BrokerT>
     && HasTrades<BrokerT>
-    && HasOrders<BrokerT>;
+    && HasOrders<BrokerT>
+    && HasPositionQuery<BrokerT>
+    && HasCancelOrder<BrokerT>;
 
 } // namespace stonks::core

@@ -119,6 +119,7 @@ struct Order
     Quantity quantity;
     TimeInForce time_in_force;
     double leverage = 1.0;   // isolated margin: applies when this order opens a position; ignored on closes
+    bool reduce_only = false;   // may only reduce an existing position; cancelled if it would open or add
 
     auto operator<=>(const Order&) const = default;
 };
@@ -165,6 +166,7 @@ struct MarketOrderParams
     Quantity quantity;
     TimeInForce time_in_force = TimeInForce::GTC;
     double leverage = 1.0;
+    bool reduce_only = false;
 };
 
 struct LimitOrderParams
@@ -175,6 +177,7 @@ struct LimitOrderParams
     Price price;
     TimeInForce time_in_force = TimeInForce::GTC;
     double leverage = 1.0;
+    bool reduce_only = false;
 };
 
 // Stop-market order: dormant until the market touches `price` (the trigger),
@@ -190,6 +193,7 @@ struct StopOrderParams
     Price price;
     TimeInForce time_in_force = TimeInForce::GTC;
     double leverage = 1.0;
+    bool reduce_only = false;
 };
 
 inline std::ostream& operator<<(std::ostream& os, Timestamp ts)

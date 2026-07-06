@@ -222,6 +222,63 @@ TEST(ContextAdapter, PlaceOrderForwardsParentForBrackets)
     EXPECT_EQ(*placed[1].parent_id, entry);
 }
 
+TEST(ContextAdapter, PositionOrderAndCancelForwardToContext)
+{
+    StubFeed feed;
+    StubBroker broker;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    // position(): flat -> nullopt; test-set -> forwarded copy.
+    EXPECT_FALSE(adapter.position("X").has_value());
+    broker.fake_positions["X"] = core::Position{ 2.0, 101.5, 7, 4.0 };
+    const auto pos = adapter.position("X");
+    ASSERT_TRUE(pos.has_value());
+    EXPECT_DOUBLE_EQ(pos->quantity, 2.0);
+    EXPECT_DOUBLE_EQ(pos->price, 101.5);
+    EXPECT_DOUBLE_EQ(pos->leverage, 4.0);
+
+    // order(): unknown -> nullopt; placed -> status snapshot.
+    EXPECT_FALSE(adapter.order(core::OrderID{ 99 }).has_value());
+    const auto id = adapter.place_limit_order(core::LimitOrderParams{
+        .symbol = "X",
+        .side = core::OrderSide::Buy,
+        .quantity = 1.0,
+        .price = 90.0,
+    }, std::nullopt);
+    const auto snap = adapter.order(id);
+    ASSERT_TRUE(snap.has_value());
+    EXPECT_EQ(snap->status, core::OrderStatus::Open);
+
+    // cancel_order(): true once, false after (already terminal).
+    EXPECT_TRUE(adapter.cancel_order(id));
+    EXPECT_EQ(adapter.order(id)->status, core::OrderStatus::Cancelled);
+    EXPECT_FALSE(adapter.cancel_order(id));
+}
+
+TEST(ContextAdapter, PlaceOrdersForwardReduceOnly)
+{
+    StubFeed feed;
+    StubBroker broker;
+    std::vector<core::Order> placed;
+    broker.placed = &placed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    adapter.place_stop_order(core::StopOrderParams{
+        .symbol = "X",
+        .side = core::OrderSide::Sell,
+        .quantity = 1.0,
+        .price = 95.0,
+        .reduce_only = true,
+    }, std::nullopt);
+
+    ASSERT_EQ(placed.size(), 1u);
+    EXPECT_TRUE(placed[0].reduce_only);
+}
+
 TEST(ContextAdapter, MakeAdapterDeducesTemplateArgs)
 {
     StubFeed feed;

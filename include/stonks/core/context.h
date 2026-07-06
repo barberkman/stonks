@@ -30,6 +30,29 @@ public:
     Balance cash() const { return m_broker.cash(); }
     Balance equity() const { return m_broker.equity(); }
 
+    // The open position on `symbol`, or nullopt when flat.
+    std::optional<Position> position(const Symbol& symbol) const
+    {
+        return m_broker.position(symbol);
+    }
+
+    // A copy of the order as the broker last saw it (status included), or
+    // nullopt for an unknown id.
+    std::optional<Order> order(OrderID id) const
+    {
+        const auto& all = m_broker.orders();
+        const auto it = all.find(id);
+        if (it == all.end()) { return std::nullopt; }
+        return it->second;
+    }
+
+    // Cancel a still-open order and its dormant bracket children.
+    bool cancel_order(OrderID id)
+    {
+        STONKS_LOG("ctx", "ev=cancel_req id={} now={}", id, stonks::log::ts_ms(m_clock.now()));
+        return m_broker.cancel_order(id);
+    }
+
     // This tick's window: every symbol that printed at the current timestamp,
     // each with its last `count` bars (including today's). No-lookahead by
     // construction; see KLineFeed::window.

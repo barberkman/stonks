@@ -53,6 +53,8 @@ struct RecordingBroker
                              OrderType::Stop, OrderStatus::Open,
                              p.price, p.quantity, p.time_in_force });
     }
+    std::optional<Position> position(const Symbol&) const { return std::nullopt; }
+    bool cancel_order(OrderID) { return false; }
     void on_tick(const KLine&) {}
 
 private:

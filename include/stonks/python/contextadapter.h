@@ -42,6 +42,21 @@ public:
         return m_ctx.place_order(params, parent);
     }
 
+    std::optional<core::Position> position(const core::Symbol& symbol) const override
+    {
+        return m_ctx.position(symbol);
+    }
+
+    std::optional<core::Order> order(core::OrderID id) const override
+    {
+        return m_ctx.order(id);
+    }
+
+    bool cancel_order(core::OrderID id) override
+    {
+        return m_ctx.cancel_order(id);
+    }
+
 private:
     core::Context<BrokerT, DataFeedT>& m_ctx;
 };

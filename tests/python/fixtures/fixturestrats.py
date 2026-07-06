@@ -63,6 +63,28 @@ class BracketPlacing(stonks.Strategy):
         )
 
 
+class ApiProbe(stonks.Strategy):
+    """Probes the observability API through the real bindings: position() on a
+    flat book, order() status round-trip, cancel_order() semantics, and the
+    reduce_only flag. Raises (surfacing as runtime_error) on any mismatch, then
+    places one reduce-only stop marker the C++ side inspects."""
+
+    def on_tick(self, ctx):
+        from stonks import OrderStatus
+
+        assert ctx.position("X") is None
+        oid = ctx.place_limit_order(symbol="X", side=OrderSide.Buy, quantity=1.0, price=50.0)
+        o = ctx.order(oid)
+        assert o is not None and o.status == OrderStatus.Open
+        assert o.reduce_only is False
+        assert ctx.cancel_order(oid) is True
+        assert ctx.order(oid).status == OrderStatus.Cancelled
+        assert ctx.cancel_order(oid) is False
+        assert ctx.order(987654321) is None
+        ctx.place_stop_order(symbol="X", side=OrderSide.Sell, quantity=7.0, price=90.0,
+                             reduce_only=True)
+
+
 class CashAwareStrategy(stonks.Strategy):
     """Reads ctx.cash() and places a sell with that quantity. Used to verify
     the Python -> C++ -> Python query path for context state."""

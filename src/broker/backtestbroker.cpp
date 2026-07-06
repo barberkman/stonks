@@ -69,6 +69,33 @@ const std::unordered_map<core::TradeID, core::Trade>& BacktestBroker::trades() c
 
 const std::unordered_map<core::OrderID, core::Order>& BacktestBroker::orders() const { return m_orders; }
 
+std::optional<core::Position> BacktestBroker::position(const core::Symbol& symbol) const
+{
+    const auto it = m_positions.find(symbol);
+    if (it == m_positions.end()) { return std::nullopt; }
+    return it->second;
+}
+
+bool BacktestBroker::cancel_order(core::OrderID id)
+{
+    if (m_bankrupt) {
+        STONKS_LOG("broker", "ev=cancel_req id={} result=refused_bankrupt", id);
+        return false;
+    }
+    const auto it = m_orders.find(id);
+    if (it == m_orders.end() || it->second.status != core::OrderStatus::Open) {
+        STONKS_LOG("broker", "ev=cancel_req id={} result=refused_not_open", id);
+        return false;
+    }
+    std::vector<core::OrderID> to_remove;
+    it->second.status = core::OrderStatus::Cancelled;
+    to_remove.push_back(id);
+    cancel_subtree(id, to_remove);
+    prune_open_orders(to_remove);
+    STONKS_LOG("broker", "ev=cancel_req id={} result=cancelled n={}", id, to_remove.size());
+    return true;
+}
+
 core::OrderID BacktestBroker::place_order(const core::MarketOrderParams& parameters,
                                           std::optional<core::OrderID> parent)
 {
@@ -84,7 +111,8 @@ core::OrderID BacktestBroker::place_order(const core::MarketOrderParams& paramet
         std::nullopt,
         parameters.quantity,
         parameters.time_in_force,
-        parameters.leverage
+        parameters.leverage,
+        parameters.reduce_only
     });
 }
 
@@ -103,7 +131,8 @@ core::OrderID BacktestBroker::place_order(const core::LimitOrderParams& paramete
         parameters.price,
         parameters.quantity,
         parameters.time_in_force,
-        parameters.leverage
+        parameters.leverage,
+        parameters.reduce_only
     });
 }
 
@@ -122,7 +151,8 @@ core::OrderID BacktestBroker::place_order(const core::StopOrderParams& parameter
         parameters.price,
         parameters.quantity,
         parameters.time_in_force,
-        parameters.leverage
+        parameters.leverage,
+        parameters.reduce_only
     });
 }
 
@@ -239,6 +269,11 @@ void BacktestBroker::on_tick(const core::KLine& bar)
     }
 
     // Drop the terminal orders from the working set
+    prune_open_orders(to_remove);
+}
+
+void BacktestBroker::prune_open_orders(const std::vector<core::OrderID>& to_remove)
+{
     std::erase_if(m_open_orders, [&](core::OrderID id) {
         return std::ranges::find(to_remove, id) != to_remove.end();
     });
@@ -298,6 +333,22 @@ bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
         }
         break;
     }
+    }
+
+    // A reduce-only order may only shrink an existing opposite-side position.
+    // Marketable with nothing to reduce (flat book, or a same-side position):
+    // cancel it and its subtree rather than open or add.
+    if (order.reduce_only) {
+        const auto guard_it = m_positions.find(order.symbol);
+        const bool reduces = guard_it != m_positions.end()
+            && ((guard_it->second.quantity > 0.0) != (order.side == core::OrderSide::Buy));
+        if (!reduces) {
+            STONKS_LOG("broker", "ev=cancel id={} why=reduce_only_nothing_to_reduce", id);
+            order.status = core::OrderStatus::Cancelled;
+            cancel_subtree(id, to_remove);
+            to_remove.push_back(id);
+            return true;
+        }
     }
 
     // Observational state for the ev=fill log; set in the branches below.
@@ -408,12 +459,14 @@ core::OrderID BacktestBroker::register_order(core::Order order)
         std::isfinite(order.leverage) && order.leverage >= 1.0 &&
         !m_bankrupt;
 
-    // Find the parent if parent_id exist
+    // Find the parent if parent_id exist: it must be Open (bracket submitted
+    // with the entry) or Filled (protection attached to a live position).
     if (order.parent_id.has_value()) {
         auto order_it = m_orders.find(order.parent_id.value());
-        if (order_it == m_orders.end() || order_it->second.status != core::OrderStatus::Open) {
-            valid = false;
-        }
+        const bool parent_alive = order_it != m_orders.end()
+            && (order_it->second.status == core::OrderStatus::Open
+                || order_it->second.status == core::OrderStatus::Filled);
+        if (!parent_alive) { valid = false; }
     }
 
     order.status = valid ? core::OrderStatus::Open : core::OrderStatus::Rejected;
@@ -427,14 +480,16 @@ core::OrderID BacktestBroker::register_order(core::Order order)
     bool parent_ok = true;
     if (order.parent_id.has_value()) {
         const auto pit = m_orders.find(*order.parent_id);
-        parent_ok = (pit != m_orders.end() && pit->second.status == core::OrderStatus::Open);
+        parent_ok = (pit != m_orders.end()
+                     && (pit->second.status == core::OrderStatus::Open
+                         || pit->second.status == core::OrderStatus::Filled));
     }
     STONKS_LOG("broker",
-        "ev=place id={} parent={} ts={} sym={} side={} type={} qty={:.6f} price={:.4f} leverage={:.2f} status={} "
-        "qty_ok={} price_ok={} parent_ok={} leverage_ok={} bankrupt={}",
+        "ev=place id={} parent={} ts={} sym={} side={} type={} qty={:.6f} price={:.4f} leverage={:.2f} "
+        "reduce_only={} status={} qty_ok={} price_ok={} parent_ok={} leverage_ok={} bankrupt={}",
         order.id, order.parent_id.value_or(0), log::ts_ms(order.timestamp), order.symbol,
         log::side_str(order.side), log::type_str(order.type), order.quantity,
-        order.price.value_or(0.0), order.leverage, (valid ? "Open" : "Rejected"),
+        order.price.value_or(0.0), order.leverage, int(order.reduce_only), (valid ? "Open" : "Rejected"),
         int(qty_ok), int(price_ok), int(parent_ok), int(leverage_ok), int(m_bankrupt));
 #endif
 
