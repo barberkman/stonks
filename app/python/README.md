@@ -80,6 +80,128 @@ A window-based strategy (e.g. an indicator over the last N bars) would instead
 ask for `ctx.history(N)`, build a DataFrame, and `groupby("symbol")` — see the
 Context API section below.
 
+## Execution timeline — when things happen
+
+The engine ticks once per **distinct timestamp** (not once per symbol). On
+tick T, in this order:
+
+1. **The broker settles first.** Every symbol's bar at T is processed: resting
+   orders whose trigger is touched fill against bar T's OHLC; a bracket child
+   whose parent fills at T can itself fill at T (settlement runs in rounds);
+   then the per-position liquidation check runs.
+2. **Your `on_tick` runs once.** `ctx.history(n)` now includes bar T — its
+   close is the latest value you see. `ctx.position()` / `ctx.order()` reflect
+   everything that settled through T, including fills and liquidations that
+   just happened.
+3. **Orders you place are stamped T** and become eligible from bar T+1 —
+   never against bar T itself (the no-lookahead gate).
+
+In short: *decide on the close of T, execute from T+1.* A market order fills
+at exactly T+1's open. A stop or limit rests until its trigger is touched —
+GTC, forever, so a stale entry must be cancelled by you (`ctx.cancel_order`).
+There is no way to act on intrabar information: one bar is one decision point.
+
+## A managed strategy — brackets, gating, and the observability API
+
+The EMA50 sample above is fire-and-forget. A real strategy usually needs the
+full toolkit: a stop-entry, protective legs chained under it, one-trade-at-a-
+time gating, and cleanup of stale orders. This complete example runs as-is
+(drop it in `app/python/` and unit-test it with `FakeContext`); the pattern
+mirrors `qmsignals.py`, the production reference:
+
+```python
+import stonks
+from stonks import OrderSide, OrderStatus
+
+
+class BreakoutBracket(stonks.Strategy):
+    """20-bar-high breakout with a managed bracket: a stop-entry above the
+    pivot, a reduce-only stop-loss and take-profit chained under it, and
+    one-trade-at-a-time gating with a cooldown after each close."""
+
+    LOOKBACK = 20
+    RISK_FRACTION = 0.01      # fraction of equity risked per trade
+    COOLDOWN_BARS = 5
+
+    def on_start(self, ctx):
+        self.state = {}       # symbol -> {"pending", "was_in", "cooldown"}
+
+    def on_tick(self, ctx):
+        w = ctx.history(self.LOOKBACK + 1)
+        by_symbol = {}                    # rows of the long frame, per symbol
+        for i, sym in enumerate(w.symbol):
+            by_symbol.setdefault(sym, []).append(i)
+
+        for sym, rows in by_symbol.items():
+            st = self.state.setdefault(
+                sym, {"pending": None, "was_in": False, "cooldown": 0})
+
+            # ── gating: one trade at a time, cooldown after each close ──────
+            in_position = ctx.position(sym) is not None
+            closed = st["was_in"] and not in_position
+            if st["pending"] is not None:
+                entry = ctx.order(st["pending"])
+                status = entry.status if entry else OrderStatus.Cancelled
+                if status == OrderStatus.Filled:
+                    if not in_position:   # entered and exited within one bar
+                        closed = True
+                    st["pending"] = None
+                elif status != OrderStatus.Open:
+                    st["pending"] = None  # rejected or cancelled: forget it
+            if closed:
+                st["cooldown"] = self.COOLDOWN_BARS
+            elif not in_position and st["cooldown"] > 0:
+                st["cooldown"] -= 1
+            st["was_in"] = in_position
+            if in_position or st["cooldown"] > 0:
+                continue
+
+            # ── signal: close breaks the prior LOOKBACK-bar high ────────────
+            if len(rows) < self.LOOKBACK + 1:
+                continue                  # not enough history yet
+            pivot = max(float(w.high[i]) for i in rows[:-1])
+            close = float(w.close[rows[-1]])
+            if close < pivot:
+                continue
+
+            stop = pivot * 0.97           # 3% protective stop
+            target = pivot + 2.0 * (pivot - stop)
+            qty = ctx.equity() * self.RISK_FRACTION / (pivot - stop)
+
+            if st["pending"] is not None:  # stale unfilled entry: replace it
+                ctx.cancel_order(st["pending"])
+
+            entry_id = ctx.place_stop_order(symbol=sym, side=OrderSide.Buy,
+                                            quantity=qty, price=pivot)
+            ctx.place_stop_order(symbol=sym, side=OrderSide.Sell, quantity=qty,
+                                 price=stop, parent=entry_id, reduce_only=True)
+            ctx.place_limit_order(symbol=sym, side=OrderSide.Sell, quantity=qty,
+                                  price=target, parent=entry_id, reduce_only=True)
+            st["pending"] = entry_id
+```
+
+The load-bearing details, each of which prevents a class of backtest bug:
+
+- **Stop-entry, not market or limit.** A breakout entry as a *stop* fills at
+  the signal level when reached (keeping risk math anchored) and never fills
+  at all if price reverses; a market order would chase any next open, and a
+  limit below the market would wait for a retest instead of the breakout.
+- **`parent=entry_id`** keeps the protective legs dormant until the entry
+  fills, and OCO-cancels the loser when one side flattens the position.
+- **`reduce_only=True`** on every protective leg: if a leg is ever orphaned
+  (position closed some other way), it cancels itself instead of opening an
+  unmanaged position.
+- **Gate on `ctx.position()`, not your own bookkeeping.** The broker can close
+  your position without you (liquidation) — shadow ledgers desync; the query
+  never does. `ctx.order(id).status` is the only reliable way to learn a fill
+  or rejection happened.
+- **Cancel stale entries.** GTC means a never-triggered stop-entry from last
+  month is still live — and can fill in a regime that has nothing to do with
+  the signal that placed it.
+- **Optional refinement** (see `qmsignals.py`): compare the actual fill
+  (`ctx.position(sym).price`) with the planned entry and re-anchor the legs
+  proportionally when the entry gapped.
+
 ## Run inside the engine
 
 Drop your strategy in `app/python/<name>.py` and reference it in `app/main.cpp`:
@@ -131,6 +253,33 @@ def test_buys_on_uptrend():
         s.on_tick(ctx)
     assert any(o.side == OrderSide.Buy for o in ctx.orders)
 ```
+
+`FakeContext` mirrors the Context surface without simulating a market — orders
+never fill on their own. What it gives you for assertions and scenario setup:
+
+- **`ctx.orders`** — every placed order as a `FakeOrder` with `.symbol`,
+  `.side`, `.quantity`, `.price`, `.parent`, `.id`, `.leverage`,
+  `.order_type` (`"market"` / `"limit"` / `"stop"`), `.reduce_only`, and
+  `.status` (a real `OrderStatus`; starts `Open`).
+- **`ctx.positions`** — a test-settable dict: assign
+  `ctx.positions["BTCUSDT"] = FakePosition(quantity=1.0, price=100.0)` before
+  a tick to simulate holding (and delete the key to simulate a close);
+  `ctx.position(sym)` reads it. This is how you exercise gating, cooldowns,
+  and fill-reaction logic without a broker.
+- **`ctx.order(order_id)`** — looks up a placed `FakeOrder`; flip its
+  `.status` to `OrderStatus.Filled` in the test to simulate the entry filling.
+- **`ctx.cancel_order(order_id)`** — marks a still-Open order (and its
+  children, cascading like the real broker) `Cancelled`, returning `True`.
+
+`app/python/test_qmsignals.py` demonstrates all of these patterns, including
+simulating a gapped fill (set the position's `price` off the plan and the
+entry's status to `Filled`, then tick once).
+
+Fill *mechanics* (trigger touching, margin, liquidation, fees) are not
+simulated here by design — they are pinned by the C++ suite
+(`tests/core/*.cpp`) against the real broker, and whole runs are re-verified
+by `tools/verify_backtest.py`. Test your *logic* in pytest; trust the engine
+for execution.
 
 ## Context API
 
@@ -221,6 +370,39 @@ Same rules as native strategies (the broker is shared):
 
 Every archived report can be re-audited trade-by-trade against the raw bars
 with `tools/verify_backtest.py` (see its docstring).
+
+## What the engine does not support (by design, today)
+
+Don't design a strategy around these — work with the patterns above instead:
+
+- **No order modification.** To move a stop or a limit, `cancel_order()` the
+  old one and place a new one (attach it to the same filled parent if it's a
+  protective leg).
+- **GTC only.** No day orders or expiries — stale resting orders are the
+  strategy's responsibility to cancel.
+- **No adding to a position.** A same-side order against an open position is
+  rejected; an opposite-side order *reduces or closes* it (one-way netting,
+  like Binance one-way mode). One position per symbol, no hedging.
+- **No partial fills.** An order fills in full (closes clamp to what you
+  hold) or not at all.
+- **No intrabar decisions.** Strategies see completed bars only; fills inside
+  a bar follow the documented worse-of rules, not a simulated tape.
+- **Fees and margin are run configuration** (GUI setup screen /
+  `BrokerConfig`), not strategy-controlled.
+
+## Implementing a new strategy — checklist
+
+1. Create `app/python/<name>.py` with exactly one `stonks.Strategy` subclass
+   (that's what strategy discovery keys on; `test_*` files are skipped).
+   Filenames without underscores, mirroring the existing strategies.
+2. Unit-test the logic in `app/python/test_<name>.py` with `FakeContext` —
+   signals, sizing, gating, and order shape (types, parents, reduce_only).
+   Run: `app/python/.venv/bin/pytest app/python/ -q`.
+3. Run it in the engine: pick it in the GUI's setup screen (it appears by
+   discovery), or wire it in `app/main.cpp` for headless runs from the repo
+   root.
+4. Audit the run: `tools/verify_backtest.py <report.json> <parquet> [run.log]`
+   must exit CLEAN — it replays every fill independently against the raw bars.
 
 ## IDE autocomplete
 
