@@ -36,6 +36,12 @@ public:
         return m_ctx.place_order(params, parent);
     }
 
+    core::OrderID place_stop_order(core::StopOrderParams params,
+                                   std::optional<core::OrderID> parent) override
+    {
+        return m_ctx.place_order(params, parent);
+    }
+
 private:
     core::Context<BrokerT, DataFeedT>& m_ctx;
 };

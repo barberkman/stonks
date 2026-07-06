@@ -26,7 +26,12 @@ inline const char* to_string(OrderSide s)
 
 inline const char* to_string(OrderType t)
 {
-    return t == OrderType::Market ? "Market" : "Limit";
+    switch (t) {
+        case OrderType::Market: return "Market";
+        case OrderType::Limit: return "Limit";
+        case OrderType::Stop: return "Stop";
+    }
+    return "Unknown";
 }
 
 inline const char* to_string(OrderStatus s)

@@ -39,6 +39,12 @@ struct StubBroker
                              OrderType::Limit, OrderStatus::Open,
                              p.price, p.quantity, p.time_in_force, p.leverage });
     }
+    OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt)
+    {
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
+                             OrderType::Stop, OrderStatus::Open,
+                             p.price, p.quantity, p.time_in_force, p.leverage });
+    }
     void on_tick(const KLine&) {}
 
 private:

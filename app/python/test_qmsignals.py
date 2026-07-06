@@ -151,10 +151,14 @@ def test_breakout_fires_long_bracket():
 
     assert len(ctx.orders) == 3
     entry, stop, tp = ctx.orders
-    # Long bracket: Buy entry, Sell stop, Sell take-profit.
+    # Long bracket: Buy stop-entry, Sell stop-loss, Sell take-profit limit.
     assert entry.side == OrderSide.Buy and entry.price == pytest.approx(sig.entry)
     assert stop.side == OrderSide.Sell and stop.price == pytest.approx(sig.stop)
     assert tp.side == OrderSide.Sell and tp.price == pytest.approx(sig.sell)
+    # Stop orders for entry and SL (they wait for their trigger); limit for the TP.
+    assert entry.order_type == "stop"
+    assert stop.order_type == "stop"
+    assert tp.order_type == "limit"
     # The protective legs are bracketed under the entry's OrderID.
     assert entry.parent is None
     assert stop.parent == entry.id
@@ -173,10 +177,14 @@ def test_short_breakout_fires_short_bracket():
 
     assert len(ctx.orders) == 3
     entry, stop, tp = ctx.orders
-    # Short bracket: Sell entry, Buy stop, Buy take-profit.
+    # Short bracket: Sell stop-entry, Buy stop-loss, Buy take-profit limit.
     assert entry.side == OrderSide.Sell and entry.price == pytest.approx(sig.entry)
     assert stop.side == OrderSide.Buy and stop.price == pytest.approx(sig.stop)
     assert tp.side == OrderSide.Buy and tp.price == pytest.approx(sig.sell)
+    # Stop orders for entry and SL (they wait for their trigger); limit for the TP.
+    assert entry.order_type == "stop"
+    assert stop.order_type == "stop"
+    assert tp.order_type == "limit"
     # The protective legs are bracketed under the entry's OrderID.
     assert entry.parent is None
     assert stop.parent == entry.id

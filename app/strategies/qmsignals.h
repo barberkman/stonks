@@ -110,17 +110,20 @@ struct QMSignalsStrategy
                 const double qty = risk_per_unit > 0.0 ? ctx.equity() * risk_fraction / risk_per_unit : 0.0;
                 if (qty > 0.0) {
                     const double lev = entry_leverage(s.entry, s.stop, is_long);
-                    // Enter order (leverage sized so liquidation sits just past the stop)
-                    auto order_id = ctx.place_order(stonks::core::MarketOrderParams{
+                    // Stop-entry at the signal price (leverage sized so liquidation
+                    // sits just past the stop): fills at s.entry when reached, so the
+                    // risk math stays calibrated; a reversal leaves it unfilled.
+                    auto order_id = ctx.place_order(stonks::core::StopOrderParams{
                         .symbol = sym,
                         .side = is_long ? stonks::core::OrderSide::Buy
                                         : stonks::core::OrderSide::Sell,
                         .quantity = qty,
+                        .price = s.entry,
                         .leverage = lev,
                     });
 
                     // Stop loss order
-                    ctx.place_order(stonks::core::LimitOrderParams{
+                    ctx.place_order(stonks::core::StopOrderParams{
                         .symbol = sym,
                         .side = is_long ? stonks::core::OrderSide::Sell
                                         : stonks::core::OrderSide::Buy,

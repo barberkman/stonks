@@ -55,6 +55,14 @@ public:
         return m_broker.place_order(parameters, parent);
     }
 
+    OrderID place_order(const StopOrderParams& parameters, std::optional<OrderID> parent = std::nullopt)
+    {
+        STONKS_LOG("ctx", "ev=place_req type=Stop sym={} side={} qty={:.6f} price={:.4f} parent={} now={}",
+                   parameters.symbol, stonks::log::side_str(parameters.side), parameters.quantity,
+                   parameters.price, parent.value_or(0), stonks::log::ts_ms(m_clock.now()));
+        return m_broker.place_order(parameters, parent);
+    }
+
 private:
     BrokerT& m_broker;
     const DataFeedT& m_dataFeed;

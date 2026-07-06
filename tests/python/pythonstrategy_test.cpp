@@ -153,6 +153,43 @@ TEST_F(PythonStrategyTest, PythonStrategyMovableForEngineByValueConstruct)
     EXPECT_EQ(placed[0].quantity, 2.0);
 }
 
+TEST_F(PythonStrategyTest, StopAndLimitOrdersRoundTripThroughBindings)
+{
+    PythonStrategy strat{ "fixturestrats", "BracketPlacing" };
+
+    std::vector<core::Order> placed;
+    StubBroker broker;
+    broker.placed = &placed;
+    StubFeed feed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+
+    strat.on_tick(ctx);
+
+    ASSERT_EQ(placed.size(), 3u);
+    // Stop entry: trigger price and leverage forwarded, no parent.
+    EXPECT_EQ(placed[0].type, core::OrderType::Stop);
+    EXPECT_EQ(placed[0].side, core::OrderSide::Buy);
+    ASSERT_TRUE(placed[0].price.has_value());
+    EXPECT_DOUBLE_EQ(*placed[0].price, 110.0);
+    EXPECT_DOUBLE_EQ(placed[0].leverage, 5.0);
+    EXPECT_FALSE(placed[0].parent_id.has_value());
+    // Stop-loss child bracketed under the entry.
+    EXPECT_EQ(placed[1].type, core::OrderType::Stop);
+    EXPECT_EQ(placed[1].side, core::OrderSide::Sell);
+    ASSERT_TRUE(placed[1].price.has_value());
+    EXPECT_DOUBLE_EQ(*placed[1].price, 95.0);
+    EXPECT_DOUBLE_EQ(placed[1].leverage, 1.0);   // default when not specified
+    ASSERT_TRUE(placed[1].parent_id.has_value());
+    EXPECT_EQ(*placed[1].parent_id, placed[0].id);
+    // Take-profit limit child.
+    EXPECT_EQ(placed[2].type, core::OrderType::Limit);
+    ASSERT_TRUE(placed[2].price.has_value());
+    EXPECT_DOUBLE_EQ(*placed[2].price, 130.0);
+    ASSERT_TRUE(placed[2].parent_id.has_value());
+    EXPECT_EQ(*placed[2].parent_id, placed[0].id);
+}
+
 TEST_F(PythonStrategyTest, PythonCanReadContextStateInOnTick)
 {
     PythonStrategy strat{ "fixturestrats", "CashAwareStrategy" };

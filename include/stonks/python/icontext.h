@@ -32,6 +32,8 @@ public:
                                              std::optional<core::OrderID> parent) = 0;
     virtual core::OrderID place_limit_order(core::LimitOrderParams params,
                                             std::optional<core::OrderID> parent) = 0;
+    virtual core::OrderID place_stop_order(core::StopOrderParams params,
+                                           std::optional<core::OrderID> parent) = 0;
 };
 
 } // namespace stonks::python

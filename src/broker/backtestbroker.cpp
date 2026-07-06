@@ -14,8 +14,26 @@
 
 namespace stonks::broker {
 
-BacktestBroker::BacktestBroker(core::Balance initial_cash)
+namespace {
+
+// Fill order within one bar: market orders execute at the open before any
+// trigger can be touched; stops vs limits resolve per the configured policy
+// (Conservative: protective stops before profit-taking limits).
+int fill_priority(core::OrderType type, IntrabarFillPolicy policy)
+{
+    switch (type) {
+        case core::OrderType::Market: return 0;
+        case core::OrderType::Stop: return policy == IntrabarFillPolicy::Conservative ? 1 : 2;
+        case core::OrderType::Limit: return policy == IntrabarFillPolicy::Conservative ? 2 : 1;
+    }
+    return 3;
+}
+
+} // namespace
+
+BacktestBroker::BacktestBroker(core::Balance initial_cash, BrokerConfig config)
 : m_cash{ initial_cash },
+  m_config{ config },
   m_now{},
   m_next_order_id{ 1 },
   m_next_trade_id{ 1 }
@@ -89,6 +107,25 @@ core::OrderID BacktestBroker::place_order(const core::LimitOrderParams& paramete
     });
 }
 
+core::OrderID BacktestBroker::place_order(const core::StopOrderParams& parameters,
+                                          std::optional<core::OrderID> parent)
+{
+    return register_order(core::Order
+    {
+        core::OrderID{ m_next_order_id++ },
+        parent,
+        m_now,
+        parameters.symbol,
+        parameters.side,
+        core::OrderType::Stop,
+        core::OrderStatus::Open,
+        parameters.price,
+        parameters.quantity,
+        parameters.time_in_force,
+        parameters.leverage
+    });
+}
+
 void BacktestBroker::on_tick(const core::KLine& bar)
 {
     // Save current time
@@ -104,165 +141,54 @@ void BacktestBroker::on_tick(const core::KLine& bar)
     if (m_bankrupt) { return; }
 
     // Process the open orders; collect the ids that reached a terminal state
-    // (filled / rejected) and drop them from the working set afterwards.
+    // (filled / rejected / cancelled) and drop them from the working set afterwards.
     std::vector<core::OrderID> to_remove;
 
-    for (core::OrderID id : m_open_orders) {
-        // Fetch order
-        core::Order& order = m_orders.at(id);
-        if (order.status != core::OrderStatus::Open) { continue; }
-        if (order.symbol != bar.symbol) { continue; } // Only this symbol's order react to this bar
+    // Settle in rounds: a fill can arm a bracket's children (their parent is now
+    // Filled) or OCO-cancel siblings, changing who is eligible mid-bar — so
+    // re-collect candidates until a full round makes no progress. Children keep
+    // their original placement timestamps, which always precede any bar their
+    // parent can fill on, so the lookahead gate admits them from the parent's
+    // fill bar onward. Within a round, candidates fill in fill-policy order
+    // (market first, then stop/limit per the config), placement order breaking ties.
+    bool progressed = true;
+    while (progressed) {
+        progressed = false;
 
-        // Child order stays dormant until parent has filled
-        if (order.parent_id.has_value()) {
-            const auto order_it = m_orders.find(order.parent_id.value());
-            if (order_it == m_orders.end() || order_it->second.status != core::OrderStatus::Filled) {
-                continue;   // parent missing or not yet filled -> stay dormant
-            }
-        }
+        std::vector<core::OrderID> candidates;
+        for (core::OrderID id : m_open_orders) {
+            const core::Order& order = m_orders.at(id);
+            if (order.status != core::OrderStatus::Open) { continue; }
+            if (order.symbol != bar.symbol) { continue; } // Only this symbol's order react to this bar
 
-        // Lookahead gate
-        if (order.timestamp >= bar.timestamp) {
-            STONKS_LOG("broker", "ev=gate id={} why=lookahead order_ts={} bar_ts={}",
-                       id, log::ts_ms(order.timestamp), log::ts_ms(bar.timestamp));
-            continue;
-        }
-
-        // Calculate the fill price
-        core::Price price;
-        switch (order.type)
-        {
-        case core::OrderType::Market:
-            price = bar.open;
-            break;
-        case core::OrderType::Limit:
-        {
-            core::Price limit = *order.price;
-            if (order.side == core::OrderSide::Buy) {
-                if (bar.low > limit) {
-                    STONKS_LOG("broker", "ev=gate id={} why=limit_buy_no_trigger limit={:.4f} bar_low={:.4f}",
-                               id, limit, bar.low);
-                    continue; // price never reached limit
+            // Child order stays dormant until parent has filled
+            if (order.parent_id.has_value()) {
+                const auto order_it = m_orders.find(order.parent_id.value());
+                if (order_it == m_orders.end() || order_it->second.status != core::OrderStatus::Filled) {
+                    continue;   // parent missing or not yet filled -> stay dormant
                 }
-                price = std::min(limit, bar.open);
-            } else {
-                if (bar.high < limit) {
-                    STONKS_LOG("broker", "ev=gate id={} why=limit_sell_no_trigger limit={:.4f} bar_high={:.4f}",
-                               id, limit, bar.high);
-                    continue; // price never reached limit
-                }
-                price = std::max(limit, bar.open);
             }
-            break;
-        }
-        }
 
-        // Observational state for the ev=fill log; set in the branches below.
-        [[maybe_unused]] const core::Balance cash_before = m_cash;
-        [[maybe_unused]] const char* fill_kind = "";
-        [[maybe_unused]] core::Price fill_entry = 0.0;
-        [[maybe_unused]] core::Balance fill_cost = 0.0;
-        [[maybe_unused]] core::Balance fill_collateral = 0.0;
-        [[maybe_unused]] core::Balance fill_pnl = 0.0;
-        [[maybe_unused]] double fill_leverage = 1.0;
-        [[maybe_unused]] core::Quantity pos_qty_before = 0.0;
-        [[maybe_unused]] core::Quantity pos_qty_after = 0.0;
-
-        // Postiion logic
-        const auto position_it = m_positions.find(order.symbol);
-        core::Quantity filled_qty;
-        if (position_it == m_positions.end()) {
-            // No position: post the initial margin (full notional at leverage 1).
-            const core::Balance notional = order.quantity * price;
-            const core::Balance cost = notional / order.leverage;
-            if (cost > m_cash) {
-                STONKS_LOG("broker", "ev=reject id={} why=insufficient_cash cost={:.4f} cash={:.4f} leverage={:.2f}",
-                           id, cost, m_cash, order.leverage);
-                order.status = core::OrderStatus::Rejected; // Not enough cash
-                cancel_subtree(id, to_remove);              // entry died -> kill its dormant children
-                to_remove.push_back(id);
-                continue;
-            }
-            m_cash -= cost;
-            const core::Quantity qty = (order.side == core::OrderSide::Buy ? order.quantity
-                                                                           : -order.quantity);
-            m_positions[order.symbol] = core::Position{ qty, price, order.id, order.leverage };
-            filled_qty = order.quantity;
-            fill_kind = (order.side == core::OrderSide::Buy ? "open_long" : "open_short");
-            fill_entry = price;
-            fill_cost = cost;
-            fill_leverage = order.leverage;
-            pos_qty_before = 0.0;
-            pos_qty_after = qty;
-        } else {
-            // Position exist
-            core::Position& position = position_it->second;
-            const bool position_is_long = position.quantity > 0.0;
-            const bool order_is_buy = (order.side == core::OrderSide::Buy);
-
-            // Same direction as the position: we never add to a position.
-            if (position_is_long == order_is_buy) {
-                STONKS_LOG("broker", "ev=reject id={} why=same_side_add pos_qty={:.6f} order_side={}",
-                           id, position.quantity, log::side_str(order.side));
-                order.status = core::OrderStatus::Rejected;
-                cancel_subtree(id, to_remove);              // order died -> kill its dormant children
-                to_remove.push_back(id);
+            // Lookahead gate
+            if (order.timestamp >= bar.timestamp) {
+                STONKS_LOG("broker", "ev=gate id={} why=lookahead order_ts={} bar_ts={}",
+                           id, log::ts_ms(order.timestamp), log::ts_ms(bar.timestamp));
                 continue;
             }
 
-            // Opposite direction: close part or all of it.
-            const core::Price entry_at_close = position.price;
-            const core::Quantity pos_before_close = position.quantity;
-            filled_qty = std::min(order.quantity, std::abs(position.quantity));
-            const core::Balance pnl = (position_is_long ? price - position.price
-                                                        : position.price - price) * filled_qty;
-            // Return the closed slice's margin at the position's leverage — the
-            // closing order's own leverage is irrelevant here.
-            m_cash += filled_qty * position.price / position.leverage + pnl;
-            position.quantity += (position_is_long ? -filled_qty : filled_qty);
-
-            // Observational state for the ev=fill log; read before any erase below.
-            fill_kind = (position.quantity == 0.0 ? "close_full" : "close_partial");
-            fill_entry = entry_at_close;
-            fill_collateral = filled_qty * entry_at_close / position.leverage;
-            fill_pnl = pnl;
-            fill_leverage = position.leverage;
-            pos_qty_before = pos_before_close;
-            pos_qty_after = position.quantity;
-
-            if (position.quantity == 0.0) {
-                // flat -> cancel the whole bracket (all levels), keep the leg filling now.
-                cancel_subtree(position.entry_id, to_remove, id);
-                m_positions.erase(position_it);
-            }
+            candidates.push_back(id);
         }
 
-        // Recort the fill
-        order.status = core::OrderStatus::Filled;
-        STONKS_LOG("broker",
-            "ev=fill trade={} id={} ts={} sym={} side={} type={} kind={} req_qty={:.6f} fill_qty={:.6f} "
-            "price={:.4f} bar_open={:.4f} limit={:.4f} entry={:.4f} cost={:.4f} collateral={:.4f} pnl={:.4f} "
-            "leverage={:.2f} cash_before={:.4f} cash_after={:.4f} pos_before={:.6f} pos_after={:.6f}",
-            m_next_trade_id, order.id, log::ts_ms(bar.timestamp), order.symbol,
-            log::side_str(order.side), log::type_str(order.type), fill_kind,
-            order.quantity, filled_qty, price, bar.open, order.price.value_or(0.0),
-            fill_entry, fill_cost, fill_collateral, fill_pnl, fill_leverage, cash_before, m_cash,
-            pos_qty_before, pos_qty_after);
-        m_trades.try_emplace(m_next_trade_id, core::Trade{
-            m_next_trade_id, order.id, bar.timestamp, order.symbol, order.side, filled_qty, price
+        std::ranges::stable_sort(candidates, {}, [this](core::OrderID id) {
+            return fill_priority(m_orders.at(id).type, m_config.fill_policy);
         });
-        ++m_next_trade_id;
 
-        // Update timestamp orders chained to this order
-        for (auto& [c_id, c_order] : m_orders) {
-            if (c_order.parent_id == order.id && c_order.status == core::OrderStatus::Open) {
-                c_order.timestamp = bar.timestamp;
-                STONKS_LOG("broker", "ev=arm parent={} child={} new_ts={}",
-                           order.id, c_id, log::ts_ms(bar.timestamp));
-            }
+        for (core::OrderID id : candidates) {
+            // An earlier fill this round may have OCO-cancelled this order.
+            core::Order& order = m_orders.at(id);
+            if (order.status != core::OrderStatus::Open) { continue; }
+            progressed = try_fill(order, bar, to_remove) || progressed;
         }
-
-        to_remove.push_back(id);
     }
 
     // Forced closes run after the order sweep, so a resting exit that filled on
@@ -318,11 +244,167 @@ void BacktestBroker::on_tick(const core::KLine& bar)
     });
 }
 
+bool BacktestBroker::try_fill(core::Order& order, const core::KLine& bar,
+                              std::vector<core::OrderID>& to_remove)
+{
+    const core::OrderID id = order.id;
+
+    // Calculate the fill price
+    core::Price price;
+    switch (order.type)
+    {
+    case core::OrderType::Market:
+        price = bar.open;
+        break;
+    case core::OrderType::Limit:
+    {
+        core::Price limit = *order.price;
+        if (order.side == core::OrderSide::Buy) {
+            if (bar.low > limit) {
+                STONKS_LOG("broker", "ev=gate id={} why=limit_buy_no_trigger limit={:.4f} bar_low={:.4f}",
+                           id, limit, bar.low);
+                return false; // price never reached limit
+            }
+            price = std::min(limit, bar.open);
+        } else {
+            if (bar.high < limit) {
+                STONKS_LOG("broker", "ev=gate id={} why=limit_sell_no_trigger limit={:.4f} bar_high={:.4f}",
+                           id, limit, bar.high);
+                return false; // price never reached limit
+            }
+            price = std::max(limit, bar.open);
+        }
+        break;
+    }
+    case core::OrderType::Stop:
+    {
+        // Trigger on touch, fill at the trigger or worse: a gap through the
+        // trigger fills at the open (same convention as the liquidation fill).
+        core::Price trigger = *order.price;
+        if (order.side == core::OrderSide::Buy) {
+            if (bar.high < trigger) {
+                STONKS_LOG("broker", "ev=gate id={} why=stop_buy_no_trigger trigger={:.4f} bar_high={:.4f}",
+                           id, trigger, bar.high);
+                return false; // price never rose to the trigger
+            }
+            price = std::max(trigger, bar.open);
+        } else {
+            if (bar.low > trigger) {
+                STONKS_LOG("broker", "ev=gate id={} why=stop_sell_no_trigger trigger={:.4f} bar_low={:.4f}",
+                           id, trigger, bar.low);
+                return false; // price never fell to the trigger
+            }
+            price = std::min(trigger, bar.open);
+        }
+        break;
+    }
+    }
+
+    // Observational state for the ev=fill log; set in the branches below.
+    [[maybe_unused]] const core::Balance cash_before = m_cash;
+    [[maybe_unused]] const char* fill_kind = "";
+    [[maybe_unused]] core::Price fill_entry = 0.0;
+    [[maybe_unused]] core::Balance fill_cost = 0.0;
+    [[maybe_unused]] core::Balance fill_collateral = 0.0;
+    [[maybe_unused]] core::Balance fill_pnl = 0.0;
+    [[maybe_unused]] double fill_leverage = 1.0;
+    [[maybe_unused]] core::Quantity pos_qty_before = 0.0;
+    [[maybe_unused]] core::Quantity pos_qty_after = 0.0;
+
+    // Position logic
+    const auto position_it = m_positions.find(order.symbol);
+    core::Quantity filled_qty;
+    if (position_it == m_positions.end()) {
+        // No position: post the initial margin (full notional at leverage 1).
+        const core::Balance notional = order.quantity * price;
+        const core::Balance cost = notional / order.leverage;
+        if (cost > m_cash) {
+            STONKS_LOG("broker", "ev=reject id={} why=insufficient_cash cost={:.4f} cash={:.4f} leverage={:.2f}",
+                       id, cost, m_cash, order.leverage);
+            order.status = core::OrderStatus::Rejected; // Not enough cash
+            cancel_subtree(id, to_remove);              // entry died -> kill its dormant children
+            to_remove.push_back(id);
+            return true;
+        }
+        m_cash -= cost;
+        const core::Quantity qty = (order.side == core::OrderSide::Buy ? order.quantity
+                                                                       : -order.quantity);
+        m_positions[order.symbol] = core::Position{ qty, price, order.id, order.leverage };
+        filled_qty = order.quantity;
+        fill_kind = (order.side == core::OrderSide::Buy ? "open_long" : "open_short");
+        fill_entry = price;
+        fill_cost = cost;
+        fill_leverage = order.leverage;
+        pos_qty_before = 0.0;
+        pos_qty_after = qty;
+    } else {
+        // Position exist
+        core::Position& position = position_it->second;
+        const bool position_is_long = position.quantity > 0.0;
+        const bool order_is_buy = (order.side == core::OrderSide::Buy);
+
+        // Same direction as the position: we never add to a position.
+        if (position_is_long == order_is_buy) {
+            STONKS_LOG("broker", "ev=reject id={} why=same_side_add pos_qty={:.6f} order_side={}",
+                       id, position.quantity, log::side_str(order.side));
+            order.status = core::OrderStatus::Rejected;
+            cancel_subtree(id, to_remove);              // order died -> kill its dormant children
+            to_remove.push_back(id);
+            return true;
+        }
+
+        // Opposite direction: close part or all of it.
+        const core::Price entry_at_close = position.price;
+        const core::Quantity pos_before_close = position.quantity;
+        filled_qty = std::min(order.quantity, std::abs(position.quantity));
+        const core::Balance pnl = (position_is_long ? price - position.price
+                                                    : position.price - price) * filled_qty;
+        // Return the closed slice's margin at the position's leverage — the
+        // closing order's own leverage is irrelevant here.
+        m_cash += filled_qty * position.price / position.leverage + pnl;
+        position.quantity += (position_is_long ? -filled_qty : filled_qty);
+
+        // Observational state for the ev=fill log; read before any erase below.
+        fill_kind = (position.quantity == 0.0 ? "close_full" : "close_partial");
+        fill_entry = entry_at_close;
+        fill_collateral = filled_qty * entry_at_close / position.leverage;
+        fill_pnl = pnl;
+        fill_leverage = position.leverage;
+        pos_qty_before = pos_before_close;
+        pos_qty_after = position.quantity;
+
+        if (position.quantity == 0.0) {
+            // flat -> cancel the whole bracket (all levels), keep the leg filling now.
+            cancel_subtree(position.entry_id, to_remove, id);
+            m_positions.erase(position_it);
+        }
+    }
+
+    // Record the fill
+    order.status = core::OrderStatus::Filled;
+    STONKS_LOG("broker",
+        "ev=fill trade={} id={} ts={} sym={} side={} type={} kind={} req_qty={:.6f} fill_qty={:.6f} "
+        "price={:.4f} bar_open={:.4f} limit={:.4f} entry={:.4f} cost={:.4f} collateral={:.4f} pnl={:.4f} "
+        "leverage={:.2f} cash_before={:.4f} cash_after={:.4f} pos_before={:.6f} pos_after={:.6f}",
+        m_next_trade_id, order.id, log::ts_ms(bar.timestamp), order.symbol,
+        log::side_str(order.side), log::type_str(order.type), fill_kind,
+        order.quantity, filled_qty, price, bar.open, order.price.value_or(0.0),
+        fill_entry, fill_cost, fill_collateral, fill_pnl, fill_leverage, cash_before, m_cash,
+        pos_qty_before, pos_qty_after);
+    m_trades.try_emplace(m_next_trade_id, core::Trade{
+        m_next_trade_id, order.id, bar.timestamp, order.symbol, order.side, filled_qty, price
+    });
+    ++m_next_trade_id;
+
+    to_remove.push_back(id);
+    return true;
+}
+
 core::OrderID BacktestBroker::register_order(core::Order order)
 {
     const core::OrderID id = order.id;
     bool valid = order.quantity > 0.0 &&
-        ( order.type != core::OrderType::Limit || (order.price.has_value() && *order.price > 0.0) ) &&
+        ( order.type == core::OrderType::Market || (order.price.has_value() && *order.price > 0.0) ) &&
         std::isfinite(order.leverage) && order.leverage >= 1.0 &&
         !m_bankrupt;
 
@@ -339,7 +421,7 @@ core::OrderID BacktestBroker::register_order(core::Order order)
 #ifdef STONKS_LOG_ENABLED
     // Break the combined `valid` flag back into its reasons for the audit log.
     const bool qty_ok = order.quantity > 0.0;
-    const bool price_ok = order.type != core::OrderType::Limit
+    const bool price_ok = order.type == core::OrderType::Market
                           || (order.price.has_value() && *order.price > 0.0);
     const bool leverage_ok = std::isfinite(order.leverage) && order.leverage >= 1.0;
     bool parent_ok = true;

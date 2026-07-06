@@ -63,6 +63,7 @@ class FakeOrder:
     parent: Optional[int] = None   # entry OrderID this order is bracketed under
     id: Optional[int] = None       # the OrderID place_*_order handed back
     leverage: float = 1.0          # isolated-margin leverage (used when the order opens)
+    order_type: str = "market"     # which place_*_order call produced it: "market" / "limit" / "stop"
 
 
 class FakeContext:
@@ -135,7 +136,7 @@ class FakeContext:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, None, time_in_force, parent, oid, leverage)
+            FakeOrder(symbol, side, quantity, None, time_in_force, parent, oid, leverage, "market")
         )
         return oid
 
@@ -152,6 +153,23 @@ class FakeContext:
         oid = self._next_order_id
         self._next_order_id += 1
         self.orders.append(
-            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage)
+            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage, "limit")
+        )
+        return oid
+
+    def place_stop_order(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        price: float,
+        leverage: float = 1.0,
+        time_in_force: TimeInForce = TimeInForce.GTC,
+        parent: Optional[int] = None,
+    ) -> int:
+        oid = self._next_order_id
+        self._next_order_id += 1
+        self.orders.append(
+            FakeOrder(symbol, side, quantity, price, time_in_force, parent, oid, leverage, "stop")
         )
         return oid

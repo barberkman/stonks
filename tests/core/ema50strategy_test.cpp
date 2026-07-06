@@ -47,6 +47,12 @@ struct RecordingBroker
                              OrderType::Limit, OrderStatus::Open,
                              p.price, p.quantity, p.time_in_force });
     }
+    OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt)
+    {
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
+                             OrderType::Stop, OrderStatus::Open,
+                             p.price, p.quantity, p.time_in_force });
+    }
     void on_tick(const KLine&) {}
 
 private:

@@ -7,16 +7,16 @@ import "../js/format.js" as Fmt
 // `hoverX`/`hoverActive` so the row keeps its own hover/click behaviour.
 Item {
     id: cv
-    property var data: []
+    property var series: []
     property real hoverX: -1
     property bool hoverActive: false
 
     readonly property real pad: Theme.sp(4)
-    readonly property real dMin: (data && data.length) ? Math.min.apply(null, data) : 0
-    readonly property real dMax: (data && data.length) ? Math.max.apply(null, data) : 1
+    readonly property real dMin: (cv.series && cv.series.length) ? Math.min.apply(null, cv.series) : 0
+    readonly property real dMax: (cv.series && cv.series.length) ? Math.max.apply(null, cv.series) : 1
     function yOf(v) { return pad + (1 - (v - dMin) / ((dMax - dMin) || 1)) * (height - 2 * pad) }
 
-    onDataChanged: dataCanvas.requestPaint()
+    onSeriesChanged: dataCanvas.requestPaint()
     onHoverXChanged: overlay.requestPaint()
     onHoverActiveChanged: overlay.requestPaint()
 
@@ -29,7 +29,7 @@ Item {
             var ctx = getContext('2d');
             var w = width, h = height;
             ctx.clearRect(0, 0, w, h);
-            var data = cv.data;
+            var data = cv.series;
             if (!data || data.length < 2) return;
             function X(i) { return i / (data.length - 1) * w; }
 
@@ -53,7 +53,7 @@ Item {
             var ctx = getContext('2d');
             var w = width, h = height;
             ctx.clearRect(0, 0, w, h);
-            var data = cv.data;
+            var data = cv.series;
             var n = data ? data.length : 0;
             if (!cv.hoverActive || n < 2) return;
 

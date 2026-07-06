@@ -6,7 +6,7 @@ import "../js/format.js" as Fmt
 // (value + date) overlaid.
 Item {
     id: cv
-    property var data: []
+    property var series: []
     property var times: []
     property color lineColor: Theme.accent
     property bool grid: true
@@ -14,11 +14,11 @@ Item {
     // scale shared by the data line and the crosshair so they line up exactly
     readonly property real padTop: Theme.sp(12)
     readonly property real padBottom: 2
-    readonly property real dMin: (data && data.length) ? Math.min.apply(null, data) : 0
-    readonly property real dMax: (data && data.length) ? Math.max.apply(null, data) : 1
+    readonly property real dMin: (cv.series && cv.series.length) ? Math.min.apply(null, cv.series) : 0
+    readonly property real dMax: (cv.series && cv.series.length) ? Math.max.apply(null, cv.series) : 1
     function yOf(v) { return padTop + (1 - (v - dMin) / ((dMax - dMin) || 1)) * (height - padTop - padBottom) }
 
-    onDataChanged: dataCanvas.requestPaint()
+    onSeriesChanged: dataCanvas.requestPaint()
     onLineColorChanged: dataCanvas.requestPaint()
     onGridChanged: dataCanvas.requestPaint()
 
@@ -31,7 +31,7 @@ Item {
             var ctx = getContext('2d');
             var w = width, h = height;
             ctx.clearRect(0, 0, w, h);
-            var data = cv.data;
+            var data = cv.series;
             if (!data || data.length < 2) return;
             var t = cv.padTop, b = cv.padBottom;
             function X(i) { return i / (data.length - 1) * w; }
@@ -69,7 +69,7 @@ Item {
 
     LineCrosshair {
         anchors.fill: parent
-        series: cv.data
+        series: cv.series
         times: cv.times
         yOf: cv.yOf
         padTop: cv.padTop

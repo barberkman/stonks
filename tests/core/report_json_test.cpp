@@ -198,6 +198,34 @@ TEST(ReportJson, OrderEnumsAndOptionalsWithValues)
     EXPECT_DOUBLE_EQ(jo.at("leverage").get<double>(), 1.0);
 }
 
+TEST(ReportJson, StopOrderTypeSerializes)
+{
+    const Order o{
+        .id = 7,
+        .parent_id = std::nullopt,
+        .timestamp = Timestamp::from_millis(0),
+        .symbol = "BTCUSDT",
+        .side = OrderSide::Sell,
+        .type = OrderType::Stop,
+        .status = OrderStatus::Open,
+        .price = core::Price{ 95.0 },
+        .quantity = 1.0,
+        .time_in_force = TimeInForce::GTC,
+    };
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 0,
+        .trades = {},
+        .orders = { o },
+        .equity_curve = {},
+        .ending_cash = 1'000.0,
+        .ending_equity = 1'000.0,
+        .elapsed = {},
+    };
+    const auto j = serialize(in);
+    EXPECT_EQ(j.at("orders").front().at("type").get<std::string>(), "Stop");
+}
+
 TEST(ReportJson, OrderLeverageRoundTrips)
 {
     const Order o{

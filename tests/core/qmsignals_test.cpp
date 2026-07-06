@@ -141,6 +141,12 @@ struct SizingBroker
                              OrderType::Limit, OrderStatus::Open,
                              p.price, p.quantity, p.time_in_force, p.leverage });
     }
+    OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt)
+    {
+        return record(Order{ next_id, parent, Timestamp{}, p.symbol, p.side,
+                             OrderType::Stop, OrderStatus::Open,
+                             p.price, p.quantity, p.time_in_force, p.leverage });
+    }
     void on_tick(const KLine&) {}
 
 private:
@@ -383,13 +389,22 @@ TEST(QMSignals, EntryOrderCarriesRiskQuantityAndComputedLeverage)
     const double expected_lev = strat.entry_leverage(b->entry, b->stop, true);
     ASSERT_GT(expected_lev, 1.0);                // the fixture's stop is tight enough to leverage
 
-    // Entry: risk-sized quantity, market order, computed isolated leverage.
-    EXPECT_EQ(entry.type, OrderType::Market);
+    // Entry: risk-sized quantity, stop order at the signal price, computed isolated leverage.
+    EXPECT_EQ(entry.type, OrderType::Stop);
     EXPECT_EQ(entry.side, OrderSide::Buy);
+    ASSERT_TRUE(entry.price.has_value());
+    EXPECT_DOUBLE_EQ(*entry.price, b->entry);
     EXPECT_NEAR(entry.quantity, expected_qty, 1e-6);
     EXPECT_DOUBLE_EQ(entry.leverage, expected_lev);
 
-    // Protective legs: same quantity, default 1x leverage, bracketed under the entry.
+    // Protective legs: the stop-loss is a stop at s.stop, the take-profit a limit
+    // at s.sell — same quantity, default 1x leverage, bracketed under the entry.
+    EXPECT_EQ(stop.type, OrderType::Stop);
+    ASSERT_TRUE(stop.price.has_value());
+    EXPECT_DOUBLE_EQ(*stop.price, b->stop);
+    EXPECT_EQ(tp.type, OrderType::Limit);
+    ASSERT_TRUE(tp.price.has_value());
+    EXPECT_DOUBLE_EQ(*tp.price, b->sell);
     EXPECT_NEAR(stop.quantity, expected_qty, 1e-6);
     EXPECT_NEAR(tp.quantity, expected_qty, 1e-6);
     EXPECT_DOUBLE_EQ(stop.leverage, 1.0);

@@ -70,7 +70,7 @@ Column {
             x: Theme.sp(24); y: Theme.sp(68)
             width: parent.width - Theme.sp(48)
             height: Theme.fill(230)
-            data: App.equityFor(report.bt)
+            series: App.equityFor(report.bt)
             times: App.equityTimes(report.bt)
             lineColor: report.bt.retPos ? Theme.accent : Theme.negative
             grid: true
@@ -98,7 +98,7 @@ Column {
                     DrawdownChart {
                         width: parent.width
                         height: Theme.fill(110)
-                        data: App.drawdownFor(report.bt)
+                        series: App.drawdownFor(report.bt)
                         times: App.equityTimes(report.bt)
                     }
                 }
@@ -191,7 +191,7 @@ Column {
                             id: spark
                             width: perSym.cEq; height: Theme.sp(30)
                             anchors.verticalCenter: parent.verticalCenter
-                            data: App.sparkSeries(modelData.seed, modelData.bias)
+                            series: App.sparkSeries(modelData.seed, modelData.bias)
                         }
                         Item {
                             width: perSym.cRet; height: Theme.sp(56)

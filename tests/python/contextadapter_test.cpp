@@ -161,6 +161,36 @@ TEST(ContextAdapter, PlaceLimitOrderBuildsAndForwards)
     EXPECT_FALSE(placed[0].parent_id.has_value());
 }
 
+TEST(ContextAdapter, PlaceStopOrderBuildsAndForwards)
+{
+    StubFeed feed;
+    StubBroker broker;
+    std::vector<core::Order> placed;
+    broker.placed = &placed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    const core::OrderID id = adapter.place_stop_order(core::StopOrderParams{
+        .symbol = "TEST",
+        .side = core::OrderSide::Sell,
+        .quantity = 2.5,
+        .price = 95.0,
+        .leverage = 10.0,
+    }, std::nullopt);
+
+    EXPECT_EQ(id, 1u);
+    ASSERT_EQ(placed.size(), 1u);
+    EXPECT_EQ(placed[0].symbol, "TEST");
+    EXPECT_EQ(placed[0].side, core::OrderSide::Sell);
+    EXPECT_EQ(placed[0].quantity, 2.5);
+    EXPECT_EQ(placed[0].type, core::OrderType::Stop);
+    ASSERT_TRUE(placed[0].price.has_value());
+    EXPECT_EQ(*placed[0].price, 95.0);
+    EXPECT_DOUBLE_EQ(placed[0].leverage, 10.0);
+    EXPECT_FALSE(placed[0].parent_id.has_value());
+}
+
 TEST(ContextAdapter, PlaceOrderForwardsParentForBrackets)
 {
     StubFeed feed;

@@ -45,6 +45,24 @@ class RaisingStrategy:
         raise RuntimeError("boom from python")
 
 
+class BracketPlacing(stonks.Strategy):
+    """Places one order of each kind through the real bindings — a stop entry,
+    a stop-loss child, and a limit take-profit child — so the C++ side can
+    verify the pybind11 lambdas build the right params (type, price, leverage,
+    parent linkage)."""
+
+    def on_tick(self, ctx):
+        entry = ctx.place_stop_order(
+            symbol="X", side=OrderSide.Buy, quantity=2.0, price=110.0, leverage=5.0
+        )
+        ctx.place_stop_order(
+            symbol="X", side=OrderSide.Sell, quantity=2.0, price=95.0, parent=entry
+        )
+        ctx.place_limit_order(
+            symbol="X", side=OrderSide.Sell, quantity=2.0, price=130.0, parent=entry
+        )
+
+
 class CashAwareStrategy(stonks.Strategy):
     """Reads ctx.cash() and places a sell with that quantity. Used to verify
     the Python -> C++ -> Python query path for context state."""

@@ -163,15 +163,17 @@ class QMSignalsStrategy(stonks.Strategy):
                     exit_side = OrderSide.Sell if is_long else OrderSide.Buy
                     lev = self.entry_leverage(s.entry, s.stop, is_long)
 
-                    # Entry order — its id parents the protective legs, so the
-                    # broker keeps them dormant until the entry fills and then
-                    # OCO-cancels the loser once one side closes the position.
-                    entry_id = ctx.place_limit_order(symbol=symbol, side=entry_side,
-                                                     quantity=qty, price=s.entry,
-                                                     leverage=lev)
+                    # Stop-entry at the signal price — its id parents the protective
+                    # legs, so the broker keeps them dormant until the entry fills and
+                    # then OCO-cancels the loser once one side closes the position.
+                    # A stop (not limit) entry fills at s.entry when reached, keeping
+                    # the risk math calibrated; a reversal leaves it unfilled.
+                    entry_id = ctx.place_stop_order(symbol=symbol, side=entry_side,
+                                                    quantity=qty, price=s.entry,
+                                                    leverage=lev)
                     # Stop loss order (child of the entry)
-                    ctx.place_limit_order(symbol=symbol, side=exit_side,
-                                          quantity=qty, price=s.stop, parent=entry_id)
+                    ctx.place_stop_order(symbol=symbol, side=exit_side,
+                                         quantity=qty, price=s.stop, parent=entry_id)
                     # Take profit order (child of the entry)
                     ctx.place_limit_order(symbol=symbol, side=exit_side,
                                           quantity=qty, price=s.sell, parent=entry_id)

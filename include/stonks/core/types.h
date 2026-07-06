@@ -33,6 +33,7 @@ enum class OrderType : std::uint8_t
 {
     Market,
     Limit,
+    Stop,
 };
 
 enum class OrderStatus : std::uint8_t
@@ -167,6 +168,21 @@ struct MarketOrderParams
 };
 
 struct LimitOrderParams
+{
+    Symbol symbol;
+    OrderSide side;
+    Quantity quantity;
+    Price price;
+    TimeInForce time_in_force = TimeInForce::GTC;
+    double leverage = 1.0;
+};
+
+// Stop-market order: dormant until the market touches `price` (the trigger),
+// then fills like a market order at the trigger or worse — a buy-stop triggers
+// on high >= price and fills at max(price, open); a sell-stop triggers on
+// low <= price and fills at min(price, open). The gap case (open beyond the
+// trigger) fills at the open, mirroring the broker's liquidation fill.
+struct StopOrderParams
 {
     Symbol symbol;
     OrderSide side;

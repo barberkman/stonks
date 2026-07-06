@@ -77,7 +77,8 @@ PYBIND11_MODULE(_core, m)
 
     py::enum_<core::OrderType>(m, "OrderType")
         .value("Market", core::OrderType::Market)
-        .value("Limit", core::OrderType::Limit);
+        .value("Limit", core::OrderType::Limit)
+        .value("Stop", core::OrderType::Stop);
 
     py::enum_<core::TimeInForce>(m, "TimeInForce")
         .value("GTC", core::TimeInForce::GTC);
@@ -195,5 +196,34 @@ PYBIND11_MODULE(_core, m)
              py::arg("time_in_force") = core::TimeInForce::GTC,
              py::arg("parent") = std::optional<core::OrderID>{},
              "Place a limit order; returns its OrderID. Pass `parent` (an entry's "
-             "OrderID) to attach this as a bracket child.");
+             "OrderID) to attach this as a bracket child.")
+        .def("place_stop_order",
+             [](stonks_py::IContext& self,
+                core::Symbol symbol,
+                core::OrderSide side,
+                core::Quantity quantity,
+                core::Price price,
+                double leverage,
+                core::TimeInForce time_in_force,
+                std::optional<core::OrderID> parent) {
+                 return self.place_stop_order(core::StopOrderParams{
+                     std::move(symbol),
+                     side,
+                     quantity,
+                     price,
+                     time_in_force,
+                     leverage,
+                 }, parent);
+             },
+             py::arg("symbol"),
+             py::arg("side"),
+             py::arg("quantity"),
+             py::arg("price"),
+             py::arg("leverage") = 1.0,
+             py::arg("time_in_force") = core::TimeInForce::GTC,
+             py::arg("parent") = std::optional<core::OrderID>{},
+             "Place a stop-market order; returns its OrderID. Dormant until the "
+             "market touches `price`, then fills at the trigger or worse (a gap "
+             "through it fills at the open). Pass `parent` to attach it as a "
+             "bracket child.");
 }

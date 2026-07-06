@@ -39,6 +39,7 @@ struct BrokerSpy
     const std::unordered_map<OrderID, Order>& orders() const { return impl->orders(); }
     OrderID place_order(const MarketOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
     OrderID place_order(const LimitOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
+    OrderID place_order(const StopOrderParams& p, std::optional<OrderID> parent = std::nullopt) { return impl->place_order(p, parent); }
     void on_tick(const KLine& bar) { impl->on_tick(bar); }
 };
 static_assert(Broker<BrokerSpy>);

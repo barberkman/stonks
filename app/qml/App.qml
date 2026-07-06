@@ -24,7 +24,7 @@ QtObject {
     property var symbols: []               // selected symbol allowlist
     property string startDate: ""
     property string endDate: ""
-    property string startCash: "100,000"
+    property string startCash: "1,000"
 
     // --- results (populated from the controller) ---
     property var results: ({})             // runId -> full result object

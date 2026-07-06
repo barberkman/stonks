@@ -227,13 +227,11 @@ TEST(BacktestBrokerLeverage, LiquidationCancelsBracketChildren)
 {
     BacktestBroker broker{ Balance{ 1'000.0 } };
     const auto entry = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
-    const auto sl = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 95.0 }, entry);
     const auto tp = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 120.0 }, entry);
-    broker.on_tick(flat(2000, 100.0));                     // entry fills @100, legs armed, B = 90
-    // Gap below the stop's limit: a limit sell at 95 can't fill when the whole
-    // bar trades under it, so the liquidation is what flattens the position.
+    broker.on_tick(flat(2000, 100.0));                     // entry fills @100, TP armed, B = 90
+    // The whole bar trades far below the take-profit, so the liquidation is
+    // what flattens the position — and it must cancel the surviving leg.
     broker.on_tick(bar(3000, 89.0, 89.5, 88.0, 89.0));     // open 89 < B -> liquidated @89
-    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Cancelled);
     EXPECT_EQ(broker.orders().at(tp).status, OrderStatus::Cancelled);
     const auto trades = sorted_trades(broker);
     ASSERT_EQ(trades.size(), 2u);
@@ -242,21 +240,40 @@ TEST(BacktestBrokerLeverage, LiquidationCancelsBracketChildren)
     EXPECT_DOUBLE_EQ(broker.cash(), 890.0);                // margin 100 + pnl -110
 }
 
+TEST(BacktestBrokerLeverage, StopLossGapThroughPreemptsLiquidationOnTheCrashBar)
+{
+    // Same crash bar as LiquidationCancelsBracketChildren, but with a stop-loss
+    // leg: the sell-stop gaps through its 95 trigger and fills at the open in
+    // the ordinary sweep, so the position is gone before the liquidation check
+    // runs. Same economics as the liquidation, different (voluntary) mechanism.
+    BacktestBroker broker{ Balance{ 1'000.0 } };
+    const auto entry = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
+    const auto sl = broker.place_order(StopOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 95.0 }, entry);
+    broker.on_tick(flat(2000, 100.0));                     // entry fills @100, SL armed, B = 90
+    broker.on_tick(bar(3000, 89.0, 89.5, 88.0, 89.0));     // gaps under the trigger -> SL fills @89
+    EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Filled);
+    const auto trades = sorted_trades(broker);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_FALSE(trades[1].liquidation);
+    EXPECT_DOUBLE_EQ(trades[1].price, 89.0);
+    EXPECT_DOUBLE_EQ(broker.cash(), 890.0);                // margin 100 + pnl -110
+}
+
 TEST(BacktestBrokerLeverage, RestingExitFillingOnTheCrashBarPreemptsLiquidation)
 {
     BacktestBroker broker{ Balance{ 1'000.0 } };
     const auto entry = broker.place_order(MarketOrderParams{ .symbol = "X", .side = OrderSide::Buy, .quantity = 10.0, .leverage = 10.0 });
-    const auto sl = broker.place_order(LimitOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 95.0 }, entry);
+    const auto sl = broker.place_order(StopOrderParams{ .symbol = "X", .side = OrderSide::Sell, .quantity = 10.0, .price = 95.0 }, entry);
     broker.on_tick(flat(2000, 100.0));                     // entry @100, B = 90
-    // The crash bar opens above the stop, so the stop fills in the ordinary
-    // sweep (@96) and the low of 89 finds no position left to liquidate.
+    // The crash bar opens above the stop's trigger, so the stop fills in the
+    // ordinary sweep (@95) and the low of 89 finds no position left to liquidate.
     broker.on_tick(bar(3000, 96.0, 97.0, 89.0, 91.0));
     const auto trades = sorted_trades(broker);
     ASSERT_EQ(trades.size(), 2u);
     EXPECT_FALSE(trades[1].liquidation);
-    EXPECT_DOUBLE_EQ(trades[1].price, 96.0);
+    EXPECT_DOUBLE_EQ(trades[1].price, 95.0);
     EXPECT_EQ(broker.orders().at(sl).status, OrderStatus::Filled);
-    EXPECT_DOUBLE_EQ(broker.cash(), 960.0);                // margin 100 + pnl -40
+    EXPECT_DOUBLE_EQ(broker.cash(), 950.0);                // margin 100 + pnl -50
 }
 
 // --- Short liquidation --------------------------------------------------------------
