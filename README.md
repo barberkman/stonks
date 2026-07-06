@@ -22,8 +22,11 @@ ctest --test-dir build --output-on-failure
 
 ## Audit a run
 
-Every report JSON under `app/reports/` can be re-verified trade-by-trade by an
-independent Python replay of the broker rules against the raw bars:
+Every completed run — GUI or headless — archives a report JSON under
+`app/reports/`; the GUI's Backtests page restores them at startup, and
+hovering a row shows a ✕ that deletes the run and its file. Any report can be
+re-verified trade-by-trade by an independent Python replay of the broker rules
+against the raw bars:
 
 ```sh
 app/python/.venv/bin/python tools/verify_backtest.py \
@@ -34,3 +37,6 @@ The optional log capture comes from a `-DSTONKS_LOG=ON` build
 (`./build-log/app/app 2> run.log`) and is needed when the strategy cancels
 orders mid-run. Exit 0 means the replay reproduced every fill, order status,
 and equity-curve point exactly and all no-lookahead/fill-rule invariants held.
+The verifier self-configures from the report's `config` and `strategy` blocks
+(fees, margin model, gating cooldown). Its own smoke tests run with
+`app/python/.venv/bin/pytest tools/ -q`.

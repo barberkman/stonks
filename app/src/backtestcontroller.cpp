@@ -43,6 +43,7 @@ BacktestController::BacktestController(QObject* parent) : QObject{ parent }
     connect(m_worker, &BacktestWorker::resultReady, this, &BacktestController::onResult);
     connect(m_worker, &BacktestWorker::runFailed, this, &BacktestController::onFailed);
     connect(m_worker, &BacktestWorker::runCancelled, this, &BacktestController::onCancelled);
+    connect(m_worker, &BacktestWorker::archiveLoaded, this, &BacktestController::archiveLoaded);
     m_thread.start();
 
     m_pollTimer.setInterval(100);
@@ -143,6 +144,25 @@ void BacktestController::cancel()
 {
     if (!m_running) { return; }
     m_worker->requestCancel();   // atomic store; the run loop stops on its next bar
+}
+
+void BacktestController::loadArchive()
+{
+    QMetaObject::invokeMethod(m_worker, "loadArchiveImpl", Qt::QueuedConnection);
+}
+
+bool BacktestController::deleteRun(const QString& reportPath)
+{
+    // Containment: only ever delete files inside the reports directory.
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path path = fs::weakly_canonical(fs::path{ reportPath.toStdString() }, ec);
+    if (ec || path.empty()) { return false; }
+    const fs::path reports = fs::weakly_canonical(fs::path{ "app/reports" }, ec);
+    if (ec) { return false; }
+    const auto rel = path.lexically_relative(reports);
+    if (rel.empty() || rel.native().starts_with("..")) { return false; }
+    return fs::remove(path, ec) && !ec;
 }
 
 void BacktestController::poll()

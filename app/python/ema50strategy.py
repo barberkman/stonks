@@ -11,14 +11,23 @@ from stonks import OrderSide
 
 class EMA50Strategy(stonks.Strategy):
     PERIOD = 50
-    # Standard EMA smoothing factor: 2/(N+1) gives the latest bar a weight that
-    # makes the EMA's responsiveness comparable to an N-period SMA.
-    ALPHA = 2.0 / (PERIOD + 1)
     # Fraction of current account equity committed to each new position.
     POSITION_FRACTION = 0.01
 
+    # GUI-editable parameters (defaults live on the attributes above).
+    params = {
+        "PERIOD": stonks.Param("EMA lookback window", unit="bars"),
+        "POSITION_FRACTION": stonks.Param("fraction of equity committed per position"),
+    }
+
     def on_start(self, ctx):
         self.states = {}
+        # Standard EMA smoothing factor: 2/(N+1) gives the latest bar a weight
+        # that makes the EMA's responsiveness comparable to an N-period SMA.
+        # Computed here (not as a class attribute) so a per-run override of
+        # PERIOD is reflected — a value baked at class-definition time would go
+        # stale the moment PERIOD is overridden post-construction.
+        self.alpha = 2.0 / (self.PERIOD + 1)
 
     def on_tick(self, ctx):
         # One tick per timestamp: loop the symbols that printed today and run the
@@ -42,7 +51,7 @@ class EMA50Strategy(stonks.Strategy):
                     continue
                 state["ema"] = state["seed_sum"] / self.PERIOD
             else:
-                state["ema"] = self.ALPHA * close + (1.0 - self.ALPHA) * state["ema"]
+                state["ema"] = self.alpha * close + (1.0 - self.alpha) * state["ema"]
 
             # Enter long on an upside crossover; flat-only means we never short on the downside.
             if close > state["ema"] and state["held_quantity"] == 0.0:

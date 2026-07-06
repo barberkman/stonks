@@ -223,6 +223,130 @@ TEST(ReportJson, TradeFeeTotalFeesAndConfigSerialize)
     EXPECT_FALSE(j.at("config").at("isolated_loss_cap").get<bool>());
 }
 
+TEST(ReportJson, ReportInputRoundTripsThroughJson)
+{
+    // Serialize a fully-populated input and parse it back: the raw materials
+    // (trades / orders / equity curve) must reproduce exactly, and the config /
+    // strategy / run blocks field-for-field. This is what lets a later session
+    // restore archived runs into the GUI.
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 42,
+        .trades = {
+            Trade{ 1, 1, Timestamp::from_millis(1'700'000'000'123), "BTCUSDT",
+                   OrderSide::Buy, 0.5, 60'273.5, false, 0.25 },
+            Trade{ 2, 3, Timestamp::from_millis(1'700'086'400'000), "BTCUSDT",
+                   OrderSide::Sell, 0.5, 61'000.0, true, 0.3 },
+        },
+        .orders = {
+            Order{ 1, std::nullopt, Timestamp::from_millis(1'699'913'600'000), "BTCUSDT",
+                   OrderSide::Buy, OrderType::Stop, OrderStatus::Filled,
+                   core::Price{ 60'273.5 }, 0.5, TimeInForce::GTC, 33.0, false },
+            Order{ 2, core::OrderID{ 1 }, Timestamp::from_millis(1'699'913'600'000), "BTCUSDT",
+                   OrderSide::Sell, OrderType::Limit, OrderStatus::Cancelled,
+                   std::nullopt, 0.5, TimeInForce::GTC, 1.0, true },
+        },
+        .equity_curve = {
+            EquityPoint{ Timestamp::from_millis(1'700'000'000'123), 1'000.0 },
+            EquityPoint{ Timestamp::from_millis(1'700'086'400'000), 1'011.5 },
+        },
+        .ending_cash = 1'011.5,
+        .ending_equity = 1'011.5,
+        .elapsed = std::chrono::milliseconds{ 1234 },
+        .config = broker::BrokerConfig{ .maker_fee_bps = 2.0, .taker_fee_bps = 5.0,
+                                        .isolated_loss_cap = true },
+        .strategy = StrategyRunInfo{ "qmsignals", "QMSignalsStrategy",
+                                     { { "risk_fraction", 0.03 } } },
+        .run = RunMeta{ "QM Signals", "app/data/binance_1d.parquet", "binance_1d",
+                        "2024-01-01", "2026-01-30", { "BTCUSDT", "ETHUSDT" } },
+    };
+    const auto j = serialize(in);
+    const ReportInput back = report_input_from_json(j);
+
+    EXPECT_EQ(back.trades, in.trades);                 // Trade has operator<=>
+    EXPECT_EQ(back.orders, in.orders);
+    EXPECT_EQ(back.equity_curve, in.equity_curve);
+    EXPECT_DOUBLE_EQ(back.starting_cash, 1'000.0);
+    EXPECT_EQ(back.bars_processed, 42u);
+    EXPECT_DOUBLE_EQ(back.ending_cash, 1'011.5);
+    EXPECT_DOUBLE_EQ(back.ending_equity, 1'011.5);
+    const double elapsed_ms = std::chrono::duration<double, std::milli>{ back.elapsed }.count();
+    EXPECT_NEAR(elapsed_ms, 1234.0, 1e-6);
+    EXPECT_DOUBLE_EQ(back.config.taker_fee_bps, 5.0);
+    EXPECT_TRUE(back.config.isolated_loss_cap);
+    EXPECT_EQ(back.strategy.module, "qmsignals");
+    EXPECT_DOUBLE_EQ(back.strategy.params.at("risk_fraction"), 0.03);
+    EXPECT_EQ(back.run.display, "QM Signals");
+    EXPECT_EQ(back.run.data_file, "app/data/binance_1d.parquet");
+    EXPECT_EQ(back.run.start, "2024-01-01");
+    EXPECT_EQ(back.run.symbols, (std::vector<std::string>{ "BTCUSDT", "ETHUSDT" }));
+}
+
+TEST(ReportJson, ReportInputFromJsonToleratesOldArchives)
+{
+    // A pre-feature archive: no fee on trades, no reduce_only on orders, no
+    // strategy/run blocks. Parsing must default everything sensibly.
+    const nlohmann::json j{
+        { "metrics", { { "starting_cash", 500.0 }, { "ending_cash", 510.0 } } },
+        { "trades", { { { "id", 1 }, { "order_id", 1 },
+                        { "timestamp", "2024-01-01T00:00:00.000Z" }, { "symbol", "X" },
+                        { "side", "Buy" }, { "quantity", 1.0 }, { "price", 100.0 },
+                        { "liquidation", false } } } },
+        { "orders", { { { "id", 1 }, { "parent_id", nullptr },
+                        { "timestamp", "2024-01-01T00:00:00.000Z" }, { "symbol", "X" },
+                        { "side", "Buy" }, { "type", "Market" }, { "status", "Filled" },
+                        { "price", nullptr }, { "quantity", 1.0 },
+                        { "time_in_force", "GTC" } } } },
+    };
+    const ReportInput back = report_input_from_json(j);
+    ASSERT_EQ(back.trades.size(), 1u);
+    EXPECT_DOUBLE_EQ(back.trades[0].fee, 0.0);
+    ASSERT_EQ(back.orders.size(), 1u);
+    EXPECT_FALSE(back.orders[0].reduce_only);
+    EXPECT_DOUBLE_EQ(back.orders[0].leverage, 1.0);
+    EXPECT_DOUBLE_EQ(back.ending_equity, 510.0);       // falls back to ending_cash
+    EXPECT_TRUE(back.strategy.module.empty());
+    EXPECT_TRUE(back.run.data_file.empty());
+}
+
+TEST(ReportJson, StrategyKeyIncludesModuleClassAndParams)
+{
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 0,
+        .trades = {},
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 1'000.0,
+        .ending_equity = 1'000.0,
+        .elapsed = {},
+        .strategy = StrategyRunInfo{ "qmsignals", "QMSignalsStrategy",
+                                     { { "risk_fraction", 0.03 }, { "cooldown_bars", 3.0 } } },
+    };
+    const auto j = serialize(in);
+    EXPECT_EQ(j.at("strategy").at("module").get<std::string>(), "qmsignals");
+    EXPECT_EQ(j.at("strategy").at("class").get<std::string>(), "QMSignalsStrategy");
+    EXPECT_DOUBLE_EQ(j.at("strategy").at("params").at("risk_fraction").get<double>(), 0.03);
+    EXPECT_DOUBLE_EQ(j.at("strategy").at("params").at("cooldown_bars").get<double>(), 3.0);
+}
+
+TEST(ReportJson, StrategyKeyDefaultsToEmptyWhenNotProvided)
+{
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 0,
+        .trades = {},
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 1'000.0,
+        .ending_equity = 1'000.0,
+        .elapsed = {},
+    };
+    const auto j = serialize(in);
+    EXPECT_EQ(j.at("strategy").at("module").get<std::string>(), "");
+    EXPECT_TRUE(j.at("strategy").at("params").empty());
+}
+
 TEST(ReportJson, StopOrderTypeSerializes)
 {
     const Order o{

@@ -40,12 +40,19 @@ public:
     Q_INVOKABLE void run(const QVariantMap& params);
     Q_INVOKABLE void cancel();
 
+    // Restore archived runs from app/reports/ (async; archiveLoaded fires on
+    // the GUI thread when the worker finishes rebuilding them).
+    Q_INVOKABLE void loadArchive();
+    // Delete an archived report file. Refuses paths outside app/reports/.
+    Q_INVOKABLE bool deleteRun(const QString& reportPath);
+
 Q_SIGNALS:
     void progressChanged();
     void barsDoneChanged();
     void runningChanged();
     void finished(QVariantMap result);
     void failed(QString message);
+    void archiveLoaded(QVariantList runs);
 
 private Q_SLOTS:
     void onResult(QVariantMap result);

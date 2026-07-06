@@ -1,0 +1,82 @@
+// discover_strategies() against the test fixtures directory: single-class
+// modules resolve (with their declared param specs), ambiguous modules are
+// skipped, and paramless strategies ship an empty spec vector.
+
+#include <algorithm>
+#include <cstdlib>
+
+#include <gtest/gtest.h>
+
+#include "stonks/python/embeddedpython.h"
+
+#include "strategies/strategydiscovery.h"
+
+namespace {
+
+using stonks::app::StrategyInfo;
+using stonks::app::discover_strategies;
+
+void ensure_python_setup()
+{
+    ::setenv("STONKS_VENV", STONKS_VENV_DIR, 0);
+    static stonks::python::EmbeddedPython python_handle;
+    static const bool paths_added = []() {
+        stonks::python::EmbeddedPython::add_sys_path(STONKS_PYTHON_PACKAGE_DIR);
+        stonks::python::EmbeddedPython::add_sys_path(STONKS_TEST_FIXTURES_DIR);
+        return true;
+    }();
+    (void)python_handle;
+    (void)paths_added;
+}
+
+class StrategyDiscoveryTest : public ::testing::Test
+{
+protected:
+    void SetUp() override { ensure_python_setup(); }
+};
+
+const StrategyInfo* find(const std::vector<StrategyInfo>& all, const std::string& module)
+{
+    const auto it = std::ranges::find(all, module, &StrategyInfo::module);
+    return it == all.end() ? nullptr : &*it;
+}
+
+TEST_F(StrategyDiscoveryTest, ParamDeclaringStrategyExposesSpecs)
+{
+    const auto all = discover_strategies(STONKS_TEST_FIXTURES_DIR);
+    const auto* info = find(all, "paramfixture");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->cls, "ParamFixture");
+
+    ASSERT_EQ(info->params.size(), 3u);          // declaration order preserved
+    EXPECT_EQ(info->params[0].name, "risk");
+    EXPECT_DOUBLE_EQ(info->params[0].default_value, 0.05);
+    EXPECT_EQ(info->params[0].type_name, "float");
+    EXPECT_EQ(info->params[0].doc, "risk per trade");
+    EXPECT_EQ(info->params[0].unit, "%");
+    EXPECT_EQ(info->params[1].name, "lookback");
+    EXPECT_DOUBLE_EQ(info->params[1].default_value, 30.0);
+    EXPECT_EQ(info->params[1].type_name, "int");
+    EXPECT_EQ(info->params[2].name, "use_trend");
+    EXPECT_DOUBLE_EQ(info->params[2].default_value, 0.0);   // False -> 0
+    EXPECT_EQ(info->params[2].type_name, "bool");
+}
+
+TEST_F(StrategyDiscoveryTest, NonDeclaringStrategyHasEmptyParamsVector)
+{
+    const auto all = discover_strategies(STONKS_TEST_FIXTURES_DIR);
+    const auto* info = find(all, "noparamfixture");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->cls, "NoParamFixture");
+    EXPECT_TRUE(info->params.empty());
+}
+
+TEST_F(StrategyDiscoveryTest, AmbiguousModuleStillSkipped)
+{
+    // fixturestrats.py defines many Strategy subclasses: the resolver must
+    // keep treating that as ambiguous under the new tuple-returning shape.
+    const auto all = discover_strategies(STONKS_TEST_FIXTURES_DIR);
+    EXPECT_EQ(find(all, "fixturestrats"), nullptr);
+}
+
+} // namespace

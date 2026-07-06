@@ -172,6 +172,30 @@ def test_breakout_fires_long_bracket():
     assert sig.stop < sig.entry < sig.sell
 
 
+def test_setup_select_defaults_to_all():
+    # Index 0 is the additive default: scan runs every setup (see the
+    # all-mode coverage in test_breakout_fires_long_bracket).
+    assert QMSignalsStrategy().setup_select == 0
+
+
+def test_setup_select_keeps_only_the_chosen_setup():
+    s = QMSignalsStrategy()
+    s.setup_select = 1                          # breakout only
+    ctx, s = _run(_breakout_bars(), s)
+
+    assert [x.setup for x in s.last_signals("TEST")] == ["breakout"]
+    assert len(ctx.orders) == 3                 # the full bracket still goes out
+
+
+def test_setup_select_suppresses_non_matching_setup():
+    s = QMSignalsStrategy()
+    s.setup_select = 2                          # short_breakout only
+    ctx, s = _run(_breakout_bars(), s)
+
+    assert s.last_signals("TEST") == []         # breakout scanner never runs
+    assert ctx.orders == []
+
+
 def test_short_breakout_fires_short_bracket():
     ctx, s = _run(_short_breakout_bars())
 
@@ -296,6 +320,23 @@ def test_reanchors_bracket_when_entry_fill_gaps_past_the_plan():
     assert new_sl.price == pytest.approx(sl.price * 1.03)
     assert new_tp.price == pytest.approx(tp.price * 1.03)
     assert new_sl.quantity == pytest.approx(entry.quantity)
+
+
+def test_params_dict_matches_curated_attributes():
+    from stonks import param_specs
+
+    specs = param_specs(QMSignalsStrategy)
+    assert [s["name"] for s in specs] == [
+        "setup_select", "risk_fraction", "target_rr", "max_leverage",
+        "cooldown_bars", "adr_stop_mult", "min_adr",
+    ]
+    by_name = {s["name"]: s for s in specs}
+    for name, spec in by_name.items():
+        assert spec["default"] == getattr(QMSignalsStrategy, name)
+    assert all(by_name[n]["type"] == "int" for n in ("setup_select", "cooldown_bars"))
+    assert all(by_name[n]["type"] == "float"
+               for n in ("risk_fraction", "target_rr", "max_leverage",
+                         "adr_stop_mult", "min_adr"))
 
 
 def test_entry_leverage_formula():

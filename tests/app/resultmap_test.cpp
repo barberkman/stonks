@@ -64,6 +64,30 @@ QVariantMap build_drill()
 
 } // namespace
 
+TEST(BuildResult, StrategyParamsShippedToResult)
+{
+    const app::ReportInput input{
+        1000.0, 0, {}, {}, {}, 1000.0, 1000.0, std::chrono::nanoseconds{ 0 },
+    };
+    const app::ReportMetrics metrics = app::compute_metrics(input);
+    QVariantMap params;
+    params["risk_fraction"] = 0.03;
+    const QVariantMap result = app::build_result(app::RunConfig{ "1", "Test", "data", params },
+                                                 input, metrics, {}, 252.0);
+    EXPECT_DOUBLE_EQ(result["strategyParams"].toMap()["risk_fraction"].toDouble(), 0.03);
+}
+
+TEST(BuildResult, StrategyParamsEmptyWhenRunConfigOmitsThem)
+{
+    const app::ReportInput input{
+        1000.0, 0, {}, {}, {}, 1000.0, 1000.0, std::chrono::nanoseconds{ 0 },
+    };
+    const app::ReportMetrics metrics = app::compute_metrics(input);
+    const QVariantMap result = app::build_result(app::RunConfig{ "1", "Test", "data" },
+                                                 input, metrics, {}, 252.0);
+    EXPECT_TRUE(result["strategyParams"].toMap().isEmpty());
+}
+
 TEST(BuildResult, CandlesAreColumnarAndFullResolution)
 {
     const QVariantMap candles = build_drill()["candles"].toMap();

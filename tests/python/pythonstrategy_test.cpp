@@ -155,6 +155,94 @@ TEST_F(PythonStrategyTest, PythonStrategyMovableForEngineByValueConstruct)
     EXPECT_EQ(placed[0].quantity, 2.0);
 }
 
+TEST_F(PythonStrategyTest, OverridesAppliedAndCoercedToDeclaredTypes)
+{
+    PythonStrategy strat{ "fixturestrats", "ParamStrategy",
+                          { { "risk_fraction", 0.03 }, { "cooldown_bars", 3.0 }, { "use_filter", 0.0 } } };
+
+    std::vector<core::Order> placed;
+    StubBroker broker;
+    broker.placed = &placed;
+    StubFeed feed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    strat.on_tick(ctx);
+
+    ASSERT_EQ(placed.size(), 3u);
+    EXPECT_EQ(placed[0].symbol, "risk_fraction:float");   // stayed a float
+    EXPECT_DOUBLE_EQ(placed[0].quantity, 0.03);
+    EXPECT_EQ(placed[1].symbol, "cooldown_bars:int");     // coerced back to int
+    EXPECT_DOUBLE_EQ(placed[1].quantity, 3.0);
+    EXPECT_EQ(placed[2].symbol, "use_filter:bool");       // coerced back to bool
+    EXPECT_DOUBLE_EQ(placed[2].quantity, 0.0);            // 0.0 -> False
+}
+
+TEST_F(PythonStrategyTest, NoOverridesLeavesDeclaredDefaults)
+{
+    PythonStrategy strat{ "fixturestrats", "ParamStrategy" };
+
+    std::vector<core::Order> placed;
+    StubBroker broker;
+    broker.placed = &placed;
+    StubFeed feed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    strat.on_tick(ctx);
+
+    ASSERT_EQ(placed.size(), 3u);
+    EXPECT_EQ(placed[0].symbol, "risk_fraction:float");
+    EXPECT_DOUBLE_EQ(placed[0].quantity, 0.02);
+    EXPECT_EQ(placed[1].symbol, "cooldown_bars:int");
+    EXPECT_DOUBLE_EQ(placed[1].quantity, 5.0);
+    EXPECT_EQ(placed[2].symbol, "use_filter:bool");
+    EXPECT_DOUBLE_EQ(placed[2].quantity, 1.0);            // default True
+}
+
+TEST_F(PythonStrategyTest, UnknownOverrideKeyThrows)
+{
+    // CallRecording declares no params: any override key is unknown.
+    try {
+        PythonStrategy strat{ "fixturestrats", "CallRecording", { { "not_a_param", 1.0 } } };
+        FAIL() << "expected std::runtime_error";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string{ e.what() }.find("not_a_param"), std::string::npos);
+    }
+}
+
+TEST_F(PythonStrategyTest, BoolCoercionTreatsAnyNonzeroAsTrue)
+{
+    PythonStrategy strat{ "fixturestrats", "ParamStrategy", { { "use_filter", 2.5 } } };
+
+    std::vector<core::Order> placed;
+    StubBroker broker;
+    broker.placed = &placed;
+    StubFeed feed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    strat.on_tick(ctx);
+
+    ASSERT_EQ(placed.size(), 3u);
+    EXPECT_EQ(placed[2].symbol, "use_filter:bool");
+    EXPECT_DOUBLE_EQ(placed[2].quantity, 1.0);
+}
+
+TEST_F(PythonStrategyTest, IntCoercionTruncatesTowardZero)
+{
+    PythonStrategy strat{ "fixturestrats", "ParamStrategy", { { "cooldown_bars", 3.9 } } };
+
+    std::vector<core::Order> placed;
+    StubBroker broker;
+    broker.placed = &placed;
+    StubFeed feed;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };
+    strat.on_tick(ctx);
+
+    ASSERT_EQ(placed.size(), 3u);
+    EXPECT_EQ(placed[1].symbol, "cooldown_bars:int");
+    EXPECT_DOUBLE_EQ(placed[1].quantity, 3.0);            // 3.9 truncates, not rounds
+}
+
 TEST_F(PythonStrategyTest, ObservabilityApiRoundTripsThroughBindings)
 {
     PythonStrategy strat{ "fixturestrats", "ApiProbe" };

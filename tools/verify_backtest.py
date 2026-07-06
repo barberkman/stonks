@@ -70,6 +70,16 @@ STARTING_CASH = report["metrics"]["starting_cash"]
 assert CFG.get("fill_policy", "Conservative") == "Conservative", \
     "this verifier models the Conservative intrabar fill policy only"
 
+# The gating audit's cooldown: the report's own strategy params win when
+# present (self-configuring, like the broker knobs); otherwise the CLI flag.
+STRATEGY_PARAMS = report.get("strategy", {}).get("params", {})
+if "cooldown_bars" in STRATEGY_PARAMS:
+    COOLDOWN_BARS = int(STRATEGY_PARAMS["cooldown_bars"])
+    print(f"cooldown-bars audit setting: {COOLDOWN_BARS} (from report)")
+else:
+    COOLDOWN_BARS = args.cooldown_bars
+    print(f"cooldown-bars audit setting: {COOLDOWN_BARS} (CLI default)")
+
 
 def fee_of(notional, maker):
     return notional * (MAKER_BPS if maker else TAKER_BPS) / 10_000.0 + FEE_PER_FILL
@@ -448,9 +458,9 @@ if not args.skip_gating:
         if closes_before:
             last_close_ts = max(closes_before)
             gap = printed_index[sym][placed] - printed_index[sym][last_close_ts]
-            if gap < args.cooldown_bars:
+            if gap < COOLDOWN_BARS:
                 flag("gate-cooldown", f"entry {oid} on {sym} placed {gap} printed bars after "
-                                      f"the close at {last_close_ts} (cooldown {args.cooldown_bars})")
+                                      f"the close at {last_close_ts} (cooldown {COOLDOWN_BARS})")
     inject_order = sorted(entry_ids, key=lambda i: (strategy_orders[i]["ts_ms"], i))
     for idx, oid in enumerate(inject_order):
         o = strategy_orders[oid]

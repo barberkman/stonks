@@ -29,6 +29,20 @@ Column {
         }
         return out;
     }
+    function paramRows() {
+        var p = (bt && bt.strategyParams) ? bt.strategyParams : {};
+        var out = [];
+        // QVariantMap alphabetizes; the discovery specs recover declaration order.
+        var specs = App.paramSpecsByDisplay(bt.strategy);
+        if (specs.length) {
+            for (var i = 0; i < specs.length; i++) {
+                if (specs[i].name in p) { out.push({ label: specs[i].name, value: String(p[specs[i].name]) }); }
+            }
+        } else {
+            for (var k in p) { out.push({ label: k, value: String(p[k]) }); }
+        }
+        return out;
+    }
 
     // --- 1. metric cells ---
     Item {
@@ -119,6 +133,33 @@ Column {
                     StatCell { label: "PROFIT FACTOR"; value: report.bt.pf }
                     StatCell { label: "ELAPSED"; value: report.bt.elapsed }
                     StatCell { label: "PER BAR"; value: report.bt.perbar }
+                }
+            }
+        }
+    }
+
+    // --- 3b. strategy parameters (the run's effective values) ---
+    Item {
+        width: report.width
+        visible: report.paramRows().length > 0
+        implicitHeight: visible ? (paramsCol.implicitHeight + Theme.sp(40)) : 0
+        Column {
+            id: paramsCol
+            x: Theme.sp(24); y: Theme.sp(20)
+            width: parent.width - Theme.sp(48)
+            spacing: Theme.sp(16)
+            Text { text: "STRATEGY PARAMETERS"; color: Theme.t4; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 0.8 * Theme.scale }
+            Grid {
+                columns: 4
+                rowSpacing: Theme.sp(16)
+                columnSpacing: Theme.sp(22)
+                Repeater {
+                    model: report.paramRows()
+                    delegate: StatCell {
+                        required property var modelData
+                        label: modelData.label.toUpperCase()
+                        value: modelData.value
+                    }
                 }
             }
         }

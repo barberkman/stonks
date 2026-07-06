@@ -148,7 +148,7 @@ The repo root `CLAUDE.md` is the source of truth. The points that bite strategy 
 
 See `ema50strategy.h` in this folder for a minimal fire-and-forget example, and `qmsignals.h` for the full managed pattern: brackets, one-trade-at-a-time gating with a cooldown, stale-entry replacement, and gap re-anchoring off `position()->price`.
 
-Python-authored strategies use `pythonstrategy.h`, which loads a user-supplied Python class by module path. Sample strategies live in `app/python/`; the venv used at runtime is `app/python/.venv`. See `app/python/README.md` for the Python-side authoring story (same broker, same semantics, including a complete managed-bracket example).
+Python-authored strategies use `pythonstrategy.h`, which loads a user-supplied Python class by module path. Sample strategies live in `app/python/`; the venv used at runtime is `app/python/.venv`. See `app/python/README.md` for the Python-side authoring story (same broker, same semantics, including a complete managed-bracket example). GUI-editable parameter declarations (`params` + `stonks.Param`) are a Python-only feature — C++ strategies keep compile-time fields set in `app/main.cpp`.
 
 ## After writing a strategy
 

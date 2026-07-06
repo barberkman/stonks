@@ -202,6 +202,40 @@ The load-bearing details, each of which prevents a class of backtest bug:
   (`ctx.position(sym).price`) with the planned entry and re-anchor the legs
   proportionally when the entry gapped.
 
+## GUI-editable parameters
+
+Declare which class attributes the setup screen may override per run. The
+attribute stays the single source of truth for the default value and its type;
+`params` adds exposure and labels:
+
+```python
+class BreakoutBracket(stonks.Strategy):
+    LOOKBACK = 20
+    RISK_FRACTION = 0.01
+    COOLDOWN_BARS = 5
+
+    params = {
+        "LOOKBACK": stonks.Param("bars in the breakout pivot", unit="bars"),
+        "RISK_FRACTION": stonks.Param("fraction of equity risked per trade"),
+        "COOLDOWN_BARS": stonks.Param("bars to sit out after a close", unit="bars"),
+    }
+```
+
+- Supported types: float, int, bool — inferred from the attribute's value.
+- The GUI renders the fields automatically (docs become labels, units become
+  suffixes, declaration order is preserved). No UI code, for any strategy, ever.
+- Chosen values are applied to the instance **before `on_start` runs** — keep
+  reading them via `self.<name>` as usual. Derive dependent values in
+  `on_start`, not at class-definition time, or they go stale under an override
+  (see `ema50strategy.py`, which computes `self.alpha` from `self.PERIOD` in
+  `on_start` for exactly this reason).
+- An override for an undeclared name is a hard error at run start; a broken
+  `params` dict (typo'd attribute, unsupported type) silently drops the
+  strategy from the discovery list, like an import failure.
+- The effective values are stamped into the run's archived report (the JSON's
+  `strategy` block) and shown on the report tab — every run records exactly
+  what it ran with. `stonks.param_specs(cls)` returns the spec for tests.
+
 ## Run inside the engine
 
 Drop your strategy in `app/python/<name>.py` and reference it in `app/main.cpp`:
@@ -395,14 +429,19 @@ Don't design a strategy around these — work with the patterns above instead:
 1. Create `app/python/<name>.py` with exactly one `stonks.Strategy` subclass
    (that's what strategy discovery keys on; `test_*` files are skipped).
    Filenames without underscores, mirroring the existing strategies.
-2. Unit-test the logic in `app/python/test_<name>.py` with `FakeContext` —
-   signals, sizing, gating, and order shape (types, parents, reduce_only).
-   Run: `app/python/.venv/bin/pytest app/python/ -q`.
-3. Run it in the engine: pick it in the GUI's setup screen (it appears by
+2. Declare the knobs a user should be able to tune in `params` (see
+   "GUI-editable parameters" above) — they appear in the setup screen and the
+   report automatically.
+3. Unit-test the logic in `app/python/test_<name>.py` with `FakeContext` —
+   signals, sizing, gating, order shape (types, parents, reduce_only), and
+   the `params` spec. Run: `app/python/.venv/bin/pytest app/python/ -q`.
+4. Run it in the engine: pick it in the GUI's setup screen (it appears by
    discovery), or wire it in `app/main.cpp` for headless runs from the repo
    root.
-4. Audit the run: `tools/verify_backtest.py <report.json> <parquet> [run.log]`
+5. Audit the run: `tools/verify_backtest.py <report.json> <parquet> [run.log]`
    must exit CLEAN — it replays every fill independently against the raw bars.
+   Pass the `run.log` whenever the strategy cancels orders (gap re-anchoring
+   does); log-less verification of a cancelling run reports false violations.
 
 ## IDE autocomplete
 

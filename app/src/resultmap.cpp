@@ -129,6 +129,7 @@ QVariantMap build_result(const RunConfig& cfg,
     QVariantMap result;
     result["id"] = qs(cfg.id);
     result["strategy"] = qs(cfg.strategy_display);
+    result["strategyParams"] = cfg.params;
     result["dataKey"] = qs(cfg.data_key);
     result["status"] = "completed";
 

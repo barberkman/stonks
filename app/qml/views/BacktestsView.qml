@@ -163,6 +163,31 @@ Page {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: App.openBacktest(modelData.id)
                     }
+
+                    // Delete (declared after rowMa so it wins the click): shows
+                    // on row hover; removes the run and its archived report file.
+                    Item {
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.sp(8)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Theme.sp(28)
+                        height: Theme.sp(28)
+                        visible: rowMa.containsMouse || delMa.containsMouse
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✕"
+                            color: delMa.containsMouse ? Theme.negative : Theme.t5
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontBody
+                        }
+                        MouseArea {
+                            id: delMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: App.deleteBacktest(modelData.id)
+                        }
+                    }
                 }
             }
         }

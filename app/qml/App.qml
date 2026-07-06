@@ -28,6 +28,7 @@ QtObject {
     property string makerFeeBps: "2"       // Binance USDT-M VIP0 defaults
     property string takerFeeBps: "5"
     property string feePerFill: "0"
+    property var paramEdits: ({})          // module -> { paramName: rawEditedValue }; sparse, session-only
 
     // --- results (populated from the controller) ---
     property var results: ({})             // runId -> full result object
@@ -73,6 +74,51 @@ QtObject {
     function latestRun() { return completed.length ? completed[0] : {}; }
     function dataFilesObj() { return _fileMap(); }
     function strategySource() { return strategy ? ("app/python/" + strategy + ".py") : ""; }
+
+    // --- strategy parameters (generic: driven entirely by discovery specs) ---
+    function paramSpecsFor(mod) { return _stratEntry(mod).params || []; }
+    function paramSpecsByDisplay(display) {
+        var list = strategyList();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].display === display) { return list[i].params || []; }
+        }
+        return [];
+    }
+    function paramValue(mod, name, defaultVal) {
+        var edits = paramEdits[mod];
+        return (edits && (name in edits)) ? edits[name] : defaultVal;
+    }
+    function setParamEdit(mod, name, value) {
+        var edits = {};
+        for (var k in paramEdits) edits[k] = paramEdits[k];
+        var modEdits = {};
+        for (var k2 in (edits[mod] || {})) modEdits[k2] = edits[mod][k2];
+        modEdits[name] = value;
+        edits[mod] = modEdits;
+        paramEdits = edits;               // fresh object: QML binding invalidation
+    }
+    function resetParams(mod) {
+        var edits = {};
+        for (var k in paramEdits) { if (k !== mod) edits[k] = paramEdits[k]; }
+        paramEdits = edits;
+    }
+    // Full effective map (defaults overlaid with edits), numbers throughout;
+    // bools travel as 0/1. Sent whole so the run and report never need the spec.
+    function effectiveParams(mod) {
+        var specs = paramSpecsFor(mod);
+        var out = {};
+        for (var i = 0; i < specs.length; i++) {
+            var s = specs[i];
+            var v = paramValue(mod, s.name, s.default);
+            if (s.type === "bool") {
+                out[s.name] = (v === true || v === 1 || v === "1") ? 1 : 0;
+            } else {
+                var n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+                out[s.name] = isNaN(n) ? s.default : n;
+            }
+        }
+        return out;
+    }
 
     function logs() { return _buildLogs(latestRun()); }
     function liveLogList() { return _liveLog(progress); }
@@ -145,7 +191,8 @@ QtObject {
             startCash: parseFloat(String(startCash).replace(/[^0-9.]/g, '')) || 0,
             makerFeeBps: parseFloat(String(makerFeeBps).replace(/[^0-9.]/g, '')) || 0,
             takerFeeBps: parseFloat(String(takerFeeBps).replace(/[^0-9.]/g, '')) || 0,
-            feePerFill: parseFloat(String(feePerFill).replace(/[^0-9.]/g, '')) || 0
+            feePerFill: parseFloat(String(feePerFill).replace(/[^0-9.]/g, '')) || 0,
+            strategyParams: effectiveParams(s.module || strategy)
         });
     }
     function runSaved() { runBacktest(); }
@@ -166,11 +213,42 @@ QtObject {
         view = "detail";
     }
 
+    // Archived runs restored at startup (already newest-first): appended after
+    // any current-session runs, which are newer by definition.
+    function _onArchiveLoaded(runs) {
+        var r = {};
+        for (var k in results) r[k] = results[k];
+        var loaded = [];
+        for (var i = 0; i < runs.length; i++) {
+            var run = runs[i];
+            var id = String(_nextId++);
+            run.id = id;
+            r[id] = run;
+            loaded.push(run);
+        }
+        results = r;
+        completed = completed.concat(loaded);
+    }
+
+    function deleteBacktest(id) {
+        var run = results[id];
+        if (!run) return;
+        if (run.reportPath) { Backtest.deleteRun(run.reportPath); }
+        var r = {};
+        for (var k in results) { if (k !== id) r[k] = results[k]; }
+        results = r;
+        completed = completed.filter(function (b) { return b.id !== id; });
+        if (selectedBacktest === id) { selectedBacktest = ""; view = "backtests"; }
+    }
+
     property Connections _conn: Connections {
         target: Backtest
         function onFinished(result) { app._onFinished(result); }
         function onFailed(message) { app.runError = message; app.view = "setup"; }
+        function onArchiveLoaded(runs) { app._onArchiveLoaded(runs); }
     }
+
+    Component.onCompleted: Backtest.loadArchive()
 
     // --- transient summary while a run is in flight (no completed run yet) ---
     function _runningSummary() {

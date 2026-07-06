@@ -1,6 +1,8 @@
 add_executable(python_tests
     contextadapter_test.cpp
     pythonstrategy_test.cpp
+    strategydiscovery_test.cpp
+    ${PROJECT_SOURCE_DIR}/app/strategies/strategydiscovery.cpp
 )
 
 target_include_directories(python_tests PRIVATE

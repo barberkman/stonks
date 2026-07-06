@@ -243,10 +243,12 @@ classDiagram
         -m_python : EmbeddedPython
         -m_py_instance : py::object
         -m_adapter : unique_ptr~IContext~
+        +PythonStrategy(module, cls, overrides)
         +on_start(ctx)
         +on_tick(ctx)
         +on_stop(ctx)
     }
+    note for PythonStrategy "overrides: GUI param values, setattr'd on the instance before on_start"
     class EmbeddedPython {
         +add_sys_path(path)
     }

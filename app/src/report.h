@@ -6,8 +6,10 @@
 #include <cstddef>
 #include <iomanip>
 #include <ios>
+#include <map>
 #include <optional>
 #include <ostream>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -22,6 +24,28 @@
 // engine/template dependency — so the metrics are directly unit-testable.
 namespace stonks::app {
 
+// The Python strategy actually run and the effective parameter values it was
+// constructed with (defaults overlaid with any GUI edits) — stamped into the
+// report so an archived run is self-describing and reproducible.
+struct StrategyRunInfo
+{
+    std::string module;
+    std::string cls;
+    std::map<std::string, double> params;
+};
+
+// Which data produced the run — enough for a later session to rebuild the
+// GUI's per-symbol candle drill-down from the archived report alone.
+struct RunMeta
+{
+    std::string display;                // strategy display name for the list row
+    std::string data_file;              // parquet path the feed read
+    std::string data_key;
+    std::string start;                  // filter bounds as given ("" = open)
+    std::string end;
+    std::vector<std::string> symbols;   // filter allowlist (empty = all)
+};
+
 // Everything the reporter needs, assembled by the caller after a run. Owns its
 // trade/order/equity-curve data, so it is safe to store and outlive the inputs.
 struct ReportInput
@@ -35,6 +59,8 @@ struct ReportInput
     core::Balance ending_equity;
     std::chrono::nanoseconds elapsed;
     broker::BrokerConfig config{};   // the run's broker knobs, stamped into the JSON for reproducibility
+    StrategyRunInfo strategy{};      // appended last: existing positional ctor sites keep compiling
+    RunMeta run{};                   // data provenance, for restoring archived runs in the GUI
 };
 
 struct ReportMetrics

@@ -18,6 +18,7 @@ struct RunConfig
     std::string id;
     std::string strategy_display;
     std::string data_key;
+    QVariantMap params{};   // effective strategy params, shown in the report view
 };
 
 // Assemble the full QVariantMap the QML views consume, mirroring the mock-data

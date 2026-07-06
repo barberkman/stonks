@@ -42,6 +42,24 @@ def _run(bars):
     return ctx, s
 
 
+def test_params_dict_exposes_period_and_position_fraction():
+    from stonks import param_specs
+
+    specs = {s["name"]: s for s in param_specs(EMA50Strategy)}
+    assert set(specs) == {"PERIOD", "POSITION_FRACTION"}
+    assert specs["PERIOD"]["default"] == 50 and specs["PERIOD"]["type"] == "int"
+    assert specs["POSITION_FRACTION"]["default"] == 0.01
+    assert specs["POSITION_FRACTION"]["type"] == "float"
+
+
+def test_alpha_recomputed_from_overridden_period():
+    ctx = FakeContext(_flat_then_cross(105.0))
+    s = EMA50Strategy()
+    s.PERIOD = 20                       # simulate an applied GUI override
+    s.on_start(ctx)
+    assert s.alpha == pytest.approx(2.0 / 21.0)
+
+
 def test_entry_sized_to_one_percent_of_equity():
     ctx, _ = _run(_flat_then_cross(105.0))
 

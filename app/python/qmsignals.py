@@ -120,6 +120,20 @@ class QMSignalsStrategy(stonks.Strategy):
     max_leverage = 125.0    # cap on computed isolated leverage
     # Re-entry gating
     cooldown_bars = 5       # printed bars to sit out after a position closes
+    # Setup selection: 0 = run all setups; 1..5 restrict to one (see scan()).
+    setup_select = 0
+
+    # GUI-editable parameters (defaults live on the attributes above).
+    params = {
+        "setup_select": stonks.Param("0=all, 1=breakout, 2=short_breakout, "
+                                      "3=episodic_pivot, 4=parabolic_short, 5=orb"),
+        "risk_fraction": stonks.Param("fraction of equity risked per trade"),
+        "target_rr": stonks.Param("take-profit target, in R multiples", unit="R"),
+        "max_leverage": stonks.Param("cap on computed isolated leverage", unit="x"),
+        "cooldown_bars": stonks.Param("bars to sit out after a close", unit="bars"),
+        "adr_stop_mult": stonks.Param("stop distance from entry, in ADRs", unit="ADR"),
+        "min_adr": stonks.Param("minimum average daily range, universe filter", unit="%"),
+    }
 
     # The dataset carries no tick size, so the "buffer beyond the pivot" is zero.
     MINTICK = 0.0
@@ -254,9 +268,12 @@ class QMSignalsStrategy(stonks.Strategy):
 
     # Run every setup against the closed bar; collect the ones that fired.
     def scan(self, op, hi, lo, cl, vo, ts) -> List[Signal]:
+        setups = (self.breakout, self.short_breakout, self.episodic_pivot,
+                  self.parabolic_short, self.orb)
+        if 1 <= self.setup_select <= len(setups):
+            setups = (setups[self.setup_select - 1],)
         out: List[Signal] = []
-        for setup in (self.breakout, self.short_breakout, self.episodic_pivot,
-                      self.parabolic_short, self.orb):
+        for setup in setups:
             s = setup(op, hi, lo, cl, vo, ts)
             if s is not None:
                 out.append(s)

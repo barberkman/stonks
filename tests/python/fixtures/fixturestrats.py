@@ -63,6 +63,31 @@ class BracketPlacing(stonks.Strategy):
         )
 
 
+class ParamStrategy(stonks.Strategy):
+    """One declared param of each supported type. on_tick places one order per
+    attribute, encoding the live Python type into the symbol string and the
+    value into the quantity, so C++ tests can assert coercion landed."""
+
+    risk_fraction = 0.02   # float
+    cooldown_bars = 5      # int
+    use_filter = True      # bool
+
+    params = {
+        "risk_fraction": stonks.Param("fraction of equity risked per trade"),
+        "cooldown_bars": stonks.Param("bars to sit out after a close", unit="bars"),
+        "use_filter": stonks.Param("toggle the demo filter"),
+    }
+
+    def on_tick(self, ctx):
+        for name in ("risk_fraction", "cooldown_bars", "use_filter"):
+            v = getattr(self, name)
+            ctx.place_market_order(
+                symbol=f"{name}:{type(v).__name__}",
+                side=OrderSide.Buy,
+                quantity=(1.0 if v is True else 0.0 if v is False else float(v)),
+            )
+
+
 class ApiProbe(stonks.Strategy):
     """Probes the observability API through the real bindings: position() on a
     flat book, order() status round-trip, cancel_order() semantics, and the

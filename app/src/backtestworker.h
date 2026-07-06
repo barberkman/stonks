@@ -31,14 +31,19 @@ public:
     core::ProgressState currentProgress() const;
 
 public Q_SLOTS:
-    // Both run on the worker thread (the only thread that touches CPython).
+    // All run on the worker thread (the only thread that touches CPython).
     void runImpl(QVariantMap params);
     QVariantList listStrategiesImpl();
+    // Rebuild result maps for every archived report under app/reports/ (candle
+    // drill-down re-harvested when the report records its data provenance);
+    // emits archiveLoaded when done. Unreadable/foreign files are skipped.
+    void loadArchiveImpl();
 
 Q_SIGNALS:
     void resultReady(QVariantMap result);
     void runFailed(QString message);
     void runCancelled();
+    void archiveLoaded(QVariantList runs);
 
 private:
     struct Impl;

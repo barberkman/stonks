@@ -115,6 +115,80 @@ Page {
         }
     }
 
+    // --- strategy parameters (generic: rendered from the discovery specs) ---
+    Rectangle {
+        id: paramCard
+        readonly property var paramSpecs: App.paramSpecsFor(App.strategy)
+        readonly property var numericSpecs: paramSpecs.filter(function (s) { return s.type !== "bool"; })
+        readonly property var boolSpecs: paramSpecs.filter(function (s) { return s.type === "bool"; })
+
+        width: view.innerWidth
+        visible: paramSpecs.length > 0
+        radius: Theme.radiusCard
+        color: Theme.card
+        border.color: Theme.border
+        border.width: 1
+        implicitHeight: visible ? (paramCol.implicitHeight + Theme.sp(40)) : 0
+
+        Column {
+            id: paramCol
+            x: Theme.sp(22); y: Theme.sp(20)
+            width: parent.width - Theme.sp(44)
+            spacing: Theme.sp(16)
+
+            Item {
+                width: parent.width
+                height: Theme.sp(20)
+                Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "STRATEGY PARAMETERS"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 1 * Theme.scale }
+                GhostButton { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "reset to defaults"; onClicked: App.resetParams(App.strategy) }
+            }
+
+            Flow {
+                width: parent.width
+                spacing: Theme.sp(18)
+                Repeater {
+                    model: paramCard.numericSpecs
+                    delegate: ParamField {
+                        required property var modelData
+                        width: (paramCol.width - Theme.sp(36)) / 3
+                        label: modelData.doc || modelData.name
+                        unit: modelData.unit
+                        value: String(App.paramValue(App.strategy, modelData.name, modelData.default))
+                        onEdited: function (v) { App.setParamEdit(App.strategy, modelData.name, v) }
+                    }
+                }
+            }
+
+            Flow {
+                width: parent.width
+                spacing: Theme.sp(8)
+                Repeater {
+                    model: paramCard.boolSpecs
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: App.paramValue(App.strategy, modelData.name, modelData.default) ? true : false
+                        width: boolT.implicitWidth + Theme.sp(28)
+                        height: Theme.controlHSm
+                        radius: Theme.radiusControl
+                        color: on ? Theme.accent : "transparent"
+                        border.width: 1
+                        border.color: on ? Theme.accent : Theme.border
+                        Text {
+                            id: boolT
+                            anchors.centerIn: parent
+                            text: modelData.doc || modelData.name
+                            color: parent.on ? Theme.accentInk : Theme.t3
+                            font.family: Theme.mono
+                            font.weight: Font.DemiBold
+                            font.pixelSize: Theme.fontSmall
+                        }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: App.setParamEdit(App.strategy, modelData.name, !parent.on) }
+                    }
+                }
+            }
+        }
+    }
+
     // --- filter: symbols + date range ---
     Rectangle {
         width: view.innerWidth

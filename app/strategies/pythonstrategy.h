@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -22,11 +23,17 @@
 // mid-run. The presence of optional hooks is cached at construction so we
 // don't pay a hasattr() lookup on every tick.
 //
+// `overrides` carries per-run parameter values chosen in the GUI. Each key must
+// be declared in the class's `params` dict; the value is coerced to the
+// declared default's Python type (bool: nonzero, int: truncated, float: as-is)
+// and set on the instance — before on_start, so strategies see final values.
+//
 // The visibility attribute matches pybind11's hidden visibility for py::object;
 // without it GCC warns the wrapper exposes a hidden-visibility type.
 struct __attribute__((visibility("hidden"))) PythonStrategy
 {
-    PythonStrategy(std::string module, std::string cls)
+    PythonStrategy(std::string module, std::string cls,
+                   std::map<std::string, double> overrides = {})
     : m_module_name{ std::move(module) }, m_class_name{ std::move(cls) }
     {
         pybind11::gil_scoped_acquire gil;
@@ -36,6 +43,28 @@ struct __attribute__((visibility("hidden"))) PythonStrategy
         } catch (pybind11::error_already_set& e) {
             throw std::runtime_error("PythonStrategy(" + m_module_name + ":"
                 + m_class_name + ") init failed: " + e.what());
+        }
+        if (!overrides.empty()) {
+            // getattr-with-default so a class with no `params` dict at all
+            // still reaches the clear unknown-key error below.
+            const pybind11::object declared =
+                pybind11::getattr(m_py_instance, "params", pybind11::dict{});
+            for (const auto& [name, value] : overrides) {
+                if (!declared.contains(name)) {
+                    throw std::runtime_error("PythonStrategy(" + m_module_name + ":"
+                        + m_class_name + ") override '" + name + "' is not a declared param");
+                }
+                const pybind11::object current = m_py_instance.attr(name.c_str());
+                pybind11::object coerced;
+                if (pybind11::isinstance<pybind11::bool_>(current)) {   // before int: bool subclasses int
+                    coerced = pybind11::bool_(value != 0.0);
+                } else if (pybind11::isinstance<pybind11::int_>(current)) {
+                    coerced = pybind11::int_(static_cast<long long>(value));   // truncates toward zero
+                } else {
+                    coerced = pybind11::float_(value);
+                }
+                m_py_instance.attr(name.c_str()) = coerced;
+            }
         }
         if (!pybind11::hasattr(m_py_instance, "on_tick")) {
             throw std::runtime_error("PythonStrategy(" + m_module_name + ":"
