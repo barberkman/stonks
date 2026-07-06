@@ -19,6 +19,9 @@ Item {
 
     readonly property var series: App.candlesFor(symbol)   // columnar {t,o,h,l,c,v}
     readonly property var trades: App.tradesFor(symbol)
+    // strategy-published overlays: [{name, doc, color, values}], each `values`
+    // parallel to series.t with null gaps (e.g. warmup)
+    readonly property var indicators: App.indicatorsFor(symbol)
     readonly property int candleCount: (series && series.t) ? series.t.length : 0
 
     // visible window (fractional candle indices) + zoom bounds
@@ -39,6 +42,7 @@ Item {
     property var _view: null   // geometry/scale cache written by dataCanvas for the crosshair
 
     onSeriesChanged: { fit(); repaint() }
+    onIndicatorsChanged: repaint()
     onSelectedTradeChanged: { seekToTrade(); repaint() }
     onViewLoChanged: repaint()
     onViewHiChanged: repaint()
@@ -83,7 +87,23 @@ Item {
             var ds = CV.visibleSeries(s.t, s.o, s.h, s.l, s.c, s.v, lo, hi, cv.plotW);
             if (ds.t.length === 0) { cv._view = null; return; }
 
+            // indicator overlays, reduced onto the same visible buckets as the
+            // candles; their values join the price-axis autofit (below) so a
+            // series outside the candle range never clips off the pane
+            var inds = cv.indicators, indVals = [];
+            for (var ii = 0; ii < inds.length; ii++) {
+                indVals.push(CV.bucketIndicator(inds[ii].values, ds.r0, ds.r1));
+            }
+
             var pmin = ds.pmin, pmax = ds.pmax;
+            for (var ij = 0; ij < indVals.length; ij++) {
+                for (var ik = 0; ik < indVals[ij].length; ik++) {
+                    var iw = indVals[ij][ik];
+                    if (iw === null || iw === undefined) continue;
+                    if (iw < pmin) pmin = iw;
+                    if (iw > pmax) pmax = iw;
+                }
+            }
             var pd = (pmax - pmin) * 0.10;
             if (pd <= 0) pd = Math.max(Math.abs(pmax) * 0.01, 1e-9);   // flat window
             pmin -= pd; pmax += pd;
@@ -144,6 +164,24 @@ Item {
                 ctx.fillStyle = col; ctx.fillRect(xc - cw / 2, top, cw, bh);
             }
 
+            // indicator overlays: one polyline per series through the same X/Y
+            // mapping; a null bucket breaks the path (warmup renders as a gap,
+            // never a line to zero)
+            ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+            for (var ip = 0; ip < inds.length; ip++) {
+                var pv = indVals[ip];
+                ctx.strokeStyle = inds[ip].color; ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                var started = false;
+                for (var iq = 0; iq < pv.length; iq++) {
+                    if (pv[iq] === null || pv[iq] === undefined) { started = false; continue; }
+                    var px = X(ds.xi[iq]), py = Y(pv[iq]);
+                    if (started) { ctx.lineTo(px, py); } else { ctx.moveTo(px, py); }
+                    started = true;
+                }
+                ctx.stroke();
+            }
+
             // date ticks
             ctx.fillStyle = '#5b626c'; ctx.font = Theme.sp(11) + "px '" + Theme.mono + "'"; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
             var ticks = Math.min(6, ds.t.length - 1);
@@ -170,6 +208,21 @@ Item {
                 }
                 tri(eX, Y(s.l[tt.entryIdx]) + Theme.sp(13), Theme.sp(6), 'up', ACC);
                 tri(xX, Y(s.h[tt.exitIdx]) - Theme.sp(13), Theme.sp(6), 'down', tc);
+            }
+
+            // indicator legend: color swatch + series name, pinned top-left of
+            // the price pane (drawn last so it stays readable over the data)
+            if (inds.length > 0) {
+                ctx.font = Theme.sp(11) + "px '" + Theme.mono + "'";
+                ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+                var lx = padL + Theme.sp(6), ly = cTop + Theme.sp(10);
+                for (var il = 0; il < inds.length; il++) {
+                    ctx.fillStyle = inds[il].color;
+                    ctx.fillRect(lx, ly - Theme.sp(2), Theme.sp(10), Theme.sp(3));
+                    ctx.fillStyle = '#9aa0a8';
+                    ctx.fillText(inds[il].name, lx + Theme.sp(14), ly);
+                    lx += Theme.sp(14) + ctx.measureText(inds[il].name).width + Theme.sp(16);
+                }
             }
 
             cv._view = { pmin: pmin, pmax: pmax, cTop: cTop, cBot: cBot, cH: cH, volBot: volBot };

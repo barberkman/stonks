@@ -42,7 +42,7 @@ public:
     {
         // Create context
         using ContextT = Context<BrokerT, DataFeedT>;
-        ContextT context{ m_broker, m_dataFeed, m_clock };
+        ContextT context{ m_broker, m_dataFeed, m_clock, &m_indicators };
 
         STONKS_LOG("engine", "ev=run_start cash={:.4f}", m_broker.cash());
 
@@ -116,6 +116,7 @@ public:
     Balance cash() const { return m_broker.cash(); }
     Balance equity() const { return m_broker.equity(); }
     const std::vector<EquityPoint>& equity_curve() const { return m_equity_curve; }
+    const IndicatorStore& indicators() const { return m_indicators; }
     std::size_t bars_processed() const { return m_bars_processed; }
 
     // Live progress snapshot for an external consumer (e.g. a GUI) to render
@@ -131,6 +132,7 @@ private:
     BrokerT m_broker;
     Clock m_clock;
     std::vector<EquityPoint> m_equity_curve;
+    IndicatorStore m_indicators;
     std::size_t m_bars_processed{ 0 };
     ProgressOutput m_progress_output;
     const std::atomic<bool>* m_cancel{ nullptr };

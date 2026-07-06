@@ -132,6 +132,16 @@ void BacktestWorker::runImpl(QVariantMap params)
         // Build + run the engine. PythonStrategy bumps the interpreter refcount
         // (no re-init thanks to the pin). The engine polls &cancel each timestamp.
         PythonStrategy strategy{ module, cls, strategy_params };
+
+        // Declared indicator metadata — class-level, so read it now, before
+        // the strategy is moved into the engine. Converted into the report
+        // layer's own pybind11-free IndicatorSpec (same glue pattern as the
+        // strategy params above).
+        std::vector<IndicatorSpec> indicator_specs;
+        for (const auto& s : strategy.indicator_specs()) {
+            indicator_specs.push_back(IndicatorSpec{ s.name, s.doc, s.color });
+        }
+
         datafeed::KLineFeed feed{ data_file, filter };
         // Fee schedule from the setup screen (bps of notional + flat per fill),
         // defaulting to Binance USDT-M VIP0 when the params omit it; stamped
@@ -168,6 +178,8 @@ void BacktestWorker::runImpl(QVariantMap params)
             broker_config,
             StrategyRunInfo{ module, cls, strategy_params },
             RunMeta{ display, data_file, data_key, start, end, symbols },
+            std::move(indicator_specs),
+            engine->indicators(),
         };
         const ReportMetrics metrics = compute_metrics(input);
 

@@ -79,6 +79,17 @@ class FakePosition:
     leverage: float = 1.0
 
 
+@dataclass
+class FakePlot:
+    """One recorded ctx.plot(...) call, captured by FakeContext for test
+    assertions on a strategy's published indicator values."""
+
+    name: str
+    symbol: str
+    value: float
+    timestamp: int   # ms, from ctx.now() at call time
+
+
 class FakeContext:
     """Drop-in stand-in for `Context` in unit tests.
 
@@ -92,6 +103,7 @@ class FakeContext:
         self._cash = cash
         self.orders: List[FakeOrder] = []
         self.positions: Dict[str, FakePosition] = {}   # test-settable; position() reads it
+        self.plots: List[FakePlot] = []   # every ctx.plot(...) call, in call order
         self._timestamps = sorted({_to_ms(b.timestamp) for b in bars})
         self._group = -1   # advance() steps to the first timestamp
         self._next_order_id = 1   # broker hands back monotonic OrderIDs
@@ -128,6 +140,9 @@ class FakeContext:
             if o.parent == order_id and o.status == OrderStatus.Open:
                 o.status = OrderStatus.Cancelled
         return True
+
+    def plot(self, name: str, symbol: str, value: float) -> None:
+        self.plots.append(FakePlot(name, symbol, value, self.now()))
 
     def history(self, count: int) -> FakeMarketWindow:
         now_ms = self.now()

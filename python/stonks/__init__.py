@@ -33,6 +33,18 @@ class Param:
     unit: str = ""
 
 
+@dataclass
+class Indicator:
+    """Metadata for a named indicator series a strategy publishes via
+    `ctx.plot(name, symbol, value)`. The `indicators` dict's key IS the series
+    name passed to `ctx.plot` — unlike `Param`, there is no backing class
+    attribute. Read-only/display-only: an indicator never influences trading
+    logic and, unlike params, is never GUI-editable."""
+
+    doc: str = ""
+    color: str = ""   # optional "#rrggbb"; "" lets the GUI assign a palette color
+
+
 class Strategy:
     """Base class for stonks Python strategies.
 
@@ -43,9 +55,15 @@ class Strategy:
     class-attribute names to `Param` metadata. The engine overrides declared
     attributes on the instance (before `on_start`) with values chosen in the
     setup screen, and stamps the effective values into the run's report.
+
+    Declare read-only chart overlays via `indicators`: a dict mapping series
+    names to `Indicator` metadata. Publish values from `on_tick` with
+    `ctx.plot(name, symbol, value)`; the GUI draws each series over the
+    symbol's candles.
     """
 
     params: Dict[str, Param] = {}
+    indicators: Dict[str, Indicator] = {}
 
     def on_start(self, ctx: "Context") -> None:
         pass
@@ -80,8 +98,18 @@ def param_specs(cls: type) -> List[Dict[str, Any]]:
     return out
 
 
+def indicator_specs(cls: type) -> List[Dict[str, Any]]:
+    """The GUI-facing spec for a strategy class's declared indicator series,
+    in declaration order: [{name, doc, color}]. Unlike param_specs there is no
+    class attribute to read a value from — the dict key IS the series name
+    `ctx.plot(name, ...)` must use."""
+    return [{"name": name, "doc": meta.doc, "color": meta.color}
+            for name, meta in cls.indicators.items()]
+
+
 __all__ = [
     "Context",
+    "Indicator",
     "KLine",
     "MarketWindow",
     "Order",
@@ -93,5 +121,6 @@ __all__ = [
     "Strategy",
     "TimeInForce",
     "Timestamp",
+    "indicator_specs",
     "param_specs",
 ]

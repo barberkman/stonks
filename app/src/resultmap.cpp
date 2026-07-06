@@ -1,6 +1,7 @@
 #include "resultmap.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -113,6 +114,13 @@ std::size_t stride_for(std::size_t n, std::size_t cap)
 
 constexpr std::size_t kSparkCap = 64;   // sparkline points per symbol
 
+// Overlay line colors for indicator series whose author left `color` unset,
+// assigned by cycling in declaration order. Picked to read against the dark
+// chart background without colliding with the candle green/red.
+constexpr std::array<const char*, 6> kIndicatorPalette{
+    "#4f8fe1", "#b98ae8", "#e0a64e", "#4dd0c4", "#e17ca8", "#9aa0a8",
+};
+
 } // namespace
 
 QVariantMap build_result(const RunConfig& cfg,
@@ -125,6 +133,32 @@ QVariantMap build_result(const RunConfig& cfg,
     const auto sharpe = sharpe_ratio(input.equity_curve, annualization);
     const double pf = profit_factor(round_trips);
     const auto by_symbol = per_symbol_breakdown(round_trips);
+
+    // Legend metadata per indicator series: declared specs first (declaration
+    // order; author color, else the next palette color), then any undeclared
+    // names found in the recorded data — an undeclared series (or one from a
+    // C++ strategy, which has no declaration mechanism) still draws.
+    struct IndicatorDisplay
+    {
+        QString doc;
+        QString color;
+    };
+    std::map<std::string, IndicatorDisplay> indicator_display;
+    std::size_t palette_i = 0;
+    const auto next_palette_color = [&palette_i] {
+        return QString::fromLatin1(kIndicatorPalette[palette_i++ % kIndicatorPalette.size()]);
+    };
+    for (const auto& spec : input.indicator_specs) {
+        indicator_display[spec.name] = IndicatorDisplay{
+            qs(spec.doc), spec.color.empty() ? next_palette_color() : qs(spec.color) };
+    }
+    for (const auto& [sym, series_map] : input.indicators) {
+        for (const auto& [name, points] : series_map) {
+            if (!indicator_display.contains(name)) {
+                indicator_display[name] = IndicatorDisplay{ QString{}, next_palette_color() };
+            }
+        }
+    }
 
     QVariantMap result;
     result["id"] = qs(cfg.id);
@@ -238,10 +272,43 @@ QVariantMap build_result(const RunConfig& cfg,
             spark.append(series.candles[i].c);
         }
 
+        // Indicator overlays: one entry per series plotted for this symbol,
+        // `values` exactly parallel to the candle arrays (null = gap, e.g.
+        // warmup bars). Declared series first, in declaration order; any
+        // undeclared ones follow in name order.
+        QVariantList indicators;
+        const auto ind_it = input.indicators.find(sym);
+        if (ind_it != input.indicators.end()) {
+            const auto& series_map = ind_it->second;
+            std::vector<std::string> ordered;
+            for (const auto& spec : input.indicator_specs) {
+                if (series_map.contains(spec.name)) { ordered.push_back(spec.name); }
+            }
+            for (const auto& [name, points] : series_map) {
+                if (std::find(ordered.begin(), ordered.end(), name) == ordered.end()) {
+                    ordered.push_back(name);
+                }
+            }
+            for (const auto& name : ordered) {
+                const auto aligned = align_indicator(series.candles, series_map.at(name));
+                QVariantList values;
+                values.reserve(static_cast<int>(aligned.size()));
+                for (const auto& v : aligned) { values.append(v ? QVariant{ *v } : QVariant{}); }
+                const auto& display = indicator_display.at(name);
+                QVariantMap entry;
+                entry["name"] = qs(name);
+                entry["doc"] = display.doc;
+                entry["color"] = display.color;
+                entry["values"] = values;
+                indicators.append(entry);
+            }
+        }
+
         QVariantMap drill;
         drill["candles"] = candles;
         drill["trades"] = trades;
         drill["spark"] = spark;
+        drill["indicators"] = indicators;
         per_symbol[qs(sym)] = drill;
 
         // Summary row.

@@ -135,6 +135,13 @@ class QMSignalsStrategy(stonks.Strategy):
         "min_adr": stonks.Param("minimum average daily range, universe filter", unit="%"),
     }
 
+    # Read-only chart overlays: the trend-filter MAs behind ma_ok_up/ma_ok_dn,
+    # published per bar via ctx.plot in on_tick.
+    indicators = {
+        "sma10": stonks.Indicator("10-bar SMA of close (trend filter, fast)"),
+        "sma20": stonks.Indicator("20-bar SMA of close (trend filter, slow)"),
+    }
+
     # The dataset carries no tick size, so the "buffer beyond the pivot" is zero.
     MINTICK = 0.0
     MS_PER_DAY = 86_400_000
@@ -169,6 +176,16 @@ class QMSignalsStrategy(stonks.Strategy):
             cl = sub["close"].to_numpy()
             vo = sub["volume"].to_numpy()
             ts = sub["timestamp"].to_numpy()
+
+            # Publish the trend-filter MAs (what ma_ok_up/ma_ok_dn gate on) for
+            # the chart overlay. Unconditional — display never depends on the
+            # gates; too little history plots nothing, so the GUI shows a gap.
+            s10 = sma(cl, 10)
+            if s10 is not None:
+                ctx.plot("sma10", symbol, s10)
+            s20 = sma(cl, 20)
+            if s20 is not None:
+                ctx.plot("sma20", symbol, s20)
 
             sigs = self.scan(op, hi, lo, cl, vo, ts)
 

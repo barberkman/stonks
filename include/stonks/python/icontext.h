@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 
 #include "stonks/core/types.h"
 
@@ -41,6 +42,10 @@ public:
     virtual std::optional<core::Position> position(const core::Symbol& symbol) const = 0;
     virtual std::optional<core::Order> order(core::OrderID id) const = 0;
     virtual bool cancel_order(core::OrderID id) = 0;
+
+    // Record one sample of a strategy-computed indicator series at the current
+    // tick's timestamp; display-only, mirrors Context::plot.
+    virtual void plot(const std::string& name, const core::Symbol& symbol, double value) = 0;
 };
 
 } // namespace stonks::python

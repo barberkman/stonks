@@ -20,6 +20,7 @@ classDiagram
         -m_broker : BrokerT&
         -m_dataFeed : const DataFeedT&
         -m_clock : const Clock&
+        -m_indicators : IndicatorStore*
         +now() Timestamp
         +cash() Balance
         +equity() Balance
@@ -30,6 +31,7 @@ classDiagram
         +position(symbol) optional~Position~
         +order(id) optional~Order~
         +cancel_order(id) bool
+        +plot(name, symbol, value) void
     }
     class Clock {
         -m_timestamp : Timestamp
@@ -66,7 +68,6 @@ classDiagram
     }
     class KLineFeed
     class BacktestBroker
-    class EMA50Strategy
     class PythonStrategy
 
     note for Engine "template StrategyT, DataFeedT, BrokerT"
@@ -82,7 +83,6 @@ classDiagram
     Context o-- Clock : ref
     KLineFeed ..|> DataFeed : satisfies
     BacktestBroker ..|> Broker : satisfies
-    EMA50Strategy ..|> Strategy : satisfies
     PythonStrategy ..|> Strategy : satisfies
 ```
 
@@ -234,6 +234,7 @@ classDiagram
         +position(symbol) optional~Position~
         +order(id) optional~Order~
         +cancel_order(id) bool
+        +plot(name, symbol, value) void
     }
     class ContextAdapter {
         -m_ctx : Context&
@@ -244,6 +245,7 @@ classDiagram
         -m_py_instance : py::object
         -m_adapter : unique_ptr~IContext~
         +PythonStrategy(module, cls, overrides)
+        +indicator_specs() vector~IndicatorSpec~
         +on_start(ctx)
         +on_tick(ctx)
         +on_stop(ctx)

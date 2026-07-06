@@ -1,6 +1,6 @@
 //@version=6
 // ════════════════════════════════════════════════════════════════════════════
-//  QULLAMAGGIE MOMENTUM SWING — ENTRY/EXIT ARROWS  (v11: + ENTRY/EXIT/SELL VALUE LINES)
+//  QULLAMAGGIE MOMENTUM SWING — ENTRY/EXIT ARROWS  (v12: + TRAILING MA PLOT)
 //
 //  Triangle arrows pinned to exact prices just off each candle:
 //    ▲ Buy BO   — breakout above the pivot high of a tight flag/base
@@ -11,23 +11,16 @@
 //    ▲ Cover    — short partial cover / short exit
 //    ▼ Short / ▲ Cover — parabolic "first red bar" short (separate, off by default)
 //
-//  v11 CHANGES — ENTRY / EXIT / SELL VALUE LINES + NAME
-//    - Renamed the on-chart indicator to "Qullamaggie MOMENTUM SWING" (no timeframe
-//      text in the legend). The "5m" you saw was the old shorttitle.
-//    - While a position is open, three horizontal levels are drawn in the same
-//      step-line style as the resting-order lines:
-//        Entry (blue), Exit/stop (red), Sell/target (orange).
-//      The Exit line tracks the LIVE stop, so it steps up to breakeven after a partial.
-//    - At each entry bar a small price tag prints the ACTUAL value of each level:
-//        "Entry 152.34", longs "Exit"/"Sell", shorts "Cover"/"Target".
-//      These are kept for every trade (TradingView retains the most recent ~500
-//      labels, shared with the arrows — oldest tags/arrows drop off first).
-//    - Applies to both longs and short breakouts/parabolic shorts.
+//  v12 CHANGES — TRAILING MA PLOT
+//    - Draws the trailing moving average the strategy uses to manage/trail exits
+//      (trailMA = SMA or EMA of length trailLen; default EMA 20). This is the SAME
+//      series the exit logic checks with "close < trailMA" (long) / "close > trailMA"
+//      (short) after a partial. Plotted on the main pane, yellow, linewidth 2.
+//      Switch SMA/EMA or change the length in "Trade management" and the line follows.
 //
-//  v10 (retained): SHORT BREAKOUTS — a resting SELL-STOP parked at the base LOW,
-//      armed only in a downtrend, mirroring the long breakout. Off by default.
-//  v9  (retained): looser arming gates — MA gate tolerates a pullback under the
-//      10-SMA, volume-contraction filter off by default, min base age 3 bars.
+//  v11 (retained): ENTRY / EXIT / SELL VALUE LINES + value tags at each entry bar.
+//  v10 (retained): SHORT BREAKOUTS — resting SELL-STOP at the base LOW in a downtrend.
+//  v9  (retained): looser arming gates; min base age 3 bars.
 //  v8  (retained): breakout entry modelled as a resting buy-stop at the pivot.
 //  v7  (retained): optional break-bar volume gate; Opening Range Breakout.
 //  v6  (retained): defaults recalibrated for intraday bars.
@@ -98,6 +91,7 @@ partialDays = input.int(6,     "...or take partial after N bars",     minval=1, 
 moveBE      = input.bool(true, "Move stop to breakeven after partial",                      group=grpX)
 trailType   = input.string("EMA", "Trailing MA type", options=["SMA", "EMA"],               group=grpX)
 trailLen    = input.int(20,    "Trailing MA length (10 aggressive / 20 standard)", minval=2, group=grpX)
+showTrailMA = input.bool(true, "Plot the trailing MA used for exits",                        group=grpX, tooltip="Draws trailMA on the chart — the same series the exit logic checks (close < trailMA for longs / close > trailMA for shorts after a partial).")
 
 // ─── Core calculations ───────────────────────────────────────────────────────
 sma10    = ta.sma(close, 10)
@@ -412,6 +406,12 @@ valTarget = inLong ? targetPx : inShort ? sTargetPx : na
 plot(valEntry,  "Entry level",         color=color.new(color.blue,   0), style=plot.style_linebr, linewidth=1, force_overlay=true)
 plot(valStop,   "Exit / stop level",   color=color.new(color.red,    0), style=plot.style_linebr, linewidth=1, force_overlay=true)
 plot(valTarget, "Sell / target level", color=color.new(color.orange, 0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+
+// ─── Trailing MA used by the strategy (the exit reference series) ────────────
+// This is `trailMA` (SMA or EMA of length trailLen). After a partial, the exit
+// logic checks close < trailMA (long) / close > trailMA (short) to trail out.
+plot(showTrailMA ? trailMA : na, "Trailing MA (exit)",
+     color=color.new(color.blue, 0), linewidth=2, force_overlay=true)
 
 // ─── Scale anchor ────────────────────────────────────────────────────────────
 plot(close, "Scale anchor", color=color.new(color.gray, 100), editable=false, display=display.pane, force_overlay=true)

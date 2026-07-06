@@ -126,6 +126,96 @@ TEST(BuildResult, SparklineStaysDownsampled)
     EXPECT_LE(spark.size(), 64);
 }
 
+namespace {
+
+// Three flat daily candles plus one plotted series with points at candles 0
+// and 2 only — the shape every indicator-overlay test below drills into.
+QVariantMap build_indicator_drill(std::vector<app::IndicatorSpec> specs,
+                                  core::IndicatorStore store)
+{
+    app::SymbolSeries series;
+    series.candles = {
+        app::Candle{ 1, 1, 1, 1, 1, 0 },
+        app::Candle{ 1, 1, 1, 1, 1, kDayMs },
+        app::Candle{ 1, 1, 1, 1, 1, 2 * kDayMs },
+    };
+
+    app::ReportInput input{
+        1000.0, 3, {}, {}, {}, 1000.0, 1000.0, std::chrono::nanoseconds{ 0 },
+    };
+    input.indicator_specs = std::move(specs);
+    input.indicators = std::move(store);
+
+    const app::ReportMetrics metrics = app::compute_metrics(input);
+    std::map<core::Symbol, app::SymbolSeries> by_symbol;
+    by_symbol["BTC"] = series;
+    const QVariantMap result = app::build_result(app::RunConfig{ "1", "Test", "data" },
+                                                 input, metrics, by_symbol, 252.0);
+    return result["perSymbol"].toMap()["BTC"].toMap();
+}
+
+core::IndicatorPoint ipt(std::int64_t ms, double value)
+{
+    return core::IndicatorPoint{ core::Timestamp::from_millis(ms), value };
+}
+
+} // namespace
+
+TEST(BuildResult, IndicatorValuesAlignToCandlesWithNullGaps)
+{
+    const QVariantList indicators = build_indicator_drill(
+        { app::IndicatorSpec{ "ema", "the ema", "#123456" } },
+        { { "BTC", { { "ema", { ipt(0, 10.0), ipt(2 * kDayMs, 12.0) } } } } })["indicators"]
+        .toList();
+
+    ASSERT_EQ(indicators.size(), 1);
+    const QVariantMap entry = indicators.first().toMap();
+    EXPECT_EQ(entry["name"].toString(), "ema");
+    EXPECT_EQ(entry["doc"].toString(), "the ema");
+    EXPECT_EQ(entry["color"].toString(), "#123456");   // author color passes through
+
+    const QVariantList values = entry["values"].toList();
+    ASSERT_EQ(values.size(), 3);                       // parallel to the candles
+    EXPECT_DOUBLE_EQ(values[0].toDouble(), 10.0);
+    EXPECT_FALSE(values[1].isValid());                 // no point at candle 1 -> null gap
+    EXPECT_DOUBLE_EQ(values[2].toDouble(), 12.0);
+}
+
+TEST(BuildResult, SymbolWithNoIndicatorsGetsEmptyList)
+{
+    const QVariantMap drill = build_indicator_drill({}, {});
+    ASSERT_TRUE(drill.contains("indicators"));
+    EXPECT_TRUE(drill["indicators"].toList().isEmpty());
+}
+
+TEST(BuildResult, UndeclaredIndicatorGetsPaletteColorAndEmptyDoc)
+{
+    const QVariantList indicators = build_indicator_drill(
+        {},   // nothing declared — e.g. a typo'd name or a C++ strategy
+        { { "BTC", { { "mystery", { ipt(0, 5.0) } } } } })["indicators"].toList();
+
+    ASSERT_EQ(indicators.size(), 1);
+    const QVariantMap entry = indicators.first().toMap();
+    EXPECT_EQ(entry["name"].toString(), "mystery");
+    EXPECT_TRUE(entry["doc"].toString().isEmpty());
+    EXPECT_EQ(entry["color"].toString(), "#4f8fe1");   // first palette color
+}
+
+TEST(BuildResult, DeclaredOrderPreservedOverAlphabeticalStoreOrder)
+{
+    const QVariantList indicators = build_indicator_drill(
+        { app::IndicatorSpec{ "zeta", "", "" }, app::IndicatorSpec{ "alpha", "", "" } },
+        { { "BTC", { { "alpha", { ipt(0, 1.0) } }, { "zeta", { ipt(0, 2.0) } } } } })
+        ["indicators"].toList();
+
+    ASSERT_EQ(indicators.size(), 2);
+    EXPECT_EQ(indicators[0].toMap()["name"].toString(), "zeta");    // declaration order,
+    EXPECT_EQ(indicators[1].toMap()["name"].toString(), "alpha");   // not the store's map order
+    // Palette colors assigned in declaration order too.
+    EXPECT_EQ(indicators[0].toMap()["color"].toString(), "#4f8fe1");
+    EXPECT_EQ(indicators[1].toMap()["color"].toString(), "#b98ae8");
+}
+
 TEST(BuildResult, EquityTimestampsShipped)
 {
     constexpr std::int64_t t0 = 1704067200000;   // arbitrary epoch ms

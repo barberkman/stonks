@@ -265,4 +265,34 @@ inline TradeRow annotate(const RoundTrip& rt, const SymbolSeries& series, int n)
     return row;
 }
 
+// Align one plotted indicator series onto a symbol's full-resolution candles:
+// one entry per candle, in candle order. A candle whose timestamp exactly
+// matches a recorded point takes that point's value; a candle with none
+// (warmup, or the strategy just never plotted there) gets nullopt — the GUI
+// renders that as a gap, never a line to zero. Both inputs are chronological
+// by construction (feed timestamps; on_tick call order), so a single forward
+// pass suffices. Repeated points at one timestamp resolve last-call-wins; a
+// point whose timestamp matches no candle is skipped, never misassigned.
+inline std::vector<std::optional<double>> align_indicator(
+    const std::vector<Candle>& candles, const core::IndicatorSeries& points)
+{
+    std::vector<std::optional<double>> out;
+    out.reserve(candles.size());
+    std::size_t pi = 0;
+    for (const Candle& c : candles) {
+        while (pi < points.size()
+               && points[pi].timestamp.value.time_since_epoch().count() < c.t) {
+            ++pi;
+        }
+        std::optional<double> current;
+        while (pi < points.size()
+               && points[pi].timestamp.value.time_since_epoch().count() == c.t) {
+            current = points[pi].value;
+            ++pi;
+        }
+        out.push_back(current);
+    }
+    return out;
+}
+
 } // namespace stonks::app

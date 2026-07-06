@@ -15,8 +15,6 @@ add_executable(core_tests
     core/scenarios_test.cpp
     core/lookahead_test.cpp
     core/determinism_test.cpp
-    core/ema50strategy_test.cpp
-    core/qmsignals_test.cpp
 )
 
 target_include_directories(core_tests PRIVATE

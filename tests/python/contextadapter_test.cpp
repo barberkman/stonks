@@ -279,6 +279,36 @@ TEST(ContextAdapter, PlaceOrdersForwardReduceOnly)
     EXPECT_TRUE(placed[0].reduce_only);
 }
 
+TEST(ContextAdapter, PlotForwardsToContextStore)
+{
+    StubFeed feed;
+    StubBroker broker;
+    core::Clock clock;
+    core::IndicatorStore store;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock, &store };
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    clock.set(core::Timestamp::from_millis(9000));
+    adapter.plot("ema", "X", 42.0);
+
+    ASSERT_EQ(store.size(), 1u);
+    const auto& series = store.at("X").at("ema");
+    ASSERT_EQ(series.size(), 1u);
+    EXPECT_EQ(series[0].timestamp, core::Timestamp::from_millis(9000));
+    EXPECT_DOUBLE_EQ(series[0].value, 42.0);
+}
+
+TEST(ContextAdapter, PlotIsNoOpWithoutStore)
+{
+    StubFeed feed;
+    StubBroker broker;
+    core::Clock clock;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock };   // no store wired
+    python::ContextAdapter<StubBroker, StubFeed> adapter{ ctx };
+
+    adapter.plot("ema", "X", 42.0);   // must not crash
+}
+
 TEST(ContextAdapter, MakeAdapterDeducesTemplateArgs)
 {
     StubFeed feed;

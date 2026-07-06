@@ -45,11 +45,13 @@ function zoomedRange(lo, hi, anchorFrac, factor, count, minSpan) {
 // instead (o = first open, h/l = extremes, c = last close, v = summed volume)
 // — the standard resample, so buckets draw through the same candle code.
 // Returns parallel arrays plus each drawn candle's raw fractional index (xi)
-// for the shared X() mapping, and the visible price/volume extremes.
+// for the shared X() mapping, the raw-index range [r0, r1) each drawn
+// candle/bucket was derived from (so bucketIndicator can reduce a parallel
+// series over the exact same boundaries), and the visible price/volume extremes.
 function visibleSeries(T, O, H, L, C, V, lo, hi, plotW) {
     var count = T.length;
     var i0 = Math.max(0, Math.floor(lo)), i1 = Math.min(count - 1, Math.ceil(hi));
-    var out = { t: [], o: [], h: [], l: [], c: [], v: [], xi: [], pmin: Infinity, pmax: -Infinity, vmax: 0 };
+    var out = { t: [], o: [], h: [], l: [], c: [], v: [], xi: [], r0: [], r1: [], pmin: Infinity, pmax: -Infinity, vmax: 0 };
     if (i1 < i0) return out;
     var n = i1 - i0 + 1;
     var pxPerCandle = plotW / Math.max(1e-9, hi - lo);
@@ -57,6 +59,7 @@ function visibleSeries(T, O, H, L, C, V, lo, hi, plotW) {
         for (var k = i0; k <= i1; k++) {
             out.t.push(T[k]); out.o.push(O[k]); out.h.push(H[k]); out.l.push(L[k]); out.c.push(C[k]); out.v.push(V[k]);
             out.xi.push(k);
+            out.r0.push(k); out.r1.push(k + 1);
             if (L[k] < out.pmin) out.pmin = L[k];
             if (H[k] > out.pmax) out.pmax = H[k];
             if (V[k] > out.vmax) out.vmax = V[k];
@@ -77,9 +80,27 @@ function visibleSeries(T, O, H, L, C, V, lo, hi, plotW) {
         }
         out.t.push(T[b0]); out.o.push(O[b0]); out.h.push(bh); out.l.push(bl); out.c.push(C[b1 - 1]); out.v.push(bv);
         out.xi.push((b0 + b1 - 1) / 2);
+        out.r0.push(b0); out.r1.push(b1);
         if (bl < out.pmin) out.pmin = bl;
         if (bh > out.pmax) out.pmax = bh;
         if (bv > out.vmax) out.vmax = bv;
+    }
+    return out;
+}
+
+// Reduce a full-resolution indicator array (parallel to the raw candle
+// columns, null/undefined = gap) onto the raw-index ranges visibleSeries()
+// just produced (r0[k]/r1[k]). Per bucket: the last non-null sample — the
+// close-analog — or null when the whole bucket is gaps, so warmup stays a
+// visible gap at every zoom level.
+function bucketIndicator(values, r0, r1) {
+    var out = [];
+    for (var b = 0; b < r0.length; b++) {
+        var v = null;
+        for (var k = r0[b]; k < r1[b]; k++) {
+            if (values[k] !== null && values[k] !== undefined) v = values[k];
+        }
+        out.push(v);
     }
     return out;
 }

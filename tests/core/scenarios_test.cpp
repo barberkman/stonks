@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -260,6 +261,41 @@ struct BuyEachPrinterEveryTick
         for (const auto& s : ctx.history(1).series) {
             ctx.place_order(MarketOrderParams{ .symbol = Symbol{ s.symbol }, .side = OrderSide::Buy, .quantity = Quantity{ 1.0 } });
         }
+    }
+};
+
+// Plots one increasing value per tick under a fixed symbol/series — exercises
+// the Context::plot -> engine-owned IndicatorStore recording path.
+struct PlotEveryTick
+{
+    Symbol symbol{ "X" };
+    double next{ 1.0 };
+
+    void on_tick(auto& ctx)
+    {
+        ctx.plot("myind", symbol, next);
+        next += 1.0;
+    }
+};
+
+// Plots each printing symbol's close under one series name — exercises
+// independent per-symbol keying.
+struct PlotEachPrinterClose
+{
+    void on_tick(auto& ctx)
+    {
+        for (const auto& s : ctx.history(1).series) {
+            ctx.plot("close_echo", Symbol{ s.symbol }, s.bars.close.back());
+        }
+    }
+};
+
+// Plots a non-finite value every tick — the store must stay empty.
+struct PlotNaN
+{
+    void on_tick(auto& ctx)
+    {
+        ctx.plot("v", Symbol{ "X" }, std::numeric_limits<double>::quiet_NaN());
     }
 };
 
@@ -556,6 +592,76 @@ TEST(Scenario, NoLookahead_EveryFillIsStrictlyAfterItsPlacement_MultiSymbol)
     const auto trades = sorted_trades(broker);
     EXPECT_EQ(trades.front().timestamp, Timestamp::from_millis(2000));
     EXPECT_DOUBLE_EQ(trades.front().price, 12.0);   // A's ts=2000 open
+}
+
+TEST(Scenario, ContextPlotRecordsPointsKeyedBySymbolAndSeries)
+{
+    BacktestBroker broker{ Balance{ 1'000.0 } };
+    BrokerSpy spy{ &broker };
+    StubFeed feed;
+    feed.bars = { flat(1000, 100.0), flat(2000, 110.0), flat(3000, 120.0) };
+
+    Engine engine{ PlotEveryTick{}, std::move(feed), std::move(spy), ProgressOutput::Silent };
+    engine.run();
+
+    const auto& store = engine.indicators();
+    ASSERT_EQ(store.size(), 1u);
+    ASSERT_TRUE(store.contains("X"));
+    ASSERT_TRUE(store.at("X").contains("myind"));
+    const auto& series = store.at("X").at("myind");
+    ASSERT_EQ(series.size(), 3u);
+    EXPECT_EQ(series[0].timestamp, Timestamp::from_millis(1000));
+    EXPECT_DOUBLE_EQ(series[0].value, 1.0);
+    EXPECT_EQ(series[1].timestamp, Timestamp::from_millis(2000));
+    EXPECT_DOUBLE_EQ(series[1].value, 2.0);
+    EXPECT_EQ(series[2].timestamp, Timestamp::from_millis(3000));
+    EXPECT_DOUBLE_EQ(series[2].value, 3.0);
+}
+
+TEST(Scenario, ContextPlotKeyedIndependentlyPerSymbol)
+{
+    BacktestBroker broker{ Balance{ 1'000.0 } };
+    BrokerSpy spy{ &broker };
+    StubFeed feed;
+    feed.bars = {
+        flat(1000, Symbol{ "A" }, 10.0),
+        flat(1000, Symbol{ "B" }, 20.0),
+        flat(2000, Symbol{ "A" }, 12.0),   // B does not print at ts=2000
+        flat(3000, Symbol{ "B" }, 24.0),   // A does not print at ts=3000
+    };
+
+    Engine engine{ PlotEachPrinterClose{}, std::move(feed), std::move(spy), ProgressOutput::Silent };
+    engine.run();
+
+    const auto& store = engine.indicators();
+    ASSERT_EQ(store.size(), 2u);
+
+    const auto& a = store.at("A").at("close_echo");
+    ASSERT_EQ(a.size(), 2u);
+    EXPECT_EQ(a[0].timestamp, Timestamp::from_millis(1000));
+    EXPECT_DOUBLE_EQ(a[0].value, 10.0);
+    EXPECT_EQ(a[1].timestamp, Timestamp::from_millis(2000));
+    EXPECT_DOUBLE_EQ(a[1].value, 12.0);
+
+    const auto& b = store.at("B").at("close_echo");
+    ASSERT_EQ(b.size(), 2u);
+    EXPECT_EQ(b[0].timestamp, Timestamp::from_millis(1000));
+    EXPECT_DOUBLE_EQ(b[0].value, 20.0);
+    EXPECT_EQ(b[1].timestamp, Timestamp::from_millis(3000));
+    EXPECT_DOUBLE_EQ(b[1].value, 24.0);
+}
+
+TEST(Scenario, ContextPlotDropsNonFiniteValues)
+{
+    BacktestBroker broker{ Balance{ 1'000.0 } };
+    BrokerSpy spy{ &broker };
+    StubFeed feed;
+    feed.bars = { flat(1000, 100.0), flat(2000, 110.0) };
+
+    Engine engine{ PlotNaN{}, std::move(feed), std::move(spy), ProgressOutput::Silent };
+    engine.run();
+
+    EXPECT_TRUE(engine.indicators().empty());
 }
 
 } // namespace stonks::broker

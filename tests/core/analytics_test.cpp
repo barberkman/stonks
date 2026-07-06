@@ -210,3 +210,60 @@ TEST(Annotate, ExcursionsShortAreSignAware)
     EXPECT_NEAR(row.mfe, (100.0 / 98.0 - 1.0) * 100.0, 1e-6);    // lowest low favourable
     EXPECT_NEAR(row.mae, (100.0 / 112.0 - 1.0) * 100.0, 1e-6);   // highest high adverse
 }
+
+namespace {
+
+core::IndicatorPoint pt(std::int64_t ms, double value)
+{
+    return core::IndicatorPoint{ core::Timestamp::from_millis(ms), value };
+}
+
+// Flat candles at the given timestamps — align_indicator only reads Candle.t.
+std::vector<app::Candle> candles_at(std::initializer_list<std::int64_t> ts)
+{
+    std::vector<app::Candle> out;
+    for (const auto t : ts) { out.push_back(app::Candle{ 1, 1, 1, 1, 1, t }); }
+    return out;
+}
+
+} // namespace
+
+TEST(AlignIndicator, ExactMatchesTakeValuesAndMissingBarsAreGaps)
+{
+    const auto aligned = app::align_indicator(
+        candles_at({ 1000, 2000, 3000 }), { pt(1000, 10.0), pt(3000, 12.0) });
+
+    ASSERT_EQ(aligned.size(), 3u);
+    EXPECT_DOUBLE_EQ(aligned[0].value(), 10.0);
+    EXPECT_FALSE(aligned[1].has_value());   // no point at 2000 -> gap
+    EXPECT_DOUBLE_EQ(aligned[2].value(), 12.0);
+}
+
+TEST(AlignIndicator, RepeatedTimestampResolvesLastCallWins)
+{
+    const auto aligned = app::align_indicator(
+        candles_at({ 1000 }), { pt(1000, 10.0), pt(1000, 11.0) });
+
+    ASSERT_EQ(aligned.size(), 1u);
+    EXPECT_DOUBLE_EQ(aligned[0].value(), 11.0);
+}
+
+TEST(AlignIndicator, PointWithNoMatchingCandleIsDroppedNotMisassigned)
+{
+    // 1500 falls between candles: dropped. Later points still land correctly.
+    const auto aligned = app::align_indicator(
+        candles_at({ 1000, 2000 }), { pt(1500, 99.0), pt(2000, 12.0) });
+
+    ASSERT_EQ(aligned.size(), 2u);
+    EXPECT_FALSE(aligned[0].has_value());
+    EXPECT_DOUBLE_EQ(aligned[1].value(), 12.0);
+}
+
+TEST(AlignIndicator, EmptyPointsProduceAllGaps)
+{
+    const auto aligned = app::align_indicator(candles_at({ 1000, 2000 }), {});
+
+    ASSERT_EQ(aligned.size(), 2u);
+    EXPECT_FALSE(aligned[0].has_value());
+    EXPECT_FALSE(aligned[1].has_value());
+}

@@ -287,5 +287,16 @@ PYBIND11_MODULE(_core, m)
              "Place a stop-market order; returns its OrderID. Dormant until the "
              "market touches `price`, then fills at the trigger or worse (a gap "
              "through it fills at the open). Pass `parent` to attach it as a "
-             "bracket child.");
+             "bracket child.")
+        .def("plot",
+             &stonks_py::IContext::plot,
+             py::arg("name"),
+             py::arg("symbol"),
+             py::arg("value"),
+             "Record one sample of a strategy-computed indicator series at the "
+             "current tick's timestamp (implicit — there is no timestamp arg). "
+             "`name` should match a key in the class's declared `indicators` "
+             "dict, but any name is accepted — undeclared series still render, "
+             "with a palette-default color. Display-only: never influences "
+             "trading logic; non-finite values are dropped (rendered as a gap).");
 }

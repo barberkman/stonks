@@ -57,6 +57,11 @@ public:
         return m_ctx.cancel_order(id);
     }
 
+    void plot(const std::string& name, const core::Symbol& symbol, double value) override
+    {
+        m_ctx.plot(name, symbol, value);
+    }
+
 private:
     core::Context<BrokerT, DataFeedT>& m_ctx;
 };

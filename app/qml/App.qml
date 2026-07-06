@@ -125,6 +125,7 @@ QtObject {
     function symMeta(id) { return { seed: id, name: id }; }   // seed carries the symbol id
     function candlesFor(id) { return _drill(id).candles || []; }
     function tradesFor(id) { return _drill(id).trades || []; }
+    function indicatorsFor(id) { return _drill(id).indicators || []; }
     function equityFor(bt) { return (bt && bt.equity) ? bt.equity : []; }
     function equityTimes(bt) { return (bt && bt.equityT) ? bt.equityT : []; }
     function drawdownFor(bt) { return (bt && bt.drawdown) ? bt.drawdown : []; }

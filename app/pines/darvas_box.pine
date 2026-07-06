@@ -1,0 +1,102 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © danilogalisteu
+// Parameterized version: lookback, colors, fill transparency, and arrow offset are now adjustable in Settings.
+
+//@version=5
+indicator("Darvas box", overlay=true)
+
+// ---------------------------------------------------------------------------
+// INPUTS
+// ---------------------------------------------------------------------------
+length       = input.int(4, "Box lookback period", minval=1, group="Settings")
+show_labels  = input.bool(false, "Show labels for box top and bottom", group="Settings")
+
+box_col      = input.color(color.yellow, "Box color",       group="Colors")
+up_col       = input.color(color.green,  "Breakout color",  group="Colors")
+dn_col       = input.color(color.red,    "Breakdown color", group="Colors")
+transp       = input.int(95, "Box fill transparency", minval=0, maxval=100, group="Colors")
+
+arrow_offset = input.float(0.1, "Arrow offset (% of box height)", minval=0, step=0.05, group="Arrows")
+
+// Reference: https://tlc.thinkorswim.com/center/reference/Tech-Indicators/studies-library/C-D/DarvasBox
+// Logic changed to transition to state 5 after one higher low only
+
+box_state = 1
+high_value = high
+low_value = ta.lowest(length)
+
+if box_state[1] == 1 and high < high_value[1]
+    box_state := 2
+    high_value := high_value[1]
+if box_state[1] == 2 and high < high_value[1]
+    box_state := 3
+    high_value := high_value[1]
+if box_state[1] == 3 and high < high_value[1]
+    if low > low_value[1]
+        box_state := 5
+        low_value := low_value[1]
+    else
+        box_state := 4
+    high_value := high_value[1]
+if box_state[1] == 4 and high < high_value[1]
+    if low > low_value[1]
+        box_state := 5
+        low_value := low_value[1]
+    else
+        box_state := 4
+    high_value := high_value[1]
+if box_state[1] == 5 and high <= high_value[1] and low >= low_value[1]
+    box_state := 5
+    high_value := high_value[1]
+    low_value := low_value[1]
+
+draw_box(left, top, right, bottom, col) =>
+    bx = box.new(left, top, right, bottom)
+    box.set_border_color(bx, col)
+    box.set_bgcolor(bx, color.rgb(color.r(col), color.g(col), color.b(col), transp))
+    bx
+
+// draw and redraw box
+state_active = 5
+box_active = box_state == state_active
+box_start = ta.barssince(box_state == 1)
+
+b = box(na)
+l_up = label(na)
+l_dn = label(na)
+end_box = false
+end_box_dir = 0
+box_color = box_col
+
+if box_active
+    if box_active[1]
+        box.delete(b[1])
+        if show_labels
+            label.delete(l_up[1])
+            label.delete(l_dn[1])
+    b := draw_box(bar_index-box_start, high_value, bar_index, low_value, box_color)
+    if show_labels
+        l_up := label.new(bar_index-2, high_value[1], str.tostring(high_value[1]), yloc=yloc.price, color=up_col, style=label.style_label_down)
+        l_dn := label.new(bar_index-2, low_value[1],  str.tostring(low_value[1]),  yloc=yloc.price, color=dn_col, style=label.style_label_up)
+else if box_active[1]
+    end_box := true
+    end_box_dir := high > box.get_top(b[1]) ? 1 : low < box.get_bottom(b[1]) ? -1 : 0
+    box_color := end_box_dir == 1 ? up_col : end_box_dir == -1 ? dn_col : box_col
+    box.set_border_color(b[1], box_color)
+    box.set_bgcolor(b[1], color.rgb(color.r(box_color), color.g(box_color), color.b(box_color), transp))
+
+box_break_up = end_box_dir ==  1
+box_break_dn = end_box_dir == -1
+
+// show values as soon as box is active
+plot(box_active ? high_value : na, "Box top",    style=plot.style_linebr, color=up_col, display=display.all-display.pane)
+plot(box_active ?  low_value : na, "Box bottom", style=plot.style_linebr, color=dn_col, display=display.all-display.pane)
+
+// show arrows for breakout / breakdown
+plotshape(box_break_up ? high_value[1]+arrow_offset*(high_value-low_value)[1] : na, style=shape.arrowup, color=up_col, offset=-1, location=location.absolute, display=display.pane)
+plotshape(box_break_dn ?  low_value[1]-arrow_offset*(high_value-low_value)[1] : na, style=shape.arrowdown, color=dn_col, offset=-1, location=location.absolute, display=display.pane)
+
+// alerts
+alertcondition(end_box, title='DB break', message='Darvas box break!')
+alertcondition(box_break_up, title='DB breakout',  message='Darvas box breakout!')
+alertcondition(box_break_dn, title='DB breakdown', message='Darvas box breakdown!')

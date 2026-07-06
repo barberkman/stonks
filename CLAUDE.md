@@ -71,7 +71,7 @@ python3 -m venv app/python/.venv
 app/python/.venv/bin/pip install -e python/
 ```
 
-Smoke: `./build/linux-debug/app/app` (from project root) runs the sample at `app/python/ema50strategy.py`.
+Smoke: `./build/linux-debug/app/app` (from project root) runs the sample at `app/python/qmsignals.py`.
 
 ## Tests
 

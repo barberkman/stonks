@@ -88,6 +88,19 @@ class ParamStrategy(stonks.Strategy):
             )
 
 
+class PlottingStrategy(stonks.Strategy):
+    """Declares one indicator series and plots it every tick; verifies
+    ctx.plot() round-trips through the bindings into the engine store and
+    indicator_specs() reads the declared metadata back out."""
+
+    indicators = {
+        "mid": stonks.Indicator("synthetic midpoint", color="#4f8fe1"),
+    }
+
+    def on_tick(self, ctx):
+        ctx.plot("mid", "X", 42.5)
+
+
 class ApiProbe(stonks.Strategy):
     """Probes the observability API through the real bindings: position() on a
     flat book, order() status round-trip, cancel_order() semantics, and the

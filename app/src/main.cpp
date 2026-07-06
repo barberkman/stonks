@@ -17,7 +17,6 @@
 #include "report.h"
 #include "report_json.h"
 #include "strategies/pythonstrategy.h"
-#include "strategies/qmsignals.h"
 
 namespace stonks::app {
 
@@ -35,10 +34,15 @@ void run_backtest() {
         .maker_fee_bps = 2.0,
         .taker_fee_bps = 5.0,
     };
+    PythonStrategy strategy{ "qmsignals", "QMSignalsStrategy" };
+    // Declared indicator metadata — class-level, read before the move below.
+    std::vector<IndicatorSpec> indicator_specs;
+    for (const auto& s : strategy.indicator_specs()) {
+        indicator_specs.push_back(IndicatorSpec{ s.name, s.doc, s.color });
+    }
     stonks::core::Engine engine
     {
-        PythonStrategy{ "qmsignals", "QMSignalsStrategy" },
-        // QMSignalsStrategy{},
+        std::move(strategy),
         stonks::datafeed::KLineFeed{ data_file, { .start = start, .end = end, .symbols = symbols } },
         stonks::broker::BacktestBroker{ starting_cash, broker_config }
     };
@@ -59,6 +63,8 @@ void run_backtest() {
         broker_config,
         StrategyRunInfo{ "qmsignals", "QMSignalsStrategy", {} },   // headless: no overrides
         RunMeta{ "QMSignalsStrategy", data_file, "binance_1d", start, end, symbols },
+        std::move(indicator_specs),
+        engine.indicators(),
     };
     const ReportMetrics metrics = compute_metrics(input);
     print_report(std::cout, metrics);

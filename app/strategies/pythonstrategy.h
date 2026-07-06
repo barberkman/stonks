@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
@@ -32,6 +33,16 @@
 // without it GCC warns the wrapper exposes a hidden-visibility type.
 struct __attribute__((visibility("hidden"))) PythonStrategy
 {
+    // Declared metadata for one indicator series the strategy publishes via
+    // ctx.plot: name, doc, and the author's optional color ("" = unset, the
+    // GUI assigns a palette color). See indicator_specs() below.
+    struct IndicatorSpec
+    {
+        std::string name;
+        std::string doc;
+        std::string color;
+    };
+
     PythonStrategy(std::string module, std::string cls,
                    std::map<std::string, double> overrides = {})
     : m_module_name{ std::move(module) }, m_class_name{ std::move(cls) }
@@ -78,6 +89,34 @@ struct __attribute__((visibility("hidden"))) PythonStrategy
     PythonStrategy& operator=(PythonStrategy&&) noexcept = default;
     PythonStrategy(const PythonStrategy&) = delete;
     PythonStrategy& operator=(const PythonStrategy&) = delete;
+
+    // The class's declared `indicators` metadata, in declaration order. Reads
+    // only class-level data — safe (and intended) to call right after
+    // construction, before the strategy is moved into the Engine. A class
+    // without an `indicators` dict simply has none; a malformed declaration
+    // (e.g. a list instead of a dict) throws — that's an authoring bug.
+    std::vector<IndicatorSpec> indicator_specs() const
+    {
+        pybind11::gil_scoped_acquire gil;
+        std::vector<IndicatorSpec> out;
+        if (!pybind11::hasattr(m_py_instance, "indicators")) { return out; }
+        try {
+            const pybind11::object cls = m_py_instance.attr("__class__");
+            const pybind11::object specs =
+                pybind11::module_::import("stonks").attr("indicator_specs")(cls);
+            for (const auto& item : specs) {
+                out.push_back(IndicatorSpec{
+                    item["name"].cast<std::string>(),
+                    item["doc"].cast<std::string>(),
+                    item["color"].cast<std::string>(),
+                });
+            }
+        } catch (pybind11::error_already_set& e) {
+            throw std::runtime_error("PythonStrategy(" + m_module_name + ":"
+                + m_class_name + ") indicator_specs failed: " + e.what());
+        }
+        return out;
+    }
 
     void on_start(auto& context) { if (m_has_on_start) { invoke("on_start", context); } }
     void on_tick(auto& context)  { invoke("on_tick", context); }

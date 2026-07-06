@@ -34,6 +34,17 @@ struct StrategyRunInfo
     std::map<std::string, double> params;
 };
 
+// Declared metadata for one indicator series the strategy published via
+// ctx.plot — display label/doc and the author's optional color. A separate,
+// dependency-free struct from PythonStrategy::IndicatorSpec (this header must
+// stay pybind11-free); the worker glues the two together.
+struct IndicatorSpec
+{
+    std::string name;
+    std::string doc;
+    std::string color;   // "" = unset; the GUI assigns a palette color
+};
+
 // Which data produced the run — enough for a later session to rebuild the
 // GUI's per-symbol candle drill-down from the archived report alone.
 struct RunMeta
@@ -61,6 +72,8 @@ struct ReportInput
     broker::BrokerConfig config{};   // the run's broker knobs, stamped into the JSON for reproducibility
     StrategyRunInfo strategy{};      // appended last: existing positional ctor sites keep compiling
     RunMeta run{};                   // data provenance, for restoring archived runs in the GUI
+    std::vector<IndicatorSpec> indicator_specs{};   // declared overlay metadata, declaration order
+    core::IndicatorStore indicators{};              // plotted points: symbol -> series -> points
 };
 
 struct ReportMetrics

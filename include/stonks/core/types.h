@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -159,6 +160,24 @@ struct EquityPoint
 
     auto operator<=>(const EquityPoint&) const = default;
 };
+
+// One (timestamp, value) sample of a strategy-computed indicator series,
+// recorded via Context::plot for the GUI's chart overlays. Display-only:
+// never read back by engine or broker logic.
+struct IndicatorPoint
+{
+    Timestamp timestamp;
+    double value;
+
+    auto operator<=>(const IndicatorPoint&) const = default;
+};
+
+// Every point plotted during a run, keyed by symbol then series name (the
+// string passed to Context::plot); each vector is chronological because
+// on_tick fires once per increasing timestamp. Owned by the Engine as part of
+// its run record, referenced (not owned) by Context — like the equity curve.
+using IndicatorSeries = std::vector<IndicatorPoint>;
+using IndicatorStore = std::map<Symbol, std::map<std::string, IndicatorSeries>>;
 
 struct MarketOrderParams
 {

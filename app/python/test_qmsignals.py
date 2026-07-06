@@ -339,6 +339,39 @@ def test_params_dict_matches_curated_attributes():
                          "adr_stop_mult", "min_adr"))
 
 
+def test_indicators_dict_declares_trend_filter_mas():
+    from stonks import indicator_specs
+
+    specs = indicator_specs(QMSignalsStrategy)
+    assert [s["name"] for s in specs] == ["sma10", "sma20"]
+
+
+def test_trend_mas_plotted_with_independent_warmup_gaps():
+    ctx, _ = _run(_flat_bars())   # 56 flat bars at close 100
+
+    s10 = [p for p in ctx.plots if p.name == "sma10"]
+    s20 = [p for p in ctx.plots if p.name == "sma20"]
+    assert {p.name for p in ctx.plots} == {"sma10", "sma20"}
+    assert all(p.symbol == "TEST" for p in ctx.plots)
+
+    # sma10 needs 10 bars (first plot on tick 9), sma20 needs 20 (tick 19) —
+    # each series starts after its own warmup, independently.
+    assert len(s10) == 47 and s10[0].timestamp == 9 * DAY
+    assert len(s20) == 37 and s20[0].timestamp == 19 * DAY
+    assert all(p.value == pytest.approx(100.0) for p in s10 + s20)
+
+
+def test_trend_ma_values_match_sma_of_closes():
+    bars = _breakout_bars()
+    ctx, _ = _run(bars)
+
+    closes = [b.close for b in bars]
+    last10 = [p for p in ctx.plots if p.name == "sma10"][-1]
+    last20 = [p for p in ctx.plots if p.name == "sma20"][-1]
+    assert last10.value == pytest.approx(np.mean(closes[-10:]))
+    assert last20.value == pytest.approx(np.mean(closes[-20:]))
+
+
 def test_entry_leverage_formula():
     s = QMSignalsStrategy()
     assert s.entry_leverage(100.0, 95.0, True) == pytest.approx(19.0)    # Lmax=20 -> step below

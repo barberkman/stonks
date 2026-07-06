@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "stonks/core/broker.h"
@@ -20,10 +22,15 @@ class Context
     static_assert(DataFeed<DataFeedT>, "DataFeedT must satisfy the DataFeed concept");
 
 public:
-    Context(BrokerT& broker, const DataFeedT& dataFeed, const Clock& clock)
+    // `indicators`, if non-null, receives every plot() sample; null (the
+    // default, so existing construction sites keep compiling) turns plot()
+    // into a no-op — mirroring Engine's nullable cancel-flag pattern.
+    Context(BrokerT& broker, const DataFeedT& dataFeed, const Clock& clock,
+            IndicatorStore* indicators = nullptr)
     : m_broker{ broker },
       m_dataFeed{ dataFeed },
-      m_clock{ clock }
+      m_clock{ clock },
+      m_indicators{ indicators }
     {}
 
     Timestamp now() const { return m_clock.now(); }
@@ -51,6 +58,16 @@ public:
     {
         STONKS_LOG("ctx", "ev=cancel_req id={} now={}", id, stonks::log::ts_ms(m_clock.now()));
         return m_broker.cancel_order(id);
+    }
+
+    // Record one sample of a strategy-computed indicator series, timestamped
+    // at now(), for the GUI's chart overlays. Display-only: never consulted by
+    // engine/broker logic. Non-finite values are dropped so an unguarded
+    // warmup NaN renders as a gap downstream, not a spurious point.
+    void plot(const std::string& name, const Symbol& symbol, double value)
+    {
+        if (!m_indicators || !std::isfinite(value)) { return; }
+        (*m_indicators)[symbol][name].push_back(IndicatorPoint{ m_clock.now(), value });
     }
 
     // This tick's window: every symbol that printed at the current timestamp,
@@ -90,6 +107,7 @@ private:
     BrokerT& m_broker;
     const DataFeedT& m_dataFeed;
     const Clock& m_clock;
+    IndicatorStore* m_indicators{ nullptr };
 };
 
 } // namespace stonks::core

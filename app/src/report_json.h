@@ -99,6 +99,14 @@ inline void to_json(nlohmann::json& j, const EquityPoint& p)
     };
 }
 
+inline void to_json(nlohmann::json& j, const IndicatorPoint& p)
+{
+    j = nlohmann::json{
+        { "timestamp", to_iso8601(p.timestamp) },
+        { "value", p.value },
+    };
+}
+
 // ── Inverse parsers, for restoring archived reports in a later session ───────
 
 inline OrderSide side_from_string(const std::string& s)
@@ -175,6 +183,14 @@ inline void from_json(const nlohmann::json& j, EquityPoint& p)
     };
 }
 
+inline void from_json(const nlohmann::json& j, IndicatorPoint& p)
+{
+    p = IndicatorPoint{
+        from_iso8601(j.at("timestamp").get<std::string>()),
+        j.at("value").get<double>(),
+    };
+}
+
 } // namespace stonks::core
 
 namespace stonks::broker {
@@ -236,6 +252,25 @@ inline void from_json(const nlohmann::json& j, StrategyRunInfo& s)
     };
 }
 
+// Declared metadata for one published indicator series (chart overlay).
+inline void to_json(nlohmann::json& j, const IndicatorSpec& s)
+{
+    j = nlohmann::json{
+        { "name", s.name },
+        { "doc", s.doc },
+        { "color", s.color },
+    };
+}
+
+inline void from_json(const nlohmann::json& j, IndicatorSpec& s)
+{
+    s = IndicatorSpec{
+        j.value("name", std::string{}),
+        j.value("doc", std::string{}),
+        j.value("color", std::string{}),
+    };
+}
+
 // The data provenance that lets a later session rebuild the candle drill-down.
 inline void to_json(nlohmann::json& j, const RunMeta& r)
 {
@@ -293,6 +328,10 @@ inline void write_report_json(std::ostream& os, const ReportInput& in, const Rep
         { "config", in.config },
         { "strategy", in.strategy },
         { "run", in.run },
+        { "indicator_specs", in.indicator_specs },
+        // The nested symbol -> series -> points maps serialize natively from
+        // the IndicatorPoint leaf, like StrategyRunInfo::params above.
+        { "indicators", in.indicators },
         { "trades", in.trades },
         { "orders", in.orders },
         { "equity_curve", in.equity_curve },
@@ -320,6 +359,8 @@ inline ReportInput report_input_from_json(const nlohmann::json& j)
     if (j.contains("config")) { in.config = j.at("config").get<broker::BrokerConfig>(); }
     if (j.contains("strategy")) { in.strategy = j.at("strategy").get<StrategyRunInfo>(); }
     if (j.contains("run")) { in.run = j.at("run").get<RunMeta>(); }
+    in.indicator_specs = j.value("indicator_specs", std::vector<IndicatorSpec>{});
+    in.indicators = j.value("indicators", core::IndicatorStore{});
     return in;
 }
 

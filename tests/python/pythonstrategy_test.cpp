@@ -352,4 +352,44 @@ TEST_F(PythonStrategyTest, HistoryExposesCombinedMultiSymbolDataFrame)
     for (const auto& o : placed) { EXPECT_EQ(o.side, core::OrderSide::Buy); }
 }
 
+TEST_F(PythonStrategyTest, IndicatorSpecsReflectDeclaredMetadata)
+{
+    PythonStrategy strat{ "fixturestrats", "PlottingStrategy" };
+
+    const auto specs = strat.indicator_specs();
+    ASSERT_EQ(specs.size(), 1u);
+    EXPECT_EQ(specs[0].name, "mid");
+    EXPECT_EQ(specs[0].doc, "synthetic midpoint");
+    EXPECT_EQ(specs[0].color, "#4f8fe1");
+}
+
+TEST_F(PythonStrategyTest, IndicatorSpecsEmptyWhenNoneDeclared)
+{
+    PythonStrategy with_base{ "fixturestrats", "CallRecording" };   // stonks.Strategy, no indicators
+    EXPECT_TRUE(with_base.indicator_specs().empty());
+
+    PythonStrategy bare{ "fixturestrats", "BareTickOnly" };   // no stonks.Strategy base at all
+    EXPECT_TRUE(bare.indicator_specs().empty());
+}
+
+TEST_F(PythonStrategyTest, PlotRecordsThroughRealContextAndBindings)
+{
+    PythonStrategy strat{ "fixturestrats", "PlottingStrategy" };
+
+    StubBroker broker;
+    StubFeed feed;
+    core::Clock clock;
+    core::IndicatorStore store;
+    core::Context<StubBroker, StubFeed> ctx{ broker, feed, clock, &store };
+
+    clock.set(core::Timestamp::from_millis(5000));
+    strat.on_tick(ctx);
+
+    ASSERT_EQ(store.size(), 1u);
+    const auto& points = store.at("X").at("mid");
+    ASSERT_EQ(points.size(), 1u);
+    EXPECT_EQ(points[0].timestamp, core::Timestamp::from_millis(5000));
+    EXPECT_DOUBLE_EQ(points[0].value, 42.5);
+}
+
 } // namespace

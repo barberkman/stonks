@@ -1,7 +1,8 @@
 # app/python — Python strategies for this app
 
 This folder holds Python strategies and the venv the embedded interpreter
-runs them in. See `ema50strategy.py` for a working example.
+runs them in. `qmsignals.py` is the strategy that ships here; the sections
+below teach the authoring patterns with small inline examples.
 
 ## Layout
 
@@ -227,8 +228,8 @@ class BreakoutBracket(stonks.Strategy):
 - Chosen values are applied to the instance **before `on_start` runs** — keep
   reading them via `self.<name>` as usual. Derive dependent values in
   `on_start`, not at class-definition time, or they go stale under an override
-  (see `ema50strategy.py`, which computes `self.alpha` from `self.PERIOD` in
-  `on_start` for exactly this reason).
+  (e.g. an EMA's `alpha` derived from a `PERIOD` param must be computed in
+  `on_start`, not at class-definition time, for exactly this reason).
 - An override for an undeclared name is a hard error at run start; a broken
   `params` dict (typo'd attribute, unsupported type) silently drops the
   strategy from the discovery list, like an import failure.
@@ -236,14 +237,50 @@ class BreakoutBracket(stonks.Strategy):
   `strategy` block) and shown on the report tab — every run records exactly
   what it ran with. `stonks.param_specs(cls)` returns the spec for tests.
 
+## Read-only indicator overlays
+
+The inverse direction of params: params are editable GUI→strategy inputs;
+indicators are read-only strategy→GUI outputs, drawn as lines over the
+symbol's candles on the chart. Declare the series in `indicators`, then
+publish the values you actually computed with `ctx.plot`:
+
+```python
+class EMA50Strategy(stonks.Strategy):
+    indicators = {
+        "ema50": stonks.Indicator("50-bar EMA of close"),   # optional color="#rrggbb"
+    }
+
+    def on_tick(self, ctx):
+        ...
+        state["ema"] = self.alpha * close + (1.0 - self.alpha) * state["ema"]
+        ctx.plot("ema50", symbol, state["ema"])   # display-only
+```
+
+- `ctx.plot(name, symbol, value)` records one sample at the current tick's
+  timestamp (implicit — there is no timestamp argument). Plotting never
+  influences trading logic and, unlike params, is never GUI-editable.
+- Bars where you don't call `plot` (warmup) render as a gap, never a line to
+  zero. Non-finite values (NaN/Inf) are dropped at the source — an unguarded
+  pandas warmup NaN also becomes a gap.
+- The dict key IS the series name `ctx.plot` must use. `Indicator.color` is
+  optional; when unset the GUI assigns a palette color. An undeclared name
+  still renders (palette color, no doc) rather than failing the run.
+- Values persist in the archived report (the JSON's `indicators` /
+  `indicator_specs` blocks), so restored runs redraw their overlays without
+  re-running. `stonks.indicator_specs(cls)` returns the spec for tests;
+  `FakeContext.plots` records `plot` calls for pure-Python assertions.
+- v1 scope: overlays on the price pane only (EMA/SMA/bands — anything in
+  price space). Oscillators with their own axis (RSI/MACD) are not yet
+  supported.
+
 ## Run inside the engine
 
-Drop your strategy in `app/python/<name>.py` and reference it in `app/main.cpp`:
+Drop your strategy in `app/python/<name>.py` and reference it in `app/src/main.cpp`:
 
 ```cpp
 #include "strategies/pythonstrategy.h"
 // ...
-PythonStrategy{ "ema50strategy", "EMA50Strategy" },
+PythonStrategy strategy{ "qmsignals", "QMSignalsStrategy" };
 ```
 
 Run from the project root:

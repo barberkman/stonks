@@ -309,6 +309,54 @@ TEST(ReportJson, ReportInputFromJsonToleratesOldArchives)
     EXPECT_TRUE(back.run.data_file.empty());
 }
 
+TEST(ReportJson, IndicatorsRoundTripThroughJson)
+{
+    const ReportInput in{
+        .starting_cash = 1'000.0,
+        .bars_processed = 2,
+        .trades = {},
+        .orders = {},
+        .equity_curve = {},
+        .ending_cash = 1'000.0,
+        .ending_equity = 1'000.0,
+        .elapsed = {},
+        .indicator_specs = { IndicatorSpec{ "ema50", "50-bar EMA", "#4f8fe1" },
+                             IndicatorSpec{ "adr", "avg daily range", "" } },
+        .indicators = { { "BTCUSDT", { { "ema50", {
+            core::IndicatorPoint{ Timestamp::from_millis(1000), 100.0 },
+            core::IndicatorPoint{ Timestamp::from_millis(2000), 101.5 },
+        } } } } },
+    };
+    const auto j = serialize(in);
+
+    EXPECT_EQ(j.at("indicator_specs")[0].at("name").get<std::string>(), "ema50");
+    EXPECT_EQ(j.at("indicator_specs")[0].at("color").get<std::string>(), "#4f8fe1");
+    EXPECT_EQ(j.at("indicator_specs")[1].at("color").get<std::string>(), "");
+    EXPECT_EQ(j.at("indicators").at("BTCUSDT").at("ema50")[0]
+                  .at("timestamp").get<std::string>(),
+              "1970-01-01T00:00:01.000Z");
+
+    const ReportInput back = report_input_from_json(j);
+    ASSERT_EQ(back.indicator_specs.size(), 2u);
+    EXPECT_EQ(back.indicator_specs[0].name, "ema50");
+    EXPECT_EQ(back.indicator_specs[0].doc, "50-bar EMA");
+    EXPECT_EQ(back.indicator_specs[1].name, "adr");
+    const auto& points = back.indicators.at("BTCUSDT").at("ema50");
+    ASSERT_EQ(points.size(), 2u);
+    EXPECT_EQ(points[0].timestamp, Timestamp::from_millis(1000));
+    EXPECT_DOUBLE_EQ(points[1].value, 101.5);
+}
+
+TEST(ReportJson, IndicatorsAbsentInOldArchivesDefaultEmpty)
+{
+    const nlohmann::json j{
+        { "metrics", { { "starting_cash", 500.0 }, { "ending_cash", 500.0 } } },
+    };
+    const ReportInput back = report_input_from_json(j);
+    EXPECT_TRUE(back.indicator_specs.empty());
+    EXPECT_TRUE(back.indicators.empty());
+}
+
 TEST(ReportJson, StrategyKeyIncludesModuleClassAndParams)
 {
     const ReportInput in{
