@@ -14,6 +14,8 @@ class EMA50Strategy(stonks.Strategy):
     # Standard EMA smoothing factor: 2/(N+1) gives the latest bar a weight that
     # makes the EMA's responsiveness comparable to an N-period SMA.
     ALPHA = 2.0 / (PERIOD + 1)
+    # Fraction of current account equity committed to each new position.
+    POSITION_FRACTION = 0.01
 
     def on_start(self, ctx):
         self.states = {}
@@ -44,13 +46,16 @@ class EMA50Strategy(stonks.Strategy):
 
             # Enter long on an upside crossover; flat-only means we never short on the downside.
             if close > state["ema"] and state["held_quantity"] == 0.0:
-                qty = ctx.cash() / close
+                qty = ctx.equity() * self.POSITION_FRACTION / close
                 if qty <= 0.0:
                     continue
-                if ctx.place_market_order(symbol=symbol, side=OrderSide.Buy, quantity=qty):
-                    state["held_quantity"] = qty
+                # held_quantity is tracked optimistically on placement, not on a
+                # confirmed fill — the broker may still reject (e.g. insufficient
+                # cash). place_market_order returns an OrderID, never a success flag.
+                ctx.place_market_order(symbol=symbol, side=OrderSide.Buy, quantity=qty)
+                state["held_quantity"] = qty
             elif close < state["ema"] and state["held_quantity"] > 0.0:
-                if ctx.place_market_order(
+                ctx.place_market_order(
                     symbol=symbol, side=OrderSide.Sell, quantity=state["held_quantity"]
-                ):
-                    state["held_quantity"] = 0.0
+                )
+                state["held_quantity"] = 0.0

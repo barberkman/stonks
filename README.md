@@ -19,3 +19,18 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/home/baris/Q
 ```sh
 ctest --test-dir build --output-on-failure
 ```
+
+## Audit a run
+
+Every report JSON under `app/reports/` can be re-verified trade-by-trade by an
+independent Python replay of the broker rules against the raw bars:
+
+```sh
+app/python/.venv/bin/python tools/verify_backtest.py \
+    app/reports/report-<ts>.json app/data/binance_1d.parquet [run.log]
+```
+
+The optional log capture comes from a `-DSTONKS_LOG=ON` build
+(`./build-log/app/app 2> run.log`) and is needed when the strategy cancels
+orders mid-run. Exit 0 means the replay reproduced every fill, order status,
+and equity-curve point exactly and all no-lookahead/fill-rule invariants held.

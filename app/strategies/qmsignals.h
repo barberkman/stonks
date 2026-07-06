@@ -16,11 +16,12 @@
 #include <stonks/core/log.h>
 #include <stonks/core/types.h>
 
-// Qullamaggie momentum scanner — all five setups in one strategy, print-only.
+// Qullamaggie momentum scanner — all five setups in one strategy.
 //
-// Runs every setup against each symbol's closed bar and, whenever one fires, prints
-// a line with the timestamp, setup name, and the trade levels (entry / stop / sell).
-// It does NOT place orders — it only reports signals via std::cout.
+// Runs every setup against each symbol's closed bar and, whenever one fires,
+// places a 3-leg bracket: a stop-entry at the signal price (leverage sized so
+// liquidation sits just past the stop), a reduce-only stop-loss, and a
+// reduce-only take-profit limit, both OCO-chained under the entry.
 //
 //   breakout        — long: break above a tight base's pivot high
 //   short_breakout  — short: breakdown below a base's pivot low (downtrend mirror)
@@ -32,8 +33,13 @@
 // an ADR away (breakout/short/orb/episodic_pivot) or at the recent-high pivot
 // (parabolic_short), and take profit ("sell") at target_rr times the risk.
 //
-// Self-contained: the only dependency is the core bar types; the TA math lives in
-// the private section below.
+// Per-symbol gating keeps it to one trade at a time: signals are skipped while
+// a position is open or a post-close cooldown runs, a stale unfilled entry is
+// cancelled and replaced by a fresh signal, and a gapped entry fill re-anchors
+// both legs proportionally to the actual fill price.
+//
+// Self-contained beyond the core types and Context API; the TA math lives in
+// the private section below. app/python/qmsignals.py is the 1:1 Python port.
 struct QMSignalsStrategy
 {
     // ─── Configurable parameters ─────────────────────────────────────────────

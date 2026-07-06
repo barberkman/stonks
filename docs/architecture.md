@@ -26,6 +26,10 @@ classDiagram
         +history(count) MarketWindow
         +place_order(MarketOrderParams) OrderID
         +place_order(LimitOrderParams) OrderID
+        +place_order(StopOrderParams) OrderID
+        +position(symbol) optional~Position~
+        +order(id) optional~Order~
+        +cancel_order(id) bool
     }
     class Clock {
         -m_timestamp : Timestamp
@@ -53,6 +57,9 @@ classDiagram
         +equity() Balance
         +place_order(MarketOrderParams) OrderID
         +place_order(LimitOrderParams) OrderID
+        +place_order(StopOrderParams) OrderID
+        +position(symbol) optional~Position~
+        +cancel_order(id) bool
         +on_tick(bar) void
         +trades() map~TradeID,Trade~
         +orders() map~OrderID,Order~
@@ -73,7 +80,6 @@ classDiagram
     Context o-- Broker : ref
     Context o-- DataFeed : ref
     Context o-- Clock : ref
-    Context ..> Order : creates (friend)
     KLineFeed ..|> DataFeed : satisfies
     BacktestBroker ..|> Broker : satisfies
     EMA50Strategy ..|> Strategy : satisfies
@@ -118,6 +124,7 @@ classDiagram
     SymbolSeries o-- SeriesView
     class Order {
         +id : OrderID
+        +parent_id : optional~OrderID~
         +timestamp : Timestamp
         +symbol : Symbol
         +side : OrderSide
@@ -126,6 +133,8 @@ classDiagram
         +price : optional~Price~
         +quantity : Quantity
         +time_in_force : TimeInForce
+        +leverage : double
+        +reduce_only : bool
     }
     class Trade {
         +id : TradeID
@@ -135,12 +144,22 @@ classDiagram
         +side : OrderSide
         +quantity : Quantity
         +price : Price
+        +liquidation : bool
+        +fee : double
+    }
+    class Position {
+        +quantity : Quantity signed
+        +price : Price average entry
+        +entry_id : OrderID
+        +leverage : double
     }
     class MarketOrderParams {
         +symbol : Symbol
         +side : OrderSide
         +quantity : Quantity
         +time_in_force : TimeInForce
+        +leverage : double
+        +reduce_only : bool
     }
     class LimitOrderParams {
         +symbol : Symbol
@@ -148,6 +167,17 @@ classDiagram
         +quantity : Quantity
         +price : Price
         +time_in_force : TimeInForce
+        +leverage : double
+        +reduce_only : bool
+    }
+    class StopOrderParams {
+        +symbol : Symbol
+        +side : OrderSide
+        +quantity : Quantity
+        +price : Price trigger
+        +time_in_force : TimeInForce
+        +leverage : double
+        +reduce_only : bool
     }
     class OrderSide {
         <<enumeration>>
@@ -158,6 +188,14 @@ classDiagram
         <<enumeration>>
         Market
         Limit
+        Stop
+    }
+    class OrderStatus {
+        <<enumeration>>
+        Open
+        Filled
+        Rejected
+        Cancelled
     }
     class TimeInForce {
         <<enumeration>>
@@ -169,9 +207,12 @@ classDiagram
     Trade *-- Timestamp
     Order ..> OrderSide
     Order ..> OrderType
+    Order ..> OrderStatus
     Order ..> TimeInForce
+    Order --> Order : parent_id brackets under
     Trade ..> OrderSide
     Trade --> Order : order_id refers to
+    Position --> Order : entry_id refers to
 ```
 
 ## 3. Python boundary
@@ -187,8 +228,12 @@ classDiagram
         +cash() Balance
         +equity() Balance
         +history(count) MarketWindow
-        +place_market_order(params) bool
-        +place_limit_order(params) bool
+        +place_market_order(params, parent) OrderID
+        +place_limit_order(params, parent) OrderID
+        +place_stop_order(params, parent) OrderID
+        +position(symbol) optional~Position~
+        +order(id) optional~Order~
+        +cancel_order(id) bool
     }
     class ContextAdapter {
         -m_ctx : Context&
@@ -267,10 +312,10 @@ sequenceDiagram
         F-->>E: all symbols' bars at ts
         loop each bar at ts
             E->>B: on_tick(bar)
-            Note over B: fill queued orders, mark last_price
+            Note over B: settle in rounds (fills arm bracket children), then check liquidation
         end
         E->>B: equity()
-        Note over E: track peak / max drawdown
+        Note over E: append EquityPoint to the run's equity curve
         E->>S: on_tick(ctx)
         Note over S,Ctx: strategy loops the window, places orders
         E->>F: advance()
@@ -289,6 +334,13 @@ sequenceDiagram
 One order followed across the two bars it touches. The single check
 `order.timestamp >= bar.timestamp` (reject) is the whole guarantee: an order
 placed at bar N cannot fill until a bar strictly after N.
+
+Bracket children are the one refinement: a child keeps its original placement
+timestamp (always earlier than any bar its parent can fill on), so once the
+parent fills, the same gate admits it from the parent's **fill bar** onward —
+the broker settles each bar in rounds until no order makes progress, ordering
+each round's candidates Market → Stop → Limit under the default Conservative
+policy (protective stops before profit targets).
 
 ```mermaid
 sequenceDiagram
@@ -345,8 +397,8 @@ sequenceDiagram
     A-->>Py: combined numpy columns (one DataFrame)
     Py->>A: ctx.place_market_order(...)
     A->>Ctx: place_order(params)
-    Ctx-->>A: bool
-    A-->>Py: bool
+    Ctx-->>A: OrderID
+    A-->>Py: OrderID (int)
     Py-->>PS: return
     Note over PS: release GIL
     PS-->>E: return

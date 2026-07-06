@@ -30,8 +30,9 @@ VSCode launch configs `Linux: Debug backtest_runner (gdb)` and `Linux: Debug cor
 
 - `include/stonks/<module>/` — public headers, all under the `stonks::` namespace (sub-namespaces match folders, e.g. `stonks::core`).
 - `src/<module>/` — implementations, mirrors `include/stonks/`.
-- `apps/<name>/` — executables (e.g. `backtest_runner`).
+- `app/` — the single application (executable target `app`): headless backtest runner by default, Qt Quick GUI with `--gui`. Strategies live in `app/strategies/` (C++) and `app/python/` (Python).
 - `tests/<module>/` — GoogleTest unit tests, mirrors `include/stonks/`.
+- `tools/` — standalone helpers (e.g. `verify_backtest.py`, the trade-by-trade replay audit of a report).
 - `cmake/` — build helpers (deps pulled via `FetchContent`).
 - `.vscode/` — committed workspace configs for build + F5 debug.
 
