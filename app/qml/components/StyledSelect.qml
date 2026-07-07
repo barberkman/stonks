@@ -53,6 +53,9 @@ ComboBox {
     popup: Popup {
         y: cb.height + Theme.sp(4)
         width: cb.width
+        // Cap the popup so long lists (many strategies) scroll instead of
+        // growing past the window edge.
+        height: Math.min(contentItem.contentHeight + 2, Theme.sp(320))
         padding: 1
         background: Rectangle { color: Theme.card; border.color: Theme.border; border.width: 1; radius: Theme.radiusControl }
         contentItem: ListView {
@@ -60,6 +63,7 @@ ComboBox {
             implicitHeight: contentHeight
             model: cb.popup.visible ? cb.delegateModel : null
             currentIndex: cb.highlightedIndex
+            boundsBehavior: Flickable.StopAtBounds
             ScrollIndicator.vertical: ScrollIndicator {}
         }
     }
