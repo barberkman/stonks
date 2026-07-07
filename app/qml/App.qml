@@ -35,34 +35,23 @@ QtObject {
     property var completed: []             // result objects, newest first
     property string runError: ""
 
-    // cached controller lookups
-    property var _strats: ({})             // module -> { display, module, cls }
-    property var _files: ({})              // key -> { key, label, source }
+    // cached controller lookups (eager, pure-read: computed once from the
+    // controller so no binding both reads and writes them — that would loop)
+    readonly property var _strats: _indexBy(Backtest.listStrategies(), "module")  // module -> { display, module, cls }
+    readonly property var _files: _indexBy(Backtest.listDataFiles(), "key")       // key -> { key, label, source }
     property int _nextId: 1
 
-    // --- list caches (lazily filled from the controller) ---
-    function strategyList() {
-        var list = Backtest.listStrategies();
+    function _indexBy(list, k) {
         var m = {};
-        for (var i = 0; i < list.length; i++) m[list[i].module] = list[i];
-        _strats = m;
-        return list;
+        for (var i = 0; i < list.length; i++) m[list[i][k]] = list[i];
+        return m;
     }
-    function dataFileList() {
-        var list = Backtest.listDataFiles();
-        var m = {};
-        for (var i = 0; i < list.length; i++) m[list[i].key] = list[i];
-        _files = m;
-        return list;
-    }
-    function _fileMap() {
-        if (Object.keys(_files).length === 0) dataFileList();
-        return _files;
-    }
-    function _stratEntry(mod) {
-        if (Object.keys(_strats).length === 0) strategyList();
-        return _strats[mod] || {};
-    }
+
+    // --- list accessors (pure; the caches above are the source of truth) ---
+    function strategyList() { return Backtest.listStrategies(); }
+    function dataFileList() { return Backtest.listDataFiles(); }
+    function _fileMap() { return _files; }
+    function _stratEntry(mod) { return _strats[mod] || {}; }
 
     // --- data accessors (signatures unchanged; backed by the real result) ---
     function allBacktests() { return completed; }

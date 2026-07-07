@@ -1,6 +1,6 @@
 include(FetchContent)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2)
 
 # Live trading (BinanceBroker): libcurl for HTTP, OpenSSL libcrypto for Ed25519
 # request signing. Both are system packages — on Debian-family systems install

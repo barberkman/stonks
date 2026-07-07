@@ -44,6 +44,12 @@ qt_add_qml_module(app
         qml/js/format.js
         qml/js/chartview.js
         qml/js/mockdata.js
+    RESOURCES
+        qml/fonts/IBMPlexSans-Variable.ttf
+        qml/fonts/IBMPlexMono-Regular.ttf
+        qml/fonts/IBMPlexMono-Medium.ttf
+        qml/fonts/IBMPlexMono-SemiBold.ttf
+        qml/fonts/IBMPlexMono-Bold.ttf
 )
 
 target_include_directories(app PRIVATE
@@ -62,6 +68,7 @@ target_link_libraries(app PRIVATE
     stonks_datafeed
     stonks_binance
     Qt6::Quick
+    Qt6::QuickControls2
     nlohmann_json::nlohmann_json
 )
 

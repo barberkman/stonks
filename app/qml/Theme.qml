@@ -35,9 +35,18 @@ QtObject {
     readonly property color negative: "#e1574c"
     readonly property color warn: "#cbb26a"
 
-    // fonts (installed system families)
+    // fonts — bundled under qml/fonts/ and registered by the FontLoaders below,
+    // so the app renders IBM Plex regardless of what's installed on the OS. Sans
+    // is the variable font (all weights via its wght axis); Mono ships the static
+    // weights the UI uses (Regular/Medium/SemiBold/Bold), grouped under one family.
     readonly property string sans: "IBM Plex Sans"
     readonly property string mono: "IBM Plex Mono"
+
+    readonly property FontLoader _sansLoader: FontLoader { source: "fonts/IBMPlexSans-Variable.ttf" }
+    readonly property FontLoader _monoRegular: FontLoader { source: "fonts/IBMPlexMono-Regular.ttf" }
+    readonly property FontLoader _monoMedium: FontLoader { source: "fonts/IBMPlexMono-Medium.ttf" }
+    readonly property FontLoader _monoSemiBold: FontLoader { source: "fonts/IBMPlexMono-SemiBold.ttf" }
+    readonly property FontLoader _monoBold: FontLoader { source: "fonts/IBMPlexMono-Bold.ttf" }
 
     // responsive scale (window size pushed from main.qml via Binding)
     property real windowWidth: 1440

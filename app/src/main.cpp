@@ -13,6 +13,7 @@
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQuickStyle>
 #include <QtQml/qqml.h>
 
 #include "stonks/core/engine.h"
@@ -356,6 +357,7 @@ int main(int argc, char* argv[]) {
     }
 
     QGuiApplication app{ argc, argv };
+    QQuickStyle::setStyle("Basic");   // fully customizable base (the native macOS style forbids the ComboBox overrides in StyledSelect.qml)
     stonks::app::BacktestController controller;
     qmlRegisterSingletonInstance("Stonks", 1, 0, "Backtest", &controller);
     QQmlApplicationEngine engine;
