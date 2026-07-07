@@ -72,6 +72,5 @@ QtObject {
     readonly property int radiusCard: sp(6)
     readonly property int controlH: sp(40)       // buttons, input rows
     readonly property int controlHSm: sp(30)     // small buttons, pills
-    readonly property int sidebarW: sp(212)
     readonly property int headerH: sp(56)
 }

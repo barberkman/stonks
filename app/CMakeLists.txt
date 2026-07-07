@@ -20,8 +20,6 @@ qt_add_qml_module(app
         qml/Theme.qml
         qml/App.qml
         qml/Header.qml
-        qml/Sidebar.qml
-        qml/components/NavButton.qml
         qml/components/AccentButton.qml
         qml/components/GhostButton.qml
         qml/components/Page.qml

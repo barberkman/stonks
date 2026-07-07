@@ -16,47 +16,37 @@ ApplicationWindow {
     Binding { target: Theme; property: "windowWidth"; value: window.width }
     Binding { target: Theme; property: "windowHeight"; value: window.height }
 
-    Row {
+    Column {
         anchors.fill: parent
 
-        Sidebar {
-            id: sidebar
-            height: parent.height
+        Header {
+            id: header
+            width: parent.width
         }
 
-        Column {
-            width: parent.width - sidebar.width
-            height: parent.height
+        // content area — swapped by App.view
+        Item {
+            width: parent.width
+            height: parent.height - header.height
 
-            Header {
-                id: header
-                width: parent.width
-            }
-
-            // content area — swapped by App.view
-            Item {
-                width: parent.width
-                height: parent.height - header.height
-
-                Loader {
-                    anchors.fill: parent
-                    sourceComponent: {
-                        switch (App.view) {
-                        case "backtests": return cBacktests
-                        case "setup": return cSetup
-                        case "running": return cRunning
-                        case "detail": return cDetail
-                        case "logs": return cLogs
-                        }
-                        return cBacktests
+            Loader {
+                anchors.fill: parent
+                sourceComponent: {
+                    switch (App.view) {
+                    case "backtests": return cBacktests
+                    case "setup": return cSetup
+                    case "running": return cRunning
+                    case "detail": return cDetail
+                    case "logs": return cLogs
                     }
+                    return cBacktests
                 }
-                Component { id: cBacktests; BacktestsView {} }
-                Component { id: cSetup; SetupView {} }
-                Component { id: cRunning; RunningView {} }
-                Component { id: cDetail; DetailView {} }
-                Component { id: cLogs; LogsView {} }
             }
+            Component { id: cBacktests; BacktestsView {} }
+            Component { id: cSetup; SetupView {} }
+            Component { id: cRunning; RunningView {} }
+            Component { id: cDetail; DetailView {} }
+            Component { id: cLogs; LogsView {} }
         }
     }
 }

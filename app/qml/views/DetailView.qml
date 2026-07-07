@@ -9,6 +9,7 @@ Item {
     readonly property bool saved: bt.status === "saved"
 
     ScrollView {
+        id: pageScroll
         anchors.fill: parent
         contentWidth: availableWidth
         clip: true
@@ -98,19 +99,17 @@ Item {
             }
 
             // --- body ---
+            // Every tab sizes to content and scrolls via the outer ScrollView.
+            // The Trades tab is taller than the viewport (near-full-screen chart
+            // above a generous trades section), so it scrolls chart -> trades.
             Loader {
                 id: bodyLoader
                 width: stack.width
-                // The Trades tab fills the viewport so its trades table scrolls
-                // on its own (chart + detail stay pinned); Report/saved size to
-                // content and scroll via the outer ScrollView as before.
-                height: (!view.saved && App.detailTab === "trades")
-                        ? Math.max(Theme.sp(320), view.height - subHeader.height)
-                        : implicitHeight
+                height: implicitHeight
                 sourceComponent: view.saved ? savedComp : (App.detailTab === "trades" ? tradesComp : reportComp)
             }
             Component { id: reportComp; ReportView { width: stack.width } }
-            Component { id: tradesComp; TradesView { width: stack.width; height: bodyLoader.height } }
+            Component { id: tradesComp; TradesView { width: stack.width; viewportH: view.height - subHeader.height } }
             Component {
                 id: savedComp
                 Item {
@@ -151,5 +150,23 @@ Item {
                 }
             }
         }
+    }
+
+    // Selecting a trade isolates it on the chart (up top); scroll the page back
+    // to the chart so the isolated trade is visible even after scrolling down.
+    Connections {
+        target: App
+        function onSelectedTradeChanged() {
+            if (App.selectedTrade !== null && App.selectedTrade !== undefined)
+                scrollToChart.restart()
+        }
+    }
+    NumberAnimation {
+        id: scrollToChart
+        target: pageScroll.contentItem
+        property: "contentY"
+        to: 0
+        duration: 220
+        easing.type: Easing.OutCubic
     }
 }

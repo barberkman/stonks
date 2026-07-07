@@ -1,7 +1,7 @@
 import QtQuick
 import Stonks
 
-// Top bar: section label (left) + status dot/label (right).
+// Top bar: nav (left) + section label + status dot/label (right).
 Rectangle {
     height: Theme.headerH
     color: Theme.panel
@@ -13,11 +13,53 @@ Rectangle {
         color: Theme.border
     }
 
-    Text {
+    // nav — the app's only view switch (Backtests group vs. Logs)
+    Row {
+        id: nav
         anchors.verticalCenter: parent.verticalCenter
         anchors.left: parent.left
         anchors.leftMargin: Theme.sp(24)
-        width: parent.width - Theme.sp(320)
+        spacing: Theme.sp(20)
+
+        Text {
+            id: navBacktests
+            property bool active: App.view === "backtests" || App.view === "detail"
+                || App.view === "setup" || App.view === "running"
+            text: "Backtests"
+            color: active ? Theme.textPrimary : (hoverB.hovered ? Theme.t3 : Theme.t5)
+            font.family: Theme.mono
+            font.weight: Font.Medium
+            font.pixelSize: Theme.fontBody
+            HoverHandler { id: hoverB }
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: App.go("backtests")
+            }
+        }
+        Text {
+            id: navLogs
+            property bool active: App.view === "logs"
+            text: "Logs"
+            color: active ? Theme.textPrimary : (hoverL.hovered ? Theme.t3 : Theme.t5)
+            font.family: Theme.mono
+            font.weight: Font.Medium
+            font.pixelSize: Theme.fontBody
+            HoverHandler { id: hoverL }
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: App.go("logs")
+            }
+        }
+    }
+
+    Text {
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.left: nav.right
+        anchors.leftMargin: Theme.sp(20)
+        anchors.right: status.left
+        anchors.rightMargin: Theme.sp(16)
         elide: Text.ElideRight
         text: App.sectionLabel()
         color: Theme.t4
@@ -27,6 +69,7 @@ Rectangle {
     }
 
     Row {
+        id: status
         anchors.verticalCenter: parent.verticalCenter
         anchors.right: parent.right
         anchors.rightMargin: Theme.sp(24)

@@ -8,6 +8,10 @@ import "../js/format.js" as Fmt
 // independently too. Fills the height handed down by DetailView.
 Item {
     id: tv
+    // Available viewport height handed down by DetailView; drives the
+    // near-full-screen chart and the tall trades section below it.
+    property real viewportH: 600
+    implicitHeight: topSection.height + tradesBody.height
     readonly property var bt: App.currentBacktest()
     readonly property string sym: App.symbol
     readonly property var trades: App.tradesFor(App.symbol)
@@ -161,7 +165,9 @@ Item {
                     id: chart
                     x: Theme.sp(18); y: Theme.sp(50)
                     width: parent.width - Theme.sp(36)
-                    height: Theme.fill(440)
+                    // Fill the first screen (pills + card chrome + a ~56dp peek
+                    // of the trades header), floored at the previous fixed size.
+                    height: Math.max(Theme.fill(440), tv.viewportH - Theme.sp(178))
                     symbol: tv.sym
                     selectedTrade: tv.sel
                     accentHex: Theme.accent.toString()
@@ -170,13 +176,13 @@ Item {
         }
     }
 
-    // ===== trades table + side panel (fills the remaining height) =====
+    // ===== trades table + side panel (generous, self-scrolling section) =====
     Item {
         id: tradesBody
         anchors.top: topSection.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: parent.bottom
+        height: Math.max(Theme.sp(440), tv.viewportH - Theme.sp(90))
 
         readonly property real gap: Theme.sp(18)
         readonly property real innerW: width - Theme.sp(48)
