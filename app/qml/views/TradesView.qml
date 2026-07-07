@@ -49,36 +49,66 @@ Item {
         Item {
             width: tv.width
             height: Theme.sp(54)
-            Row {
-                x: Theme.sp(24)
+            // Symbol pills scroll horizontally within a width bounded by the
+            // status element on the right, so a long list never overflows or
+            // overlaps it.
+            Flickable {
+                id: symScroll
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.sp(24)
+                anchors.right: statusLoader.left
+                anchors.rightMargin: Theme.sp(16)
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: Theme.sp(8)
-                Repeater {
-                    model: tv.bt.symbols
-                    delegate: Rectangle {
-                        required property var modelData
-                        readonly property bool on: tv.sym === modelData.id
-                        width: pillT.implicitWidth + Theme.sp(32)
-                        height: Theme.sp(32)
-                        radius: Theme.radiusControl
-                        color: on ? Theme.accent : "transparent"
-                        border.width: 1
-                        border.color: on ? Theme.accent : Theme.border
-                        Text {
-                            id: pillT
-                            anchors.centerIn: parent
-                            text: modelData.id
-                            color: parent.on ? Theme.accentInk : Theme.t3
-                            font.family: Theme.mono
-                            font.weight: Font.DemiBold
-                            font.pixelSize: Theme.fontBody
+                height: Theme.sp(32)
+                clip: true
+                flickableDirection: Flickable.HorizontalFlick
+                boundsBehavior: Flickable.StopAtBounds
+                contentWidth: pillsRow.width
+                contentHeight: height
+                ScrollBar.horizontal: ScrollBar {
+                    id: symBar
+                    policy: ScrollBar.AsNeeded
+                    padding: Theme.sp(2)
+                    implicitHeight: Theme.sp(8)
+                    contentItem: Rectangle {
+                        implicitHeight: Theme.sp(4)
+                        radius: height / 2
+                        color: symBar.pressed ? Theme.t4 : Theme.t6
+                        opacity: symBar.active ? 0.9 : 0.0
+                        Behavior on opacity { NumberAnimation { duration: 150 } }
+                    }
+                }
+                Row {
+                    id: pillsRow
+                    spacing: Theme.sp(8)
+                    Repeater {
+                        model: tv.bt.symbols
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: tv.sym === modelData.id
+                            width: pillT.implicitWidth + Theme.sp(32)
+                            height: Theme.sp(32)
+                            radius: Theme.radiusControl
+                            color: on ? Theme.accent : "transparent"
+                            border.width: 1
+                            border.color: on ? Theme.accent : Theme.border
+                            Text {
+                                id: pillT
+                                anchors.centerIn: parent
+                                text: modelData.id
+                                color: parent.on ? Theme.accentInk : Theme.t3
+                                font.family: Theme.mono
+                                font.weight: Font.DemiBold
+                                font.pixelSize: Theme.fontBody
+                            }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: App.selectSymbol(modelData.id) }
                         }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: App.selectSymbol(modelData.id) }
                     }
                 }
             }
             // selection status (right)
             Loader {
+                id: statusLoader
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.sp(24)
                 anchors.verticalCenter: parent.verticalCenter
@@ -165,9 +195,9 @@ Item {
                     id: chart
                     x: Theme.sp(18); y: Theme.sp(50)
                     width: parent.width - Theme.sp(36)
-                    // Fill the first screen (pills + card chrome + a ~56dp peek
-                    // of the trades header), floored at the previous fixed size.
-                    height: Math.max(Theme.fill(440), tv.viewportH - Theme.sp(178))
+                    // 70% of a near-full-screen fill: shorter chart leaves more
+                    // room to scroll down to the trades section below.
+                    height: Math.round(0.7 * Math.max(Theme.fill(440), tv.viewportH - Theme.sp(178)))
                     symbol: tv.sym
                     selectedTrade: tv.sel
                     accentHex: Theme.accent.toString()
@@ -182,7 +212,11 @@ Item {
         anchors.top: topSection.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        height: Math.max(Theme.sp(440), tv.viewportH - Theme.sp(90))
+        // Grow to fit whichever is taller: a near-full-screen table viewport or
+        // the (now self-scrolling-free) side panel's natural content height.
+        readonly property real baseH: Math.max(Theme.sp(440), tv.viewportH - Theme.sp(90))
+        readonly property real panelH: panelLoader.item ? panelLoader.item.implicitHeight : 0
+        height: bottomRow.height + Theme.sp(40)
 
         readonly property real gap: Theme.sp(18)
         readonly property real innerW: width - Theme.sp(48)
@@ -203,7 +237,7 @@ Item {
             id: bottomRow
             x: Theme.sp(24)
             y: Theme.sp(20)
-            height: Math.max(0, tradesBody.height - Theme.sp(40))
+            height: Math.max(tradesBody.baseH - Theme.sp(40), tradesBody.panelH)
             spacing: tradesBody.gap
 
             // --- trades table ---
@@ -306,6 +340,7 @@ Item {
                 id: tradeDetail
                 Rectangle {
                     anchors.fill: parent
+                    implicitHeight: dCol.implicitHeight + Theme.sp(40)
                     readonly property var t: tv.trades[tv.sel]
                     readonly property bool win: t.pnlNum >= 0
                     radius: Theme.radiusCard
@@ -314,70 +349,57 @@ Item {
                     border.width: 1
                     clip: true
 
-                    ScrollView {
-                        id: dScroll
-                        anchors.fill: parent
-                        contentWidth: availableWidth
-                        clip: true
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                        ScrollBar.vertical: ThinScrollBar {}
-
+                    Column {
+                        id: dCol
+                        x: Theme.sp(22); y: Theme.sp(20)
+                        width: parent.width - Theme.sp(44)
+                        spacing: 0
                         Item {
-                            width: dScroll.availableWidth
-                            implicitHeight: dCol.implicitHeight + Theme.sp(40)
-                            Column {
-                                id: dCol
-                                x: Theme.sp(22); y: Theme.sp(20)
-                                width: parent.width - Theme.sp(44)
-                                spacing: 0
-                                Item {
-                                    width: parent.width
-                                    height: Theme.sp(24)
-                                    Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "Trade #" + t.n + " · " + tv.sym; color: Theme.textPrimary; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontBodyLg }
-                                    Rectangle {
-                                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                        width: badgeT.implicitWidth + Theme.sp(20); height: Theme.sp(22); radius: Theme.sp(4); color: Theme.accentBadge
-                                        Text { id: badgeT; anchors.centerIn: parent; text: t.side; color: Theme.accent; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontCaption }
-                                    }
-                                }
-                                Item { width: 1; height: Theme.sp(18) }
-                                Text { text: Fmt.fmtUsd(t.pnlNum); color: win ? Theme.positive : Theme.negative; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontHero }
-                                Item { width: 1; height: Theme.sp(4) }
-                                Text { text: tv.fmtRet2(t.retNum) + " return"; color: win ? Theme.positive : Theme.negative; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontBodyLg }
-                                Item { width: 1; height: Theme.sp(20) }
-                                Grid {
-                                    width: parent.width
-                                    columns: 2
-                                    rowSpacing: Theme.sp(14)
-                                    columnSpacing: Theme.sp(16)
-                                    Column { spacing: Theme.sp(2); width: (dCol.width - Theme.sp(16)) / 2
-                                        Text { text: "ENTRY"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
-                                        Text { text: "$" + t.entryPrice.toFixed(2); color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontBody }
-                                        Text { text: Fmt.tsFull(t.entryTs); color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
-                                    }
-                                    Column { spacing: Theme.sp(2); width: (dCol.width - Theme.sp(16)) / 2
-                                        Text { text: "EXIT"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
-                                        Text { text: "$" + t.exitPrice.toFixed(2); color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontBody }
-                                        Text { text: Fmt.tsFull(t.exitTs); color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
-                                    }
-                                    StatCell { label: "QUANTITY"; value: String(t.qty); valuePx: Theme.fontBody }
-                                    StatCell { label: "BARS HELD"; value: t.bars + " bars"; valuePx: Theme.fontBody }
-                                    StatCell { label: "MFE"; value: "+" + t.mfe.toFixed(2) + "%"; valueColor: Theme.positive; valuePx: Theme.fontBody }
-                                    StatCell { label: "MAE"; value: t.mae.toFixed(2) + "%"; valueColor: Theme.negative; valuePx: Theme.fontBody }
-                                }
-                                Item { width: 1; height: Theme.sp(18) }
-                                Rectangle { width: parent.width; height: 1; color: Theme.rowSep }
-                                Item { width: 1; height: Theme.sp(16) }
-                                Text {
-                                    width: parent.width
-                                    wrapMode: Text.WordWrap
-                                    text: "Chart isolates this trade — entry/exit guides and the P&L band shown. Use ‹ All trades to see every fill on " + tv.sym + "."
-                                    color: Theme.t5
-                                    font.family: Theme.mono
-                                    font.pixelSize: Theme.fontCaption
-                                    lineHeight: 1.5
-                                }
+                            width: parent.width
+                            height: Theme.sp(24)
+                            Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "Trade #" + t.n + " · " + tv.sym; color: Theme.textPrimary; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontBodyLg }
+                            Rectangle {
+                                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                width: badgeT.implicitWidth + Theme.sp(20); height: Theme.sp(22); radius: Theme.sp(4); color: Theme.accentBadge
+                                Text { id: badgeT; anchors.centerIn: parent; text: t.side; color: Theme.accent; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontCaption }
                             }
+                        }
+                        Item { width: 1; height: Theme.sp(18) }
+                        Text { text: Fmt.fmtUsd(t.pnlNum); color: win ? Theme.positive : Theme.negative; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontHero }
+                        Item { width: 1; height: Theme.sp(4) }
+                        Text { text: tv.fmtRet2(t.retNum) + " return"; color: win ? Theme.positive : Theme.negative; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontBodyLg }
+                        Item { width: 1; height: Theme.sp(20) }
+                        Grid {
+                            width: parent.width
+                            columns: 2
+                            rowSpacing: Theme.sp(14)
+                            columnSpacing: Theme.sp(16)
+                            Column { spacing: Theme.sp(2); width: (dCol.width - Theme.sp(16)) / 2
+                                Text { text: "ENTRY"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
+                                Text { text: "$" + t.entryPrice.toFixed(2); color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontBody }
+                                Text { text: Fmt.tsFull(t.entryTs); color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
+                            }
+                            Column { spacing: Theme.sp(2); width: (dCol.width - Theme.sp(16)) / 2
+                                Text { text: "EXIT"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
+                                Text { text: "$" + t.exitPrice.toFixed(2); color: Theme.t1; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontBody }
+                                Text { text: Fmt.tsFull(t.exitTs); color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro }
+                            }
+                            StatCell { label: "QUANTITY"; value: String(t.qty); valuePx: Theme.fontBody }
+                            StatCell { label: "BARS HELD"; value: t.bars + " bars"; valuePx: Theme.fontBody }
+                            StatCell { label: "MFE"; value: "+" + t.mfe.toFixed(2) + "%"; valueColor: Theme.positive; valuePx: Theme.fontBody }
+                            StatCell { label: "MAE"; value: t.mae.toFixed(2) + "%"; valueColor: Theme.negative; valuePx: Theme.fontBody }
+                        }
+                        Item { width: 1; height: Theme.sp(18) }
+                        Rectangle { width: parent.width; height: 1; color: Theme.rowSep }
+                        Item { width: 1; height: Theme.sp(16) }
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            text: "Chart isolates this trade — entry/exit guides and the P&L band shown. Use ‹ All trades to see every fill on " + tv.sym + "."
+                            color: Theme.t5
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontCaption
+                            lineHeight: 1.5
                         }
                     }
                 }
@@ -387,6 +409,7 @@ Item {
                 id: symSummary
                 Rectangle {
                     anchors.fill: parent
+                    implicitHeight: sCol.implicitHeight + Theme.sp(40)
                     readonly property var s: tv.sumStats()
                     radius: Theme.radiusCard
                     color: Theme.card
@@ -394,49 +417,36 @@ Item {
                     border.width: 1
                     clip: true
 
-                    ScrollView {
-                        id: sScroll
-                        anchors.fill: parent
-                        contentWidth: availableWidth
-                        clip: true
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                        ScrollBar.vertical: ThinScrollBar {}
-
-                        Item {
-                            width: sScroll.availableWidth
-                            implicitHeight: sCol.implicitHeight + Theme.sp(40)
-                            Column {
-                                id: sCol
-                                x: Theme.sp(22); y: Theme.sp(20)
-                                width: parent.width - Theme.sp(44)
-                                spacing: 0
-                                Text { text: tv.sym + " · summary"; color: Theme.textPrimary; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontBodyLg }
-                                Item { width: 1; height: Theme.sp(18) }
-                                Grid {
-                                    width: parent.width
-                                    columns: 2
-                                    rowSpacing: Theme.sp(16)
-                                    columnSpacing: Theme.sp(16)
-                                    StatCell { label: "NET P&L"; value: s.totalStr; valueColor: s.totalColor; valuePx: Theme.fontHeading }
-                                    StatCell { label: "WIN RATE"; value: s.win; valueColor: Theme.textPrimary; valuePx: Theme.fontHeading }
-                                    StatCell { label: "TRADES"; value: String(s.count); valueColor: Theme.textPrimary; valuePx: Theme.fontHeading }
-                                    StatCell { label: "AVG WIN / LOSS"; value: s.avgWin + " / " + s.avgLoss; valuePx: Theme.fontBody }
-                                    StatCell { label: "BEST"; value: s.best; valueColor: Theme.positive; valuePx: Theme.fontBody }
-                                    StatCell { label: "WORST"; value: s.worst; valueColor: Theme.negative; valuePx: Theme.fontBody }
-                                }
-                                Item { width: 1; height: Theme.sp(18) }
-                                Rectangle { width: parent.width; height: 1; color: Theme.rowSep }
-                                Item { width: 1; height: Theme.sp(16) }
-                                Text {
-                                    width: parent.width
-                                    wrapMode: Text.WordWrap
-                                    text: "All " + s.count + " fills on " + tv.sym + " are plotted on the chart above. Click any trade in the table to isolate it."
-                                    color: Theme.t5
-                                    font.family: Theme.mono
-                                    font.pixelSize: Theme.fontCaption
-                                    lineHeight: 1.5
-                                }
-                            }
+                    Column {
+                        id: sCol
+                        x: Theme.sp(22); y: Theme.sp(20)
+                        width: parent.width - Theme.sp(44)
+                        spacing: 0
+                        Text { text: tv.sym + " · summary"; color: Theme.textPrimary; font.family: Theme.mono; font.weight: Font.DemiBold; font.pixelSize: Theme.fontBodyLg }
+                        Item { width: 1; height: Theme.sp(18) }
+                        Grid {
+                            width: parent.width
+                            columns: 2
+                            rowSpacing: Theme.sp(16)
+                            columnSpacing: Theme.sp(16)
+                            StatCell { label: "NET P&L"; value: s.totalStr; valueColor: s.totalColor; valuePx: Theme.fontHeading }
+                            StatCell { label: "WIN RATE"; value: s.win; valueColor: Theme.textPrimary; valuePx: Theme.fontHeading }
+                            StatCell { label: "TRADES"; value: String(s.count); valueColor: Theme.textPrimary; valuePx: Theme.fontHeading }
+                            StatCell { label: "AVG WIN / LOSS"; value: s.avgWin + " / " + s.avgLoss; valuePx: Theme.fontBody }
+                            StatCell { label: "BEST"; value: s.best; valueColor: Theme.positive; valuePx: Theme.fontBody }
+                            StatCell { label: "WORST"; value: s.worst; valueColor: Theme.negative; valuePx: Theme.fontBody }
+                        }
+                        Item { width: 1; height: Theme.sp(18) }
+                        Rectangle { width: parent.width; height: 1; color: Theme.rowSep }
+                        Item { width: 1; height: Theme.sp(16) }
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            text: "All " + s.count + " fills on " + tv.sym + " are plotted on the chart above. Click any trade in the table to isolate it."
+                            color: Theme.t5
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontCaption
+                            lineHeight: 1.5
                         }
                     }
                 }
