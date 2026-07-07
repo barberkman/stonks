@@ -53,6 +53,27 @@ target_link_libraries(datafeed_tests PRIVATE
 # stack, which can exceed the 5s default on macOS (first-run dyld validation).
 gtest_discover_tests(datafeed_tests DISCOVERY_TIMEOUT 60)
 
+# Binance live-trading module: signer, REST client, exchange filters, broker, and
+# live feed — all exercised offline via an injected fake transport (no network).
+# Links OpenSSL::Crypto directly for the signer round-trip verification.
+add_executable(binance_tests
+    binance/signer_test.cpp
+    binance/restclient_test.cpp
+    binance/exchangeinfo_test.cpp
+    binance/binancebroker_test.cpp
+    binance/liveklinefeed_test.cpp
+)
+
+target_link_libraries(binance_tests PRIVATE
+    stonks_core
+    stonks_binance
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+    OpenSSL::Crypto
+)
+
+gtest_discover_tests(binance_tests)
+
 # App-layer tests: the QVariant result map the QML views consume. The app
 # target is an executable, so resultmap.cpp is compiled into the test binary
 # directly rather than linked from a library.

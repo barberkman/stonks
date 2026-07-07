@@ -21,8 +21,8 @@ struct ParamSpec
 // `display` is what the GUI shows.
 struct StrategyInfo
 {
-    std::string display;   // class name, e.g. "QMSignalsStrategy"
-    std::string module;    // file stem, e.g. "qmsignals"
+    std::string display;   // class name, e.g. "QMLiteralStrategy"
+    std::string module;    // file stem, e.g. "qmliteral"
     std::string cls;       // class to instantiate (same as display today)
     std::vector<ParamSpec> params;   // empty when the strategy declares none
 };

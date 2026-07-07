@@ -23,9 +23,10 @@ run inside the same C++ engine through the wrapper here.
 Author it in Python — see **`app/python/README.md`** for the full authoring
 guide (Context API, order/bracket mechanics, GUI-editable params, indicator
 overlays, and `FakeContext` unit testing). The shipped reference strategy is
-`app/python/qmsignals.py`.
+`app/python/qmliteral.py` (one of thirty-one interpretations of the pine scripts
+in `app/pines/`).
 
 New `app/python/<name>.py` files are picked up automatically by discovery — they
 appear in the GUI dropdown with no C++ or build wiring. The headless run in
 `app/src/main.cpp` selects a strategy by module/class string
-(`PythonStrategy{ "qmsignals", "QMSignalsStrategy" }`).
+(`PythonStrategy{ "qmliteral", "QMLiteralStrategy" }`).

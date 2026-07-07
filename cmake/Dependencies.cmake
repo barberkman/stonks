@@ -2,6 +2,12 @@ include(FetchContent)
 
 find_package(Qt6 REQUIRED COMPONENTS Quick)
 
+# Live trading (BinanceBroker): libcurl for HTTP, OpenSSL libcrypto for Ed25519
+# request signing. Both are system packages — on Debian-family systems install
+# `libcurl4-openssl-dev libssl-dev`.
+find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_Declare(
     nlohmann_json

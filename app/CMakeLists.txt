@@ -62,6 +62,7 @@ target_link_libraries(app PRIVATE
     stonks_core
     stonks_broker
     stonks_datafeed
+    stonks_binance
     Qt6::Quick
     nlohmann_json::nlohmann_json
 )

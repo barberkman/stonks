@@ -1,8 +1,10 @@
 # app/python — Python strategies for this app
 
 This folder holds Python strategies and the venv the embedded interpreter
-runs them in. `qmsignals.py` is the strategy that ships here; the sections
-below teach the authoring patterns with small inline examples.
+runs them in. Thirty-one strategy files ship here — standalone interpretations of
+the two pine scripts in `app/pines/` (Qullamaggie momentum swing and Darvas
+box), with `qmliteral.py` as the reference port; the sections below teach the
+authoring patterns with small inline examples.
 
 ## Layout
 
@@ -108,7 +110,7 @@ The EMA50 sample above is fire-and-forget. A real strategy usually needs the
 full toolkit: a stop-entry, protective legs chained under it, one-trade-at-a-
 time gating, and cleanup of stale orders. This complete example runs as-is
 (drop it in `app/python/` and unit-test it with `FakeContext`); the pattern
-mirrors `qmsignals.py`, the production reference:
+mirrors `qmliteral.py`, the reference port:
 
 ```python
 import stonks
@@ -199,7 +201,7 @@ The load-bearing details, each of which prevents a class of backtest bug:
 - **Cancel stale entries.** GTC means a never-triggered stop-entry from last
   month is still live — and can fill in a regime that has nothing to do with
   the signal that placed it.
-- **Optional refinement** (see `qmsignals.py`): compare the actual fill
+- **Optional refinement** (see `qmliteral.py`): compare the actual fill
   (`ctx.position(sym).price`) with the planned entry and re-anchor the legs
   proportionally when the entry gapped.
 
@@ -280,7 +282,7 @@ Drop your strategy in `app/python/<name>.py` and reference it in `app/src/main.c
 ```cpp
 #include "strategies/pythonstrategy.h"
 // ...
-PythonStrategy strategy{ "qmsignals", "QMSignalsStrategy" };
+PythonStrategy strategy{ "qmliteral", "QMLiteralStrategy" };
 ```
 
 Run from the project root:
@@ -342,9 +344,11 @@ never fill on their own. What it gives you for assertions and scenario setup:
 - **`ctx.cancel_order(order_id)`** — marks a still-Open order (and its
   children, cascading like the real broker) `Cancelled`, returning `True`.
 
-`app/python/test_qmsignals.py` demonstrates all of these patterns, including
-simulating a gapped fill (set the position's `price` off the plan and the
-entry's status to `Filled`, then tick once).
+The behavior suites (`test_qm_family.py`, `test_darvas_family.py`,
+`test_qmdarvas_family.py`, with shared bar-builders and fill helpers in
+`conftest.py`) demonstrate all of these patterns, including simulating fills
+(`fill_entry` / `fill_exit`) and driving a run through the `settle()`
+mini-broker (`test_strategy_smoke.py`).
 
 Fill *mechanics* (trigger touching, margin, liquidation, fees) are not
 simulated here by design — they are pinned by the C++ suite
@@ -460,6 +464,60 @@ Don't design a strategy around these — work with the patterns above instead:
   a bar follow the documented worse-of rules, not a simulated tape.
 - **Fees and margin are run configuration** (GUI setup screen /
   `BrokerConfig`), not strategy-controlled.
+
+## Live trading (Binance USDⓈ-M futures)
+
+The same strategy that backtests can trade live, unchanged. `BinanceBroker` is a
+compile-time drop-in for the backtest broker (both satisfy the C++ `Broker`
+concept), so your Python `on_tick` sees the identical `ctx` surface — the only
+difference is that positions, cash, orders, and fills are now **read from Binance
+every tick** instead of simulated. No local ledger is kept.
+
+```sh
+export BINANCE_API_KEY=...                 # from the testnet or mainnet portal
+export BINANCE_PRIVATE_KEY_PEM=~/ed25519.pem   # inline PEM text or a path to it
+./build/linux-debug/app/app --live --strategy qmliteral --symbols BTCUSDT --interval 1h
+```
+
+- **Ed25519 keys only** (Binance's recommended type). Generate a keypair, register
+  the public half in the API-key portal, point `BINANCE_PRIVATE_KEY_PEM` at the
+  private PEM. `X-MBX-APIKEY` + a signed query are handled for you.
+- **Testnet by default.** Create keys at testnet.binancefuture.com and validate
+  there first. `--mainnet` trades real funds; `--dry-run` logs intended orders
+  without sending them. `BINANCE_BASE_URL` overrides the endpoint if Binance
+  rotates the testnet host.
+- **Flags:** `--strategy <module>` (or `<module>:Class`), `--symbols A,B,C`,
+  `--interval 1m|5m|1h|1d|…`, `--mainnet`, `--dry-run`. Ctrl-C stops cleanly.
+- **One tick per closed candle.** A `LiveKlineFeed` polls klines and drives the
+  engine when a candle closes; history is seeded at startup so `ctx.history(n)`
+  works from the first tick. It never acts on a still-forming candle.
+
+How the managed-bracket pattern maps, faithfully:
+
+- Your entry (market or resting stop/limit) and its `reduce_only` children behave
+  as they do in backtest. Each child's `parent=entry_id` is encoded into the
+  Binance `clientOrderId`, so bracket linkage is reconstructed from the exchange —
+  no shadow map.
+- Binance rejects a `reduce_only` order while flat, so a child placed around a
+  **resting** entry is held locally and submitted the moment the entry fills
+  (market entries fill synchronously, so their children go out immediately). When
+  a symbol goes flat, orphaned protection is cancelled — the live equivalent of
+  OCO/subtree cleanup.
+- Partial take-profits work naturally: the broker reads the real (partially
+  reduced) position from Binance, so the "no partial fills" backtest simplification
+  does **not** apply live.
+
+Caveats to know:
+
+- Quantities and prices are snapped to each symbol's `LOT_SIZE`/`PRICE_FILTER` and
+  checked against `MIN_NOTIONAL` before sending; account is assumed **one-way,
+  isolated margin**, with leverage set per symbol from the order's `leverage`.
+- The only local state is the transient table of not-yet-armed bracket children;
+  it is lost on process restart (live positions/orders are fully recovered from
+  Binance, but an in-flight un-armed bracket would need manual re-placement).
+- Stop/take-profit legs are sent as `STOP_MARKET` on `POST /fapi/v1/order`. Binance
+  is migrating conditional orders to a separate algo service; verify order
+  acceptance on testnet for your account before going to mainnet.
 
 ## Implementing a new strategy — checklist
 

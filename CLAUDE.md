@@ -14,7 +14,7 @@ VSCode: F5 builds and launches the debugger (requires CodeLLDB extension).
 
 ### Linux (Ubuntu / WSL)
 
-Prerequisites: `sudo apt install cmake gdb` (build-essential ships gcc/g++/make).
+Prerequisites: `sudo apt install cmake gdb libcurl4-openssl-dev libssl-dev` (build-essential ships gcc/g++/make). libcurl + OpenSSL back the live Binance broker (HTTP + Ed25519 signing); on macOS they come from the system / Homebrew (`brew install openssl`).
 
 Use the `linux-debug` / `linux-release` presets — they build into `build/linux-debug/` and `build/linux-release/`:
 
@@ -30,7 +30,8 @@ VSCode launch configs `Linux: Debug backtest_runner (gdb)` and `Linux: Debug cor
 
 - `include/stonks/<module>/` — public headers, all under the `stonks::` namespace (sub-namespaces match folders, e.g. `stonks::core`).
 - `src/<module>/` — implementations, mirrors `include/stonks/`.
-- `app/` — the single application (executable target `app`): headless backtest runner by default, Qt Quick GUI with `--gui`. Strategies live in `app/strategies/` (C++) and `app/python/` (Python).
+- `app/` — the single application (executable target `app`): headless backtest runner by default, Qt Quick GUI with `--gui`, live Binance trading with `--live`. Strategies live in `app/strategies/` (C++) and `app/python/` (Python).
+- `include/stonks/binance/` + `src/binance/` (lib `stonks_binance`) — live USDⓈ-M futures: `BinanceBroker` (a drop-in for `BacktestBroker` — same `core::Broker` concept), REST client + Ed25519 signer, exchange-filter rounding, and `LiveKlineFeed`. All exchange state is read from Binance, never shadow-ledgered. See `app/python/README.md` → "Live trading" for env vars and `--live` usage.
 - `tests/<module>/` — GoogleTest unit tests, mirrors `include/stonks/`.
 - `tools/` — standalone helpers (e.g. `verify_backtest.py`, the trade-by-trade replay audit of a report).
 - `cmake/` — build helpers (deps pulled via `FetchContent`).
@@ -71,7 +72,7 @@ python3 -m venv app/python/.venv
 app/python/.venv/bin/pip install -e python/
 ```
 
-Smoke: `./build/linux-debug/app/app` (from project root) runs the sample at `app/python/qmsignals.py`.
+Smoke: `./build/linux-debug/app/app` (from project root) runs the reference strategy at `app/python/qmliteral.py`.
 
 ## Tests
 
