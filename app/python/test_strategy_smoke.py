@@ -40,6 +40,7 @@ STRATEGIES = [
     ("qmthirds", "QMThirdsStrategy"),
     ("qmpullback", "QMPullbackStrategy"),
     ("qmswing", "QMSwingStrategy"),
+    ("qmsignals", "QMSignalsStrategy"),
     ("darvasclassic", "DarvasClassicStrategy"),
     ("darvasstrict", "DarvasStrictStrategy"),
     ("darvasshort", "DarvasShortStrategy"),
@@ -58,6 +59,7 @@ STRATEGIES = [
     ("qmdarvasregime", "QMDarvasRegimeStrategy"),
     ("qmdarvasfirstbox", "QMDarvasFirstBoxStrategy"),
     ("qmdarvasboxtrail", "QMDarvasBoxTrailStrategy"),
+    ("ttfm", "TTFMStrategy"),
 ]
 
 # Short-only files get a falling trend so their setups (and management) run.
@@ -93,7 +95,7 @@ def test_discovery_compliance_and_specs(module, cls_name):
         assert isinstance(spec["color"], str)
 
 
-def test_exactly_the_thirty_one_strategy_files_exist():
+def test_exactly_the_thirty_three_strategy_files_exist():
     here = pathlib.Path(__file__).parent
     on_disk = {p.stem for p in here.glob("*.py")
                if not (p.stem.startswith("test_") or p.stem.startswith("__")
@@ -102,7 +104,7 @@ def test_exactly_the_thirty_one_strategy_files_exist():
     assert on_disk == listed, (f"strategy files and the smoke list disagree: "
                                f"only on disk {sorted(on_disk - listed)}, "
                                f"only listed {sorted(listed - on_disk)}")
-    assert len(STRATEGIES) == 31
+    assert len(STRATEGIES) == 33
 
 
 @pytest.mark.parametrize("regime", ["trending", "choppy", "gappy"])

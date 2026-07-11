@@ -414,3 +414,85 @@ def test_no_signal_stays_flat():
     ctx, s = _run(_flat_bars())
     assert ctx.orders == []
     assert s.last_signals("TEST") == []
+
+
+# ─── Long-term SMA50/SMA200 trend regime filter ──────────────────────────────
+def test_trend_ma_ok_gates_on_fast_over_slow():
+    s = QMSignalsStrategy()   # trend_ma_fast=50, trend_ma_slow=200
+    # 150 bars low, 50 bars high: sma50=120, sma200=(150*100+50*120)/200=105.
+    up = np.concatenate([np.full(150, 100.0), np.full(50, 120.0)])
+    assert s.trend_ma_ok(up, is_long=True) is True      # 120 > 105
+    assert s.trend_ma_ok(up, is_long=False) is False
+    # Inverted: sma50=100, sma200=115.
+    dn = np.concatenate([np.full(150, 120.0), np.full(50, 100.0)])
+    assert s.trend_ma_ok(dn, is_long=False) is True     # 100 < 115
+    assert s.trend_ma_ok(dn, is_long=True) is False
+    # Not enough history for the slow MA -> passes through either way.
+    assert s.trend_ma_ok(np.full(199, 100.0), is_long=True) is True
+    assert s.trend_ma_ok(np.full(199, 100.0), is_long=False) is True
+
+
+def _regime_long_arrays(uptrend, lead=165):
+    """A long `breakout` setup (40-bar base, pivot high 142, close-above-pivot
+    143) preceded by a 165-bar ramp that sets the SMA50/SMA200 regime: a rising
+    ramp puts SMA50 above SMA200, a falling ramp inverts it. Only the ramp
+    differs, so the breakout gate itself fires identically in both — isolating
+    the regime filter. Returns the six columnar arrays scan() consumes."""
+    lo_px, hi_px = (70.0, 139.0) if uptrend else (210.0, 139.0)
+    closes = [lo_px + (hi_px - lo_px) * i / (lead - 1) for i in range(lead)]
+    closes += [140.0] * 40 + [143.0]
+    n = len(closes)
+    op, hi, lo, vo = (np.empty(n) for _ in range(4))
+    cl = np.array(closes)
+    ts = np.array([i * DAY for i in range(n)], dtype=float)
+    for i, c in enumerate(closes):
+        if i < lead:
+            hi[i], lo[i], vo[i] = c + 0.5, c - 0.5, 1000.0
+        elif i == n - 1:                 # breakout bar closes above the pivot
+            hi[i], lo[i], vo[i] = 143.5, 141.0, 2000.0
+        elif i == lead + 3:              # pivot high, early in the base
+            hi[i], lo[i], vo[i] = 142.0, 139.0, 1000.0
+        else:                            # rest of the base, below the pivot
+            hi[i], lo[i], vo[i] = 141.0, 139.0, 1000.0
+        op[i] = closes[i - 1] if i > 0 else c
+    return op, hi, lo, cl, vo, ts
+
+
+def _regime_short_arrays(downtrend, lead=165):
+    """Mirror of `_regime_long_arrays` for the short side: a `short_breakout`
+    (40-bar base, pivot low 98, close-below-trough 97) after a ramp. A falling
+    ramp (down-regime) puts SMA50 below SMA200; a rising ramp inverts it."""
+    lo_px, hi_px = (170.0, 101.0) if downtrend else (30.0, 101.0)
+    closes = [lo_px + (hi_px - lo_px) * i / (lead - 1) for i in range(lead)]
+    closes += [100.0] * 40 + [97.0]
+    n = len(closes)
+    op, hi, lo, vo = (np.empty(n) for _ in range(4))
+    cl = np.array(closes)
+    ts = np.array([i * DAY for i in range(n)], dtype=float)
+    for i, c in enumerate(closes):
+        if i < lead:
+            hi[i], lo[i], vo[i] = c + 0.5, c - 0.5, 1000.0
+        elif i == n - 1:                 # breakdown bar closes below the trough
+            hi[i], lo[i], vo[i] = 99.0, 96.5, 2000.0
+        elif i == lead + 3:              # pivot low, early in the base
+            hi[i], lo[i], vo[i] = 101.0, 98.0, 1000.0
+        else:                            # rest of the base, above the trough
+            hi[i], lo[i], vo[i] = 101.0, 99.0, 1000.0
+        op[i] = closes[i - 1] if i > 0 else c
+    return op, hi, lo, cl, vo, ts
+
+
+def test_regime_filter_keeps_long_only_with_sma50_over_sma200():
+    s = QMSignalsStrategy()
+    # Up-regime: the breakout survives the filter.
+    assert [x.setup for x in s.scan(*_regime_long_arrays(uptrend=True))] == ["breakout"]
+    # Down-regime: the very same breakout is filtered out.
+    assert s.scan(*_regime_long_arrays(uptrend=False)) == []
+
+
+def test_regime_filter_keeps_short_only_with_sma50_under_sma200():
+    s = QMSignalsStrategy()
+    # Down-regime: the short breakout survives.
+    assert [x.setup for x in s.scan(*_regime_short_arrays(downtrend=True))] == ["short_breakout"]
+    # Up-regime: the same short breakout is filtered out.
+    assert s.scan(*_regime_short_arrays(downtrend=False)) == []

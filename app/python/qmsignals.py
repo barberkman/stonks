@@ -16,6 +16,11 @@ symbol, so on_tick regroups it by symbol before scanning. The setup math is a
 faithful, index-for-index port — base-pivot scans keep the *last* extreme (`>=`
 /`<=`), so the loops are explicit rather than vectorized argmax/argmin.
 
+On top of the C++ setups, every fired signal must agree with a long-term trend
+regime: longs require SMA(fast) > SMA(slow) (default 50/200), shorts the
+reverse. This gate is Python-only — it has no counterpart in qmsignals.h. It
+passes through during warmup, before there is enough history for the slow MA.
+
 Fire-and-forget, like the C++: no holdings are tracked. The broker's
 one-position-per-symbol semantics reject duplicate same-side entries.
 """
@@ -89,6 +94,8 @@ class QMSignalsStrategy(stonks.Strategy):
     mom_len = 24
     min_gain = 0.5
     require_mas = True
+    trend_ma_fast = 50      # long-term regime filter: only long when this fast MA
+    trend_ma_slow = 200     # leads the slow MA, only short when it trails (see scan)
     # Breakout / short-breakout base
     base_max_len = 40
     min_base_days = 3
@@ -155,7 +162,8 @@ class QMSignalsStrategy(stonks.Strategy):
 
     def lookback(self) -> int:
         return max(self.base_max_len, 51, self.mom_len, self.adr_len,
-                   self.ps_lookback, self.ps_streak + 1, self.ps_stop_lb) + 5
+                   self.ps_lookback, self.ps_streak + 1, self.ps_stop_lb,
+                   self.trend_ma_slow) + 5
 
     def on_tick(self, ctx):
         w = ctx.history(self.lookback())
@@ -292,7 +300,9 @@ class QMSignalsStrategy(stonks.Strategy):
         out: List[Signal] = []
         for setup in setups:
             s = setup(op, hi, lo, cl, vo, ts)
-            if s is not None:
+            # Long-term trend gate: a long needs SMA(fast) > SMA(slow), a short
+            # the reverse (is_long is stop-below-entry, as in on_tick).
+            if s is not None and self.trend_ma_ok(cl, s.stop < s.entry):
                 out.append(s)
         return out
 
@@ -519,6 +529,16 @@ class QMSignalsStrategy(stonks.Strategy):
         s10 = sma(cl, 10)
         s20 = sma(cl, 20)
         return s10 is not None and s20 is not None and cl[-1] < s20 and s10 < s20
+
+    # Long-term trend regime: only long in an up-regime (fast MA over the slow
+    # one), only short in a down-regime. Passes through until there is enough
+    # history for the slow MA, so the warmup trades unfiltered.
+    def trend_ma_ok(self, cl, is_long: bool) -> bool:
+        fast = sma(cl, self.trend_ma_fast)
+        slow = sma(cl, self.trend_ma_slow)
+        if fast is None or slow is None:
+            return True
+        return fast > slow if is_long else fast < slow
 
     def vol_dry_ok(self, vo) -> bool:
         v5 = sma(vo, 5)
