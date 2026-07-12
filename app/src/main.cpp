@@ -31,7 +31,7 @@
 
 namespace stonks::app {
 
-// Wires up the Engine (the qmliteral reference strategy + KLineFeed +
+// Wires up the Engine (the qmmomentumswing strategy + KLineFeed +
 // BacktestBroker) and runs it, printing the report to the terminal.
 void run_backtest() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
@@ -44,7 +44,7 @@ void run_backtest() {
         .maker_fee_bps = 2.0,
         .taker_fee_bps = 5.0,
     };
-    PythonStrategy strategy{ "qmswing", "QMSwingStrategy" };
+    PythonStrategy strategy{ "qmmomentumswing", "QMMomentumSwingStrategy" };
     // Declared indicator metadata — class-level, read before the move below.
     std::vector<IndicatorSpec> indicator_specs;
     for (const auto& s : strategy.indicator_specs()) {
@@ -71,8 +71,8 @@ void run_backtest() {
         engine.equity(),
         elapsed,
         broker_config,
-        StrategyRunInfo{ "qmliteral", "QMLiteralStrategy", {} },   // headless: no overrides
-        RunMeta{ "QMLiteralStrategy", data_file, "binance_1d", start, end, symbols },
+        StrategyRunInfo{ "qmmomentumswing", "QMMomentumSwingStrategy", {} },   // headless: no overrides
+        RunMeta{ "QMMomentumSwingStrategy", data_file, "binance_1d", start, end, symbols },
         std::move(indicator_specs),
         engine.indicators(),
     };
@@ -266,7 +266,7 @@ void on_sigint(int) { g_live_cancel.store(true, std::memory_order_relaxed); }
 // LiveKlineFeed (REST kline polling) and a BinanceBroker (all state read from
 // Binance). Defaults to testnet; pass --mainnet to trade real funds.
 //
-//   app --live --strategy qmliteral --symbols BTCUSDT --interval 1h [--mainnet] [--dry-run]
+//   app --live --strategy qmmomentumswing --symbols BTCUSDT --interval 1h [--mainnet] [--dry-run]
 //
 // Credentials come from the environment: BINANCE_API_KEY and
 // BINANCE_PRIVATE_KEY_PEM (inline Ed25519 PEM or a path to it).
@@ -276,7 +276,7 @@ int run_live(int argc, const char* const* argv) {
     const std::string interval = flag_value(argc, argv, "--interval", "1h");
     const std::vector<std::string> symbols =
         split_csv(flag_value(argc, argv, "--symbols", "BTCUSDT"));
-    const std::string strategy_arg = flag_value(argc, argv, "--strategy", "qmliteral");
+    const std::string strategy_arg = flag_value(argc, argv, "--strategy", "qmmomentumswing");
 
     if (symbols.empty()) {
         std::cerr << "No symbols given (use --symbols BTCUSDT,ETHUSDT).\n";

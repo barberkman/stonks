@@ -33,6 +33,7 @@ QtObject {
     // --- results (populated from the controller) ---
     property var results: ({})             // runId -> full result object
     property var completed: []             // result objects, newest first
+    property bool archiveLoading: true     // true until the startup archive restore completes
     property string runError: ""
 
     // cached controller lookups (eager, pure-read: computed once from the
@@ -163,6 +164,15 @@ QtObject {
         if (i >= 0) arr.splice(i, 1); else arr.push(id);
         symbols = arr;
     }
+    function addSymbols(list) {
+        var arr = symbols.slice();
+        for (var i = 0; i < list.length; i++)
+            if (arr.indexOf(list[i]) < 0) arr.push(list[i]);
+        symbols = arr;
+    }
+    function removeSymbols(list) {
+        symbols = symbols.filter(function (s) { return list.indexOf(s) < 0; });
+    }
 
     // --- run lifecycle (driven by the controller) ---
     function runBacktest() {
@@ -218,6 +228,7 @@ QtObject {
         }
         results = r;
         completed = completed.concat(loaded);
+        archiveLoading = false;
     }
 
     function deleteBacktest(id) {
@@ -229,6 +240,17 @@ QtObject {
         results = r;
         completed = completed.filter(function (b) { return b.id !== id; });
         if (selectedBacktest === id) { selectedBacktest = ""; view = "backtests"; }
+    }
+
+    function clearAllBacktests() {
+        for (var k in results) {
+            var run = results[k];
+            if (run && run.reportPath) { Backtest.deleteRun(run.reportPath); }
+        }
+        results = ({});
+        completed = [];
+        selectedBacktest = "";
+        view = "backtests";
     }
 
     property Connections _conn: Connections {

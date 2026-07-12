@@ -29,6 +29,7 @@ Page {
 
     // --- title row + new button ---
     Item {
+        id: titleRow
         width: view.innerWidth
         height: Theme.sp(58)
         Column {
@@ -52,10 +53,48 @@ Page {
             }
         }
         AccentButton {
+            id: newBtn
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             text: "+ New backtest"
             onClicked: App.goSetup()
+        }
+
+        property bool confirmingClear: false
+
+        // Idle: low-emphasis "Clear all" (only when there are runs to clear).
+        GhostButton {
+            anchors.right: newBtn.left
+            anchors.rightMargin: Theme.sp(10)
+            anchors.bottom: parent.bottom
+            visible: !titleRow.confirmingClear && App.allBacktests().length > 0
+            text: "Clear all"
+            onClicked: titleRow.confirmingClear = true
+        }
+
+        // Confirm: inline prompt + cancel/confirm (no modal dialog in this app).
+        Row {
+            anchors.right: newBtn.left
+            anchors.rightMargin: Theme.sp(10)
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Theme.sp(6)
+            spacing: Theme.sp(8)
+            visible: titleRow.confirmingClear
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Clear all runs?"
+                color: Theme.t3
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSmall
+            }
+            GhostButton {
+                text: "Cancel"
+                onClicked: titleRow.confirmingClear = false
+            }
+            GhostButton {
+                text: "Clear all"
+                onClicked: { App.clearAllBacktests(); titleRow.confirmingClear = false }
+            }
         }
     }
 
@@ -73,10 +112,30 @@ Page {
             id: tableCol
             width: parent.width
 
+            // startup archive-restore placeholder
+            Item {
+                width: parent.width
+                height: Theme.sp(160)
+                visible: App.archiveLoading
+                Row {
+                    anchors.centerIn: parent
+                    spacing: Theme.sp(14)
+                    Spinner { anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Loading archived backtests…"
+                        color: Theme.t4
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontBody
+                    }
+                }
+            }
+
             // header row
             Item {
                 width: parent.width
                 height: Theme.sp(40)
+                visible: !App.archiveLoading
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.border }
                 Row {
                     x: Theme.sp(22)

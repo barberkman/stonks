@@ -208,14 +208,62 @@ Page {
 
             // symbol multi-select pills
             Column {
+                id: symBox
                 width: parent.width
                 spacing: Theme.sp(8)
-                Text { text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
+                property string symbolQuery: ""
+                readonly property var filteredSymbols: {
+                    var q = symbolQuery.trim().toUpperCase();
+                    if (q === "") return App.availableSymbols;
+                    return App.availableSymbols.filter(function (s) { return s.toUpperCase().indexOf(q) >= 0; });
+                }
+                Item {
+                    width: parent.width
+                    height: Theme.controlHSm
+                    Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "SYMBOLS"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontMicro; font.letterSpacing: 0.6 * Theme.scale }
+                    Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.sp(8)
+                        GhostButton { text: "All"; onClicked: App.addSymbols(symBox.filteredSymbols) }
+                        GhostButton { text: "None"; onClicked: App.removeSymbols(symBox.filteredSymbols) }
+                    }
+                }
+                // search / filter box
+                Rectangle {
+                    width: parent.width
+                    height: Theme.controlHSm
+                    radius: Theme.radiusControl
+                    color: Theme.input
+                    border.width: 1
+                    border.color: symIn.activeFocus ? Theme.accent : Theme.border
+                    TextInput {
+                        id: symIn
+                        anchors.left: parent.left; anchors.leftMargin: Theme.sp(11)
+                        anchors.right: parent.right; anchors.rightMargin: Theme.sp(11)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: symBox.symbolQuery
+                        onTextEdited: symBox.symbolQuery = text
+                        color: Theme.textPrimary
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSmall
+                        selectByMouse: true
+                        clip: true
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Filter symbols…"
+                            visible: symIn.text.length === 0
+                            color: Theme.t6
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSmall
+                        }
+                    }
+                }
                 Flow {
                     width: parent.width
                     spacing: Theme.sp(8)
                     Repeater {
-                        model: App.availableSymbols
+                        model: symBox.filteredSymbols
                         delegate: Rectangle {
                             required property var modelData
                             readonly property bool on: App.symbols.indexOf(modelData) >= 0
@@ -237,6 +285,13 @@ Page {
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: App.toggleSymbol(modelData) }
                         }
                     }
+                }
+                Text {
+                    visible: symBox.filteredSymbols.length === 0
+                    text: "No symbols match “" + symBox.symbolQuery + "”"
+                    color: Theme.t6
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSmall
                 }
             }
 
