@@ -1,10 +1,12 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 import Stonks
 
 ApplicationWindow {
     id: window
     visible: true
+    visibility: Window.Maximized
     width: 1440
     height: 900
     minimumWidth: 1120

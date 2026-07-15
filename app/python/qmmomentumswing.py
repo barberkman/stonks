@@ -1,19 +1,28 @@
 """Qullamaggie momentum swing — port of app/pines/qullamaggie_momentum_swing.pine (v12).
 
-Signal-first port: every tick, `signal()` re-evaluates the pine's setup
-conditions on the just-confirmed bar and returns the trade the pine would
-take (setup name, side, entry, stop, target) BEFORE the entry condition
-trades — the pine's resting-order model, so the same numbers can be parked
-at the exchange in advance. `on_tick` only reconciles that signal with the
-broker: park/refresh/expire the resting stop-entry with its bracket
-children, or fire the market entries (EP/PARA), and print each signal as
-it is generated.
+Signal-first port: every tick the strategy re-evaluates the pine's setup
+conditions on the just-confirmed bar and turns them into engine orders.
+The breakout setups run in one of two execution models, switched by
+`use_bo_vol` (the pine's useBOVol break-bar volume gate):
+
+  gate ON (default)  VIRTUAL arms. A real resting stop cannot check its
+                     fill bar's volume — the broker fills on price alone —
+                     so nothing is parked. The strategy tracks the armed
+                     level and expiry timer itself, evaluates the pine's
+                     fill condition (break AND volume >= bo_vol_mult x
+                     avgVol50[1]) on each confirmed bar, and enters at
+                     market when it holds. Low-volume crossings are
+                     skipped exactly like the pine: no fill, no fees.
+  gate OFF           A real stop order rests at the level with its bracket
+                     children and fills on the first touch — the pine with
+                     useBOVol off, and the numbers can be parked at the
+                     exchange in advance.
 
 Setups (one position at a time per symbol, like the pine):
 
-  BO        resting buy-stop at the pivot high of a tight flag/base
-  ORB       resting buy-stop at the high of the first N bars of a UTC day
-  SHORT_BO  resting sell-stop at the base low in a downtrend (mirror)
+  BO        breakout above the pivot high of a tight flag/base
+  ORB       breakout above the high of the first N bars of a UTC day
+  SHORT_BO  breakdown below the base low in a downtrend (mirror)
   EP        episodic pivot: gap up on volume with a strong close (market)
   PARA      parabolic "first red bar" short (market)
 
@@ -22,32 +31,30 @@ condition):
 
   1. bufTicks x syminfo.mintick -> `entry_buffer_bps` (the engine has no
      tick size; bps is scale-free across symbols).
-  2. entryMode is stop-at-level only; "Wait for bar close" dropped — the
-     whole point here is the resting order.
-  3. useBOVol (break-bar volume expansion gate) is enforced by
-     fill-check-and-bail: a real resting order cannot inspect the fill
-     bar's volume, so when the parked entry fills on a bar whose volume
-     misses `bo_vol_mult` x the previous bar's 50-bar average, the
-     position is immediately closed at market and the same order is
-     re-parked with its original expiry timer — reproducing the pine,
-     where such a touch never fills and the order stays armed for a
-     later volume-confirmed break. The bail round trip (two taker fees
-     plus any gap to the next open) is the price of this emulation.
-  4. useLodStop (tighten the stop to the entry-bar extreme) applies only
-     to EP, where the signal bar IS the entry bar; for the resting setups
-     the entry bar is unknown at arm time, so their stops are pure
-     ADR-multiples off the level.
-  5. The pine recomputes stop/target from the actual fill (entryPx =
-     max(open, level)); here SL/TP stay anchored to the armed level so the
-     numbers are known beforehand. The engine still fills the stop entry
-     at max(level, open), like the pine.
+  2. entryMode is stop-at-level only; "Wait for bar close" dropped.
+  3. useBOVol switches the execution model (see above) instead of gating
+     resting-order fills, which the broker cannot do. Gate-on reproduces
+     the pine's trade list; gate-off reproduces its first-touch fills.
+  4. use_lod_stop: virtual fills tighten the stop to the break bar's
+     low (high for shorts) exactly like the pine — the break bar IS the
+     entry bar. The gate-off parked path cannot (its entry bar is unknown
+     at arm time), so those stops stay pure ADR-multiples off the level.
+     EP always applies it (signal bar = entry bar).
+  5. Virtual fills recompute stop/target from the pine's entry reference
+     max(open, level) (min for shorts) and the break bar's ADR, like the
+     pine. The gate-off parked path keeps SL/TP anchored to the armed
+     level so the numbers are known beforehand; the engine still fills
+     the parked stop at max(level, open), like the pine.
   6. Partials, the breakeven move, the trail-MA exit, and the PARA
      bounce/time covers are dropped: one stop-loss + one take-profit for
      the whole position (partialRR -> `target_rr`). PARA keeps the pine's
      na target -> stop-loss only.
-  7. EP/PARA enter "at the close" in the pine; the engine has no same-bar
-     fills, so their market order fills at the next open. The printed
-     signal is anchored to the signal bar's close.
+  7. The pine fills intrabar (breakouts at the level, EP/PARA at the
+     close); the engine has no same-bar fills. EP/PARA market orders fill
+     at the next open. Virtual breakout fills share this: the signal is
+     decided on the confirmed break bar — numbers anchored to its
+     max(open, level) — and the market order fills at the NEXT bar's
+     open, one bar after the pine's intrabar fill.
   8. Session = UTC calendar day (24/7 crypto data has no sessions).
   9. Sizing and leverage added (the pine is an indicator), following
      app/notes/position-calculator-formulas.md: risk-mode quantity (its §2)
@@ -67,22 +74,27 @@ condition):
  10. The pine's same-bar "filled then collapsed through the stop" bail is
      native here: the broker's settle rounds let the stop child fill on
      the entry bar.
- 11. An EP/PARA market entry cancels a still-armed resting entry (the pine
-     leaves it armed, but its fill would be rejected as a same-side add
-     anyway). One resting order is parked per symbol at a time; when
-     several setups hold at once the first in the pine's fill priority
-     (EP entry, then BO > ORB > SHORT_BO) wins the slot.
+ 11. Gate-on: virtual bo/so arms survive EP/PARA holds like the pine's
+     boArmed (fills are blocked by canEnter while positioned; the expiry
+     timer keeps ticking), the two arms can coexist, and fills follow the
+     pine's chain priority BO > ORB > SHORT_BO > EP > PARA. Gate-off keeps
+     a one-parked-order-per-symbol model: an EP/PARA market entry cancels
+     a still-armed resting entry (the pine leaves it armed, but its fill
+     would be rejected as a same-side add anyway), and when several setups
+     hold at once the first in priority wins the slot.
  12. Signals print on new arm / level change / market entry / expiry /
-     volume bail / broker rejection — not on every bar a setup silently
-     re-arms at the same level.
+     skipped low-volume break / broker rejection — not on every bar a
+     setup silently re-arms at the same level.
  13. `require_ma_stack` (off by default) ports the pine's `requireStack`: when
-     on it requires the full MA stack (sma10>sma20>sma50>sma200 long,
-     sma10<sma20<sma50<sma200 short) as part of the universe trend gate, so it
+     on it requires the MA stack (sma10>sma20>sma50 long,
+     sma10<sma20<sma50 short) as part of the universe trend gate, so it
      constrains only the breakout setups that flow through it — BO / ORB /
      SHORT_BO. EP and PARA ride the liquidity gate and are not affected, exactly
      as in the pine code (its header comment claims EP is gated, but the code
-     omits it). Needs 200 bars of history for sma200; those breakout setups are
+     omits it). Needs 50 bars of history for sma50; those breakout setups are
      suppressed until then.
+ 14. A rejected market entry consumes the virtual arm (the pine cannot
+     reject an entry); the setup re-arms organically while it still holds.
 """
 
 import math
@@ -149,10 +161,11 @@ class Signal:
     """One actionable trade, generated before its entry condition trades.
 
     `action` is "arm" (park a resting stop entry at `entry`) or "enter"
-    (market entry now; `entry` is the signal bar's close). `target` is None
-    when the setup has no take-profit (PARA). `leverage` is the max-safe
-    isolated leverage the entry order will carry. `valid_bars` is how long
-    an armed order stays parked after its last re-arm (BO/SHORT_BO only)."""
+    (market entry now; `entry` is the pine's entry reference on the signal
+    bar). `target` is None when the setup has no take-profit (PARA).
+    `leverage` is the max-safe isolated leverage the entry order will
+    carry. `valid_bars` is how long an armed order stays parked after its
+    last re-arm (parked BO/SHORT_BO only)."""
 
     setup: str                  # "BO" | "ORB" | "SHORT_BO" | "EP" | "PARA"
     side: str                   # "long" | "short"
@@ -225,7 +238,7 @@ class QMMomentumSwingStrategy(stonks.Strategy):
         "min_gain": stonks.Param("minimum gain over the lookback", unit="%"),
         "require_mas": stonks.Param("require close vs 20 SMA and 10 SMA vs 20 SMA trend gate"),
         "require_ma_stack": stonks.Param(
-            "require MA stack 10>20>50>200 long / inverse short (gates BO/ORB/SHORT_BO)"),
+            "require MA stack 10>20>50 long / inverse short (gates BO/ORB/SHORT_BO)"),
         "enable_bo": stonks.Param("enable long breakout signals"),
         "base_max_len": stonks.Param("max base lookback", unit="bars"),
         "min_base_bars": stonks.Param("min bars since the base high/low", unit="bars"),
@@ -233,8 +246,9 @@ class QMMomentumSwingStrategy(stonks.Strategy):
         "use_vol_dry": stonks.Param("require volume contraction in the base"),
         "vol_dry_ratio": stonks.Param("5-bar avg vol < ratio x 50-bar avg vol"),
         "entry_buffer_bps": stonks.Param("entry buffer beyond the pivot", unit="bps"),
-        "order_bars": stonks.Param("resting order good for N bars after its last re-arm", unit="bars"),
-        "use_bo_vol": stonks.Param("require volume expansion on the break bar (bail + re-arm when missing)"),
+        "order_bars": stonks.Param("breakout arm good for N bars after its last re-arm", unit="bars"),
+        "use_bo_vol": stonks.Param(
+            "require volume expansion on the break bar (virtual arm + market entry)"),
         "bo_vol_mult": stonks.Param("break-bar volume >= x 50-bar avg"),
         "enable_orb": stonks.Param("enable opening range breakout (UTC-day session)"),
         "orb_bars": stonks.Param("opening range length", unit="bars"),
@@ -249,7 +263,7 @@ class QMMomentumSwingStrategy(stonks.Strategy):
         "ps_streak": stonks.Param("min consecutive up-closes before the reversal"),
         "ps_stop_lookback": stonks.Param("stop above the highest high of the last N bars", unit="bars"),
         "adr_stop_mult": stonks.Param("max initial stop distance", unit="x ADR"),
-        "use_lod_stop": stonks.Param("tighten the EP stop to the signal-bar low if closer"),
+        "use_lod_stop": stonks.Param("tighten the stop to the entry-bar extreme if closer"),
         "target_rr": stonks.Param("take-profit distance for the whole position", unit="R"),
         "risk_fraction": stonks.Param("fraction of equity risked per trade"),
         "taker_fee_bps": stonks.Param("fee per sizing leg (entry and stop-loss execute as taker)", unit="bps"),
@@ -258,17 +272,15 @@ class QMMomentumSwingStrategy(stonks.Strategy):
     }
 
     indicators = {
-        "order_level": stonks.Indicator("armed resting entry level"),
-        "stop_level": stonks.Indicator("stop-loss level (armed or held)"),
-        "target_level": stonks.Indicator("take-profit level (armed or held)"),
+        "order_level": stonks.Indicator("armed entry level (parked or virtual)"),
+        "stop_level": stonks.Indicator("stop-loss level (in flight or held)"),
+        "target_level": stonks.Indicator("take-profit level (in flight or held)"),
     }
 
     def lookback(self):
         # avgVol50 of the PREVIOUS bar needs 51 bars; gainPct needs close[mom_len];
-        # any enabled MA-stack gate needs sma200 -> 200 bars.
+        # the MA-stack gate needs sma50 -> 50 bars (already covered by 51).
         base = max(self.base_max_len, 51, self.mom_len + 1, self.adr_len)
-        if self.require_ma_stack:
-            base = max(base, 200)
         return base + 2
 
     def on_start(self, ctx):
@@ -277,10 +289,14 @@ class QMMomentumSwingStrategy(stonks.Strategy):
     def _fresh(self):
         return {
             "bar_count": 0, "last_ts": None,
-            # resting/in-flight entry currently at the broker
+            # entry currently at the broker: a parked stop (gate off) or an
+            # in-flight market entry (gate on)
             "pending": None,       # entry OrderID
             "pending_sig": None,   # the Signal it was placed from
             "armed_bar": None,     # bar_count at the last (re)arm
+            # virtual arms (gate on): {"level": float, "armed_bar": int}
+            "bo_arm": None, "so_arm": None,
+            "orb_plot": None,      # active virtual ORB level, for the plot
             # last filled entry's signal, for the level plots while held
             "held_sig": None,
             "was_in_pos": False,
@@ -313,15 +329,16 @@ class QMMomentumSwingStrategy(stonks.Strategy):
 
             self._update_rolling(st, ts, bars)
             in_pos = ctx.position(symbol) is not None
-            round_trip = self._sync_orders(ctx, symbol, st, ts, in_pos, bars)
+            round_trip = self._sync_orders(ctx, symbol, st, ts, in_pos)
             exited_now = round_trip or (st["was_in_pos"] and not in_pos)
             st["was_in_pos"] = in_pos
 
-            sig = None
-            evaluated = not in_pos and not exited_now   # pine: canEnter
-            if evaluated:
-                sig = self.signal(st, bars)
-            self._act(ctx, symbol, st, ts, sig, evaluated)
+            if self.use_bo_vol:
+                self._tick_virtual(ctx, symbol, st, ts, bars, in_pos, exited_now)
+            else:
+                evaluated = not in_pos and not exited_now   # pine: canEnter
+                sig = self.signal(st, bars) if evaluated else None
+                self._act(ctx, symbol, st, ts, sig, evaluated)
             self._plot_levels(ctx, symbol, st)
 
     # ─── Per-bar rolling state (needs no window recompute) ───────────────────
@@ -350,41 +367,21 @@ class QMMomentumSwingStrategy(stonks.Strategy):
 
     # ─── Broker reconciliation ────────────────────────────────────────────────
 
-    def _sync_orders(self, ctx, symbol, st, ts, in_pos, bars):
-        """Track the parked entry and expire a stale arm. Returns True when
-        the entry filled and its bracket already closed the position again
-        within the same bar (the pine's exitedNow bail)."""
+    def _sync_orders(self, ctx, symbol, st, ts, in_pos):
+        """Track the entry order at the broker and expire a stale parked arm.
+        Returns True when the entry filled and its bracket already closed the
+        position again within the same bar (the pine's exitedNow bail)."""
         round_trip = False
         if st["pending"] is not None:
             entry = ctx.order(st["pending"])
             status = entry.status if entry is not None else OrderStatus.Cancelled
             if status == OrderStatus.Filled:
                 sig = st["pending_sig"]
-                if (in_pos and sig.action == "arm" and self.use_bo_vol
-                        and not self._break_volume_ok(bars)):
-                    # pine's volBreakOK failed on the break bar: that touch
-                    # never fills there and the order stays armed. Emulate:
-                    # bail out at market and re-park the same bracket with
-                    # the ORIGINAL expiry timer.
-                    pos = ctx.position(symbol)
-                    exit_side = OrderSide.Sell if pos.quantity > 0 else OrderSide.Buy
-                    ctx.place_market_order(symbol=symbol, side=exit_side,
-                                           quantity=abs(pos.quantity),
-                                           parent=st["pending"], reduce_only=True)
-                    self._print(ts, symbol,
-                                f"{sig.setup} break lacked volume — bail, "
-                                f"re-arm @ {sig.entry:.4f}")
-                    saved_armed_bar = st["armed_bar"]
-                    self._clear_pending(st)
-                    st["held_sig"] = None
-                    self._place(ctx, symbol, st, ts, sig)
-                    st["armed_bar"] = saved_armed_bar   # pine keeps the old timer
-                    return round_trip
                 if in_pos:
                     st["held_sig"] = sig
                 else:
                     round_trip = True
-                if sig.setup == "ORB":
+                if sig.setup == "ORB" and sig.action == "arm":
                     st["orb_taken"] = True   # pine sets orbTaken only on a real fill
                 self._clear_pending(st)
             elif status != OrderStatus.Open:
@@ -393,10 +390,12 @@ class QMMomentumSwingStrategy(stonks.Strategy):
                                 f"{st['pending_sig'].setup} entry rejected by "
                                 "broker (margin + fee exceeded free cash)")
                 self._clear_pending(st)
-            elif st["pending_sig"].setup in ("BO", "SHORT_BO") \
+            elif st["pending_sig"].valid_bars is not None \
                     and st["bar_count"] - st["armed_bar"] >= self.order_bars:
                 # pine cancels the order boOrderBars bars after the LAST
-                # re-arm; fills were possible on bars arm+1 .. arm+N.
+                # re-arm; fills were possible on bars arm+1 .. arm+N (the
+                # broker's fill sweep for this bar ran before on_tick, so
+                # >= here equals the pine's strict >).
                 ctx.cancel_order(st["pending"])
                 self._print(ts, symbol,
                             f"{st['pending_sig'].setup} order expired unfilled "
@@ -413,10 +412,11 @@ class QMMomentumSwingStrategy(stonks.Strategy):
         st["armed_bar"] = None
 
     def _act(self, ctx, symbol, st, ts, sig, evaluated=True):
+        """Gate-off path: park/refresh/cancel the resting entry, or fire the
+        EP/PARA market entries."""
         if sig is None:
             # An ORB arm lapses with its setup (the pine re-checks orbActive
-            # every bar) — but only when the setup was actually evaluated;
-            # while a volume-bail is in flight the re-armed order must live.
+            # every bar) — but only when the setup was actually evaluated.
             if (evaluated and st["pending"] is not None
                     and st["pending_sig"].setup == "ORB"):
                 ctx.cancel_order(st["pending"])
@@ -477,30 +477,136 @@ class QMMomentumSwingStrategy(stonks.Strategy):
         self._print_signal(ts, symbol, sig, qty, qty * sig.entry / sig.leverage)
 
     def _plot_levels(self, ctx, symbol, st):
+        if self.use_bo_vol:
+            arm = st["bo_arm"] if st["bo_arm"] is not None else st["so_arm"]
+            if arm is not None:
+                ctx.plot("order_level", symbol, arm["level"])
+            elif st["orb_plot"] is not None:
+                ctx.plot("order_level", symbol, st["orb_plot"])
         sig = st["pending_sig"] if st["pending_sig"] is not None else st["held_sig"]
         if sig is None:
             return
-        if st["pending_sig"] is not None:
+        if st["pending_sig"] is not None and sig.action == "arm":
             ctx.plot("order_level", symbol, sig.entry)
         ctx.plot("stop_level", symbol, sig.stop)
         if sig.target is not None:
             ctx.plot("target_level", symbol, sig.target)
 
+    # ─── Virtual arms (gate on): the pine's fill condition, self-evaluated ───
+
+    def _tick_virtual(self, ctx, symbol, st, ts, bars, in_pos, exited_now):
+        """pine per-bar order for the volume-gated mode: refresh the arm
+        registers, tick the expiry timer, then evaluate the fill chain
+        boFill -> orbFill -> soFill -> EP -> PARA on the confirmed bar and
+        enter at market. `flight` extends the pine's instant inLong through
+        the one-bar market-order limbo."""
+        g = self._gates(bars)
+        flight = st["pending"] is not None
+        can_enter = not in_pos and not exited_now and not flight
+
+        bo_setup = so_setup = False
+        if can_enter:
+            level = self._bo_setup_level(g, bars)
+            if level is not None:
+                bo_setup = True
+                self._rearm_virtual(st, ts, symbol, "bo_arm", "BO LONG", level)
+            level = self._so_setup_level(g, bars)
+            if level is not None:
+                so_setup = True
+                self._rearm_virtual(st, ts, symbol, "so_arm", "SHORT_BO SHORT", level)
+
+        # the timer ticks unconditionally, like the pine's (strict >: the
+        # last fillable bar is armed_bar + order_bars, checked below in the
+        # same tick after this sweep)
+        for slot, setup in (("bo_arm", "BO"), ("so_arm", "SHORT_BO")):
+            arm = st[slot]
+            if arm is not None and st["bar_count"] - arm["armed_bar"] > self.order_bars:
+                self._print(ts, symbol,
+                            f"{setup} order expired unfilled @ {arm['level']:.4f}")
+                st[slot] = None
+
+        orb_level = self._orb_active_level(g, st) if can_enter else None
+        st["orb_plot"] = orb_level
+        if not can_enter:
+            return
+
+        high_now = float(bars["high"][-1])
+        low_now = float(bars["low"][-1])
+        vol_ok = self._break_volume_ok(bars)
+        sig = None
+        if st["bo_arm"] is not None and high_now >= st["bo_arm"]["level"]:
+            if vol_ok:
+                sig = self._long_fill_signal("BO", st["bo_arm"]["level"], g, bars)
+                st["bo_arm"] = None
+            else:
+                self._print_skip(ts, symbol, "BO", st["bo_arm"]["level"], bars)
+        if sig is None and orb_level is not None and high_now >= orb_level:
+            if vol_ok:
+                sig = self._long_fill_signal("ORB", orb_level, g, bars)
+                st["orb_taken"] = True   # pine sets orbTaken at the fill
+            else:
+                self._print_skip(ts, symbol, "ORB", orb_level, bars)
+        if sig is None and st["so_arm"] is not None and low_now <= st["so_arm"]["level"]:
+            if vol_ok:
+                sig = self._short_fill_signal("SHORT_BO", st["so_arm"]["level"], g, bars)
+                st["so_arm"] = None
+            else:
+                self._print_skip(ts, symbol, "SHORT_BO", st["so_arm"]["level"], bars)
+        if sig is None:
+            sig = self._ep_signal(g, bars)
+        if sig is None and not bo_setup and not so_setup:   # pine psSetup exclusions
+            sig = self._para_signal(g, st, bars)
+        if sig is not None:
+            self._place(ctx, symbol, st, ts, sig)
+
+    def _rearm_virtual(self, st, ts, symbol, slot, label, level):
+        arm = st[slot]
+        changed = arm is None or \
+            abs(arm["level"] - level) > 1e-9 * max(1.0, abs(level))
+        st[slot] = {"level": level, "armed_bar": st["bar_count"]}
+        if changed:
+            self._print(ts, symbol, f"{label} arm virtual @ {level:.4f} | "
+                                    f"valid {self.order_bars} bars")
+
+    def _long_fill_signal(self, setup, level, g, bars):
+        entry = max(float(bars["open"][-1]), level)   # pine: max(open, level)
+        stop = entry * (1.0 - self.adr_stop_mult * g["adr_pct"] / 100.0)
+        if self.use_lod_stop:
+            stop = max(stop, float(bars["low"][-1]))
+        stop = min(stop, entry * 0.999)
+        target = entry + self.target_rr * (entry - stop)
+        return Signal(setup, "long", "enter", entry, stop, target,
+                      self._leverage(entry, stop), None)
+
+    def _short_fill_signal(self, setup, level, g, bars):
+        entry = min(float(bars["open"][-1]), level)
+        stop = entry * (1.0 + self.adr_stop_mult * g["adr_pct"] / 100.0)
+        if self.use_lod_stop:
+            stop = min(stop, float(bars["high"][-1]))
+        stop = max(stop, entry * 1.001)
+        target = entry - self.target_rr * (stop - entry)
+        return Signal(setup, "short", "enter", entry, stop, target,
+                      self._leverage(entry, stop), None)
+
+    def _print_skip(self, ts, symbol, setup, level, bars):
+        v = bars["volume"]
+        avg = sma(v[:-1], 50)
+        avg_txt = f"{avg:.0f}" if avg is not None else "n/a"
+        self._print(ts, symbol,
+                    f"{setup} break @ {level:.4f} skipped "
+                    f"(vol {float(v[-1]):.0f} < {self.bo_vol_mult:g} x {avg_txt})")
+
     # ─── Signal generation (the pine, condition for condition) ───────────────
 
-    def signal(self, st, bars):
-        """Evaluate the pine's setups on the just-confirmed bar and return the
-        trade to park/fire, or None. Priority mirrors the pine's realized
-        behavior: an EP entry beats a same-bar arm; resting arms rank
-        BO > ORB > SHORT_BO; PARA only fires when no other setup did."""
+    def _gates(self, bars):
+        """The pine's universe/trend gates and shared series on the
+        just-confirmed bar. None-valued series behave like pine na: every
+        comparison against them is False."""
         o, h, l, c, v = (bars[k] for k in ("open", "high", "low", "close", "volume"))
         close_now = float(c[-1])
-        buf = self.entry_buffer_bps / 10_000.0
-
         sma10 = sma(c, 10)
         sma20 = sma(c, 20)
         sma50 = sma(c, 50)
-        sma200 = sma(c, 200)
         adr_pct = sma(100.0 * (h / l - 1.0), self.adr_len)
         avg_vol5 = sma(v, 5)
         avg_vol20 = sma(v, 20)
@@ -520,88 +626,137 @@ class QMMomentumSwingStrategy(stonks.Strategy):
         ma_dn_ok = (not self.require_mas) or (
             sma20 is not None and close_now < sma20 and sma10 < sma20)
         stack_up_ok = (not self.require_ma_stack) or (
-            sma200 is not None and sma10 > sma20 > sma50 > sma200)
+            sma50 is not None and sma10 > sma20 > sma50)
         stack_dn_ok = (not self.require_ma_stack) or (
-            sma200 is not None and sma10 < sma20 < sma50 < sma200)
+            sma50 is not None and sma10 < sma20 < sma50)
         trend_up = (gain_pct is not None and gain_pct >= self.min_gain
                     and ma_up_ok and stack_up_ok)
         trend_dn = (gain_pct is not None and gain_pct <= -self.min_gain
                     and ma_dn_ok and stack_dn_ok)
-        universe_up = liq_ok and adr_ok and trend_up
-        universe_dn = liq_ok and adr_ok and trend_dn
+        return {
+            "close": close_now,
+            "buf": self.entry_buffer_bps / 10_000.0,
+            "adr_pct": adr_pct,
+            "avg_vol50_prev": avg_vol50_prev,
+            "liq_ok": liq_ok,
+            "vol_dry_ok": vol_dry_ok,
+            "universe_up": liq_ok and adr_ok and trend_up,
+            "universe_dn": liq_ok and adr_ok and trend_dn,
+        }
 
-        # ── EP: gap up on volume with a strong close, entry at the close ──
-        if (self.enable_ep and liq_ok and len(c) >= 2
-                and avg_vol50_prev is not None and adr_pct is not None):
-            ep_gap = 100.0 * (float(o[-1]) / float(c[-2]) - 1.0)
-            ep_vol_ok = float(v[-1]) >= self.ep_vol_mult * avg_vol50_prev
-            ep_cls_ok = (not self.ep_strong_close) or (
-                c[-1] > o[-1] and c[-1] >= (h[-1] + l[-1]) / 2.0)
-            risk_ps = close_now - float(l[-1])
-            adr_budget = self.adr_stop_mult * adr_pct / 100.0 * close_now
-            if (ep_gap >= self.ep_min_gap and ep_vol_ok and ep_cls_ok
-                    and 0.0 < risk_ps <= adr_budget):
-                entry = close_now
-                stop = entry * (1.0 - self.adr_stop_mult * adr_pct / 100.0)
-                if self.use_lod_stop:
-                    stop = max(stop, float(l[-1]))
-                stop = min(stop, entry * 0.999)
-                target = entry + self.target_rr * (entry - stop)
-                return Signal("EP", "long", "enter", entry, stop, target,
-                              self._leverage(entry, stop), None)
-
-        # ── BO: resting buy-stop at the pivot high of a tight flag/base ──
-        if self.enable_bo and universe_up:
-            base_high = highest(h, self.base_max_len)
-            since_pk = bars_since_highest(h, self.base_max_len)
-            if base_high is not None:
-                pull_low = lowest(l, max(since_pk, 1))
-                retrace_pct = 100.0 * (base_high - pull_low) / base_high
-                if (since_pk >= self.min_base_bars
-                        and retrace_pct <= self.max_depth and vol_dry_ok):
-                    entry = base_high * (1.0 + buf)
-                    stop, target = self._long_levels(entry, adr_pct)
-                    return Signal("BO", "long", "arm", entry, stop, target,
-                                  self._leverage(entry, stop), self.order_bars)
-
-        # ── ORB: resting buy-stop at the opening range high of the UTC day ──
-        if (self.enable_orb and universe_up and st["or_high"] is not None
-                and st["bars_into_day"] >= self.orb_bars and not st["orb_taken"]):
-            entry = st["or_high"] * (1.0 + buf)
-            stop, target = self._long_levels(entry, adr_pct)
-            return Signal("ORB", "long", "arm", entry, stop, target,
-                          self._leverage(entry, stop), None)
-
-        # ── SHORT_BO: resting sell-stop at the base low in a downtrend ──
-        if self.enable_short_bo and universe_dn:
-            base_low = lowest(l, self.base_max_len)
-            since_tr = bars_since_lowest(l, self.base_max_len)
-            if base_low is not None:
-                bounce_high = highest(h, max(since_tr, 1))
-                retrace_up_pct = 100.0 * (bounce_high - base_low) / base_low
-                if (since_tr >= self.min_base_bars
-                        and retrace_up_pct <= self.max_depth and vol_dry_ok):
-                    entry = base_low * (1.0 - buf)
-                    stop, target = self._short_levels(entry, adr_pct)
-                    return Signal("SHORT_BO", "short", "arm", entry, stop, target,
-                                  self._leverage(entry, stop), self.order_bars)
-
-        # ── PARA: parabolic run-up, first red bar, entry at the close ──
-        if self.enable_para and liq_ok and len(c) >= 2:
-            hi_lb = highest(h, self.ps_lookback)
-            lo_lb = lowest(l, self.ps_lookback)
-            frd = c[-1] < c[-2] and st["prev_up_streak"] >= self.ps_streak
-            if hi_lb is not None and lo_lb is not None and lo_lb > 0.0 and frd:
-                runup = 100.0 * (hi_lb / lo_lb - 1.0)
-                stop_ref = highest(h, self.ps_stop_lookback)
-                if runup >= self.ps_min_gain and stop_ref is not None:
-                    stop = stop_ref * (1.0 + buf)
-                    return Signal("PARA", "short", "enter", close_now, stop, None,
-                                  self._leverage(close_now, stop), None)
+    def _bo_setup_level(self, g, bars):
+        """pine boSetup: the armed level of a tight flag/base, or None."""
+        if not (self.enable_bo and g["universe_up"]):
+            return None
+        h, l = bars["high"], bars["low"]
+        base_high = highest(h, self.base_max_len)
+        since_pk = bars_since_highest(h, self.base_max_len)
+        if base_high is None:
+            return None
+        pull_low = lowest(l, max(since_pk, 1))
+        retrace_pct = 100.0 * (base_high - pull_low) / base_high
+        if (since_pk >= self.min_base_bars
+                and retrace_pct <= self.max_depth and g["vol_dry_ok"]):
+            return base_high * (1.0 + g["buf"])
         return None
 
+    def _so_setup_level(self, g, bars):
+        """pine soSetup: the armed level of a base low in a downtrend."""
+        if not (self.enable_short_bo and g["universe_dn"]):
+            return None
+        h, l = bars["high"], bars["low"]
+        base_low = lowest(l, self.base_max_len)
+        since_tr = bars_since_lowest(l, self.base_max_len)
+        if base_low is None:
+            return None
+        bounce_high = highest(h, max(since_tr, 1))
+        retrace_up_pct = 100.0 * (bounce_high - base_low) / base_low
+        if (since_tr >= self.min_base_bars
+                and retrace_up_pct <= self.max_depth and g["vol_dry_ok"]):
+            return base_low * (1.0 - g["buf"])
+        return None
+
+    def _orb_active_level(self, g, st):
+        """pine orbActive: the opening-range level while the setup holds."""
+        if (self.enable_orb and g["universe_up"] and st["or_high"] is not None
+                and st["bars_into_day"] >= self.orb_bars and not st["orb_taken"]):
+            return st["or_high"] * (1.0 + g["buf"])
+        return None
+
+    def _ep_signal(self, g, bars):
+        """pine epSetup: gap up on volume with a strong close, entry at the
+        close (fills next open, deviation 7)."""
+        o, h, l, c, v = (bars[k] for k in ("open", "high", "low", "close", "volume"))
+        close_now = g["close"]
+        if not (self.enable_ep and g["liq_ok"] and len(c) >= 2
+                and g["avg_vol50_prev"] is not None and g["adr_pct"] is not None):
+            return None
+        ep_gap = 100.0 * (float(o[-1]) / float(c[-2]) - 1.0)
+        ep_vol_ok = float(v[-1]) >= self.ep_vol_mult * g["avg_vol50_prev"]
+        ep_cls_ok = (not self.ep_strong_close) or (
+            c[-1] > o[-1] and c[-1] >= (h[-1] + l[-1]) / 2.0)
+        risk_ps = close_now - float(l[-1])
+        adr_budget = self.adr_stop_mult * g["adr_pct"] / 100.0 * close_now
+        if (ep_gap >= self.ep_min_gap and ep_vol_ok and ep_cls_ok
+                and 0.0 < risk_ps <= adr_budget):
+            entry = close_now
+            stop = entry * (1.0 - self.adr_stop_mult * g["adr_pct"] / 100.0)
+            if self.use_lod_stop:
+                stop = max(stop, float(l[-1]))
+            stop = min(stop, entry * 0.999)
+            target = entry + self.target_rr * (entry - stop)
+            return Signal("EP", "long", "enter", entry, stop, target,
+                          self._leverage(entry, stop), None)
+        return None
+
+    def _para_signal(self, g, st, bars):
+        """pine psSetup: parabolic run-up, first red bar, entry at the close.
+        Callers apply the pine's not-boSetup/epSetup/soSetup exclusions."""
+        h, l, c = bars["high"], bars["low"], bars["close"]
+        if not (self.enable_para and g["liq_ok"] and len(c) >= 2):
+            return None
+        hi_lb = highest(h, self.ps_lookback)
+        lo_lb = lowest(l, self.ps_lookback)
+        frd = c[-1] < c[-2] and st["prev_up_streak"] >= self.ps_streak
+        if hi_lb is None or lo_lb is None or lo_lb <= 0.0 or not frd:
+            return None
+        runup = 100.0 * (hi_lb / lo_lb - 1.0)
+        stop_ref = highest(h, self.ps_stop_lookback)
+        if runup >= self.ps_min_gain and stop_ref is not None:
+            stop = stop_ref * (1.0 + g["buf"])
+            close_now = g["close"]
+            return Signal("PARA", "short", "enter", close_now, stop, None,
+                          self._leverage(close_now, stop), None)
+        return None
+
+    def signal(self, st, bars):
+        """Gate-off path: the trade to park/fire on the just-confirmed bar,
+        or None. Priority mirrors the pine's realized behavior: an EP entry
+        beats a same-bar arm; resting arms rank BO > ORB > SHORT_BO; PARA
+        only fires when no other setup did."""
+        g = self._gates(bars)
+        sig = self._ep_signal(g, bars)
+        if sig is not None:
+            return sig
+        level = self._bo_setup_level(g, bars)
+        if level is not None:
+            stop, target = self._long_levels(level, g["adr_pct"])
+            return Signal("BO", "long", "arm", level, stop, target,
+                          self._leverage(level, stop), self.order_bars)
+        level = self._orb_active_level(g, st)
+        if level is not None:
+            stop, target = self._long_levels(level, g["adr_pct"])
+            return Signal("ORB", "long", "arm", level, stop, target,
+                          self._leverage(level, stop), None)
+        level = self._so_setup_level(g, bars)
+        if level is not None:
+            stop, target = self._short_levels(level, g["adr_pct"])
+            return Signal("SHORT_BO", "short", "arm", level, stop, target,
+                          self._leverage(level, stop), self.order_bars)
+        return self._para_signal(g, st, bars)
+
     def _break_volume_ok(self, bars):
-        """pine volBreakOK on the current (fill) bar:
+        """pine volBreakOK on the current (break) bar:
         volume >= boVolMult * avgVol50[1]; na -> false, like the pine."""
         v = bars["volume"]
         avg_vol50_prev = sma(v[:-1], 50)

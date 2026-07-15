@@ -31,14 +31,26 @@
 
 namespace stonks::app {
 
+bool has_flag(int argc, const char* const* argv, std::string_view flag);
+std::string flag_value(int argc, const char* const* argv, std::string_view flag,
+                       std::string fallback);
+std::vector<std::string> split_csv(const std::string& csv);
+
 // Wires up the Engine (the qmmomentumswing strategy + KLineFeed +
 // BacktestBroker) and runs it, printing the report to the terminal.
-void run_backtest() {
+//
+//   app [--data app/data/us_1d.parquet] [--symbols MU,NVDA]
+//       [--start 2024-06-01] [--end 2026-07-01]
+//
+// Defaults reproduce the historical no-flag run (crypto 1h, 3 symbols).
+void run_backtest(int argc, const char* const* argv) {
     constexpr stonks::core::Balance starting_cash = 1000.0;
-    const std::string data_file = "app/data/binance_1h.parquet";
-    const std::string start = "2020-01-01";
-    const std::string end = "2026-01-30";
-    const std::vector<std::string> symbols{ "BTCUSDT", "ETHUSDT", "SOLUSDT" };
+    const std::string data_file =
+        flag_value(argc, argv, "--data", "app/data/binance_1h.parquet");
+    const std::string start = flag_value(argc, argv, "--start", "2020-01-01");
+    const std::string end = flag_value(argc, argv, "--end", "2026-01-30");
+    const std::vector<std::string> symbols =
+        split_csv(flag_value(argc, argv, "--symbols", "BTCUSDT,ETHUSDT,SOLUSDT"));
     // Binance USDT-M VIP0 fee schedule; stamped into the report JSON.
     const stonks::broker::BrokerConfig broker_config{
         .maker_fee_bps = 2.0,
@@ -72,7 +84,8 @@ void run_backtest() {
         elapsed,
         broker_config,
         StrategyRunInfo{ "qmmomentumswing", "QMMomentumSwingStrategy", {} },   // headless: no overrides
-        RunMeta{ "QMMomentumSwingStrategy", data_file, "binance_1d", start, end, symbols },
+        RunMeta{ "QMMomentumSwingStrategy", data_file,
+                 std::filesystem::path{ data_file }.stem().string(), start, end, symbols },
         std::move(indicator_specs),
         engine.indicators(),
     };
@@ -351,7 +364,7 @@ int main(int argc, char* argv[]) {
         if (stonks::app::has_flag(argc, argv, "--all")) {
             stonks::app::run_all_backtests();
         } else {
-            stonks::app::run_backtest();
+            stonks::app::run_backtest(argc, argv);
         }
         return 0;
     }
