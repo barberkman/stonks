@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 #include <gtest/gtest.h>
 
@@ -77,6 +79,40 @@ TEST_F(StrategyDiscoveryTest, AmbiguousModuleStillSkipped)
     // keep treating that as ambiguous under the new tuple-returning shape.
     const auto all = discover_strategies(STONKS_TEST_FIXTURES_DIR);
     EXPECT_EQ(find(all, "fixturestrats"), nullptr);
+}
+
+TEST_F(StrategyDiscoveryTest, FileAddedAfterAFirstScanIsFoundBySecondScan)
+{
+    // The GUI re-scans app/python when the setup view opens, so a strategy
+    // dropped in while the app runs must appear without a restart. That relies
+    // on discover_strategies() holding no cache of its own.
+    const auto dir = std::filesystem::temp_directory_path() / "stonks_discovery_rescan";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    stonks::python::EmbeddedPython::add_sys_path(dir.string());
+
+    EXPECT_TRUE(discover_strategies(dir).empty());
+
+    {
+        std::ofstream out{ dir / "latefixture.py" };
+        out << "import stonks\n\n\n"
+            << "class LateFixture(stonks.Strategy):\n"
+            << "    params = { \"span\": stonks.Param(\"bars\", \"\") }\n"
+            << "    span = 14\n\n"
+            << "    def on_tick(self, ctx):\n"
+            << "        pass\n";
+    }
+
+    const auto all = discover_strategies(dir);
+    const auto* info = find(all, "latefixture");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->cls, "LateFixture");
+    ASSERT_EQ(info->params.size(), 1u);
+    EXPECT_EQ(info->params[0].name, "span");
+    EXPECT_DOUBLE_EQ(info->params[0].default_value, 14.0);
+    EXPECT_EQ(info->params[0].type_name, "int");
+
+    std::filesystem::remove_all(dir);
 }
 
 } // namespace

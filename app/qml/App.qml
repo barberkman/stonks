@@ -37,8 +37,9 @@ QtObject {
     property string runError: ""
 
     // cached controller lookups (eager, pure-read: computed once from the
-    // controller so no binding both reads and writes them — that would loop)
-    readonly property var _strats: _indexBy(Backtest.listStrategies(), "module")  // module -> { display, module, cls }
+    // controller so no binding both reads and writes them — that would loop).
+    // _strats is re-assigned by refreshStrategies() when the setup view opens.
+    property var _strats: _indexBy(Backtest.listStrategies(), "module")           // module -> { display, module, cls }
     readonly property var _files: _indexBy(Backtest.listDataFiles(), "key")       // key -> { key, label, source }
     property int _nextId: 1
 
@@ -130,7 +131,16 @@ QtObject {
     // --- nav / actions ---
     function go(v) { view = v }
     function goBacktests() { view = "backtests" }
-    function goSetup() { view = "setup" }
+    function goSetup() { refreshStrategies(); view = "setup" }
+
+    // Re-scan app/python so strategies added since startup show up in the picker.
+    function refreshStrategies() {
+        Backtest.refreshStrategies();
+        var list = Backtest.listStrategies();
+        _strats = _indexBy(list, "module");
+        // the previously selected module may have been deleted or renamed
+        if (strategy && !_strats[strategy]) { strategy = list.length ? list[0].module : ""; }
+    }
 
     function openBacktest(id) {
         var bt = results[id];

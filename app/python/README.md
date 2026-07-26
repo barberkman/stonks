@@ -308,6 +308,49 @@ STONKS_PYTHONPATH=$HOME/strats \
 processes `.pth` files so editable installs work. `STONKS_PYTHONPATH`
 (colon-separated) is prepended to `sys.path`. Cwd is also added.
 
+## AlgoTrade — a strategy that loads a pre-trained model
+
+`algo_trade.py` is the one strategy here that does not decide anything from
+price rules: `ManipulationModel` is three XGBoost regressors (a port of
+`/Users/macmini-1/bist`) and the strategy trades their output. It needs two
+things the other strategies do not.
+
+**xgboost in the venv.** It is a hard import, and strategy discovery imports
+every `app/python/*.py` to find strategies — a module that fails to import is
+*silently* dropped from the GUI and from `--all`, so check this first if the
+strategy goes missing:
+
+```sh
+brew install libomp                      # macOS: the wheel needs the OpenMP runtime
+app/python/.venv/bin/pip install xgboost
+app/python/.venv/bin/python -c "import xgboost; print(xgboost.__version__)"
+```
+
+**A trained artifact.** Training happens offline, not in the engine; the file is
+its own trainer. Roughly a minute over the full BIST panel:
+
+```sh
+app/python/.venv/bin/python app/python/algo_trade.py --train-end 2024-12-31
+```
+
+That writes `app/python/artifacts/algotrade/` (one booster per head, the
+winsorize bounds, and `meta.json`). It is gitignored — regenerate it rather than
+committing it.
+
+Then mind the window. The artifact records its `train_end` and the strategy
+refuses to trade any bar the fit was allowed to see, so the backtest is only
+out-of-sample after that date. It also needs 300 bars of lookback before it can
+score anything, and `KLineFeed` truncates history at `--start` — there is no
+pre-window warmup data — so `--start` must sit ~300 trading bars *earlier* than
+where you want signals to begin:
+
+```sh
+./build/macos-debug/app/app --start 2023-10-02 --end 2026-07-24
+```
+
+Retrain with a different `--train-end` and both dates move with it. `main.cpp`'s
+defaults match the command above.
+
 ## Unit-test strategies without the engine
 
 ```python

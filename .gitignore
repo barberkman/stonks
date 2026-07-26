@@ -20,6 +20,8 @@ __pycache__/
 app/data/
 app/reports/
 app/python/.venv/
+# Trained model artifacts: regenerable from the parquet, see algo_trade.py
+app/python/artifacts/
 
 python/stonks/_core*.so
 python/stonks.egg-info/

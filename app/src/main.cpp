@@ -36,20 +36,26 @@ std::string flag_value(int argc, const char* const* argv, std::string_view flag,
                        std::string fallback);
 std::vector<std::string> split_csv(const std::string& csv);
 
-// Wires up the Engine (the shorttermmomentum strategy + KLineFeed +
-// BacktestBroker) and runs it, printing the report to the terminal.
+// Wires up the Engine (the algo_trade strategy + KLineFeed + BacktestBroker)
+// and runs it, printing the report to the terminal.
 //
 //   app [--data app/data/us_1d.parquet] [--symbols MU,NVDA]
 //       [--start 2024-06-01] [--end 2026-07-01]
 //
 // Defaults run the BIST daily set with no symbol filter — an empty --symbols
 // list is KLineFeed's "all symbols in the file".
+//
+// The default window is set by algo_trade's pre-trained artifact, which was fit
+// through 2024-12-31: the strategy refuses to trade any bar the fit could see,
+// and --start is ~300 bars earlier because KLineFeed truncates history at
+// --start and the model needs that much lookback before it can score anything.
+// Retrain with a different --train-end and this window moves with it.
 void run_backtest(int argc, const char* const* argv) {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     const std::string data_file =
         flag_value(argc, argv, "--data", "app/data/bist_1d.parquet");
-    const std::string start = flag_value(argc, argv, "--start", "2020-01-01");
-    const std::string end = flag_value(argc, argv, "--end", "2026-01-30");
+    const std::string start = flag_value(argc, argv, "--start", "2023-10-02");
+    const std::string end = flag_value(argc, argv, "--end", "2026-07-24");
     const std::vector<std::string> symbols =
         split_csv(flag_value(argc, argv, "--symbols", ""));
     // Binance USDT-M VIP0 fee schedule; stamped into the report JSON.
@@ -57,7 +63,7 @@ void run_backtest(int argc, const char* const* argv) {
         .maker_fee_bps = 2.0,
         .taker_fee_bps = 5.0,
     };
-    PythonStrategy strategy{ "shorttermmomentum", "ShortTermMomentumStrategy" };
+    PythonStrategy strategy{ "algo_trade", "AlgoTradeStrategy" };
     // Declared indicator metadata — class-level, read before the move below.
     std::vector<IndicatorSpec> indicator_specs;
     for (const auto& s : strategy.indicator_specs()) {
@@ -84,8 +90,8 @@ void run_backtest(int argc, const char* const* argv) {
         engine.equity(),
         elapsed,
         broker_config,
-        StrategyRunInfo{ "shorttermmomentum", "ShortTermMomentumStrategy", {} },   // headless: no overrides
-        RunMeta{ "ShortTermMomentumStrategy", data_file,
+        StrategyRunInfo{ "algo_trade", "AlgoTradeStrategy", {} },   // headless: no overrides
+        RunMeta{ "AlgoTradeStrategy", data_file,
                  std::filesystem::path{ data_file }.stem().string(), start, end, symbols },
         std::move(indicator_specs),
         engine.indicators(),

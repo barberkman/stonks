@@ -33,6 +33,9 @@ public:
     // Setup-screen helpers. listStrategies blocks briefly on the worker thread
     // (the interpreter); the rest read parquet metadata on the GUI thread.
     Q_INVOKABLE QVariantList listStrategies();
+    // Drop the strategy cache so the next listStrategies() re-scans app/python.
+    // No-op while a run is in flight (listStrategies blocks on the worker thread).
+    Q_INVOKABLE void refreshStrategies();
     Q_INVOKABLE QVariantList listDataFiles();
     Q_INVOKABLE QStringList peekSymbols(const QString& dataKey);
     Q_INVOKABLE QVariantMap peekDateRange(const QString& dataKey);

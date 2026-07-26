@@ -72,6 +72,12 @@ QVariantList BacktestController::listStrategies()
     return m_strategiesCache;
 }
 
+void BacktestController::refreshStrategies()
+{
+    if (m_running) { return; }
+    m_strategiesCache.clear();
+}
+
 QVariantList BacktestController::listDataFiles()
 {
     if (!m_dataFilesCache.isEmpty()) { return m_dataFilesCache; }
