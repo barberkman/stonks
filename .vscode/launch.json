@@ -54,7 +54,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug app --gui (gdb)",
@@ -74,7 +74,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug core_tests (gdb)",
@@ -92,7 +92,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
         }
     ]
 }

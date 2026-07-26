@@ -799,4 +799,4 @@ class QMMomentumSwingStrategy(stonks.Strategy):
     @staticmethod
     def _print(ts, symbol, msg):
         when = pd.Timestamp(ts, unit="ms", tz="UTC").strftime("%Y-%m-%d %H:%M")
-        print(f"[{when} UTC] {symbol} {msg}", flush=True)
+        # print(f"[{when} UTC] {symbol} {msg}", flush=True)

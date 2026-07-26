@@ -36,7 +36,7 @@ std::string flag_value(int argc, const char* const* argv, std::string_view flag,
                        std::string fallback);
 std::vector<std::string> split_csv(const std::string& csv);
 
-// Wires up the Engine (the qmmomentumswing strategy + KLineFeed +
+// Wires up the Engine (the shorttermmomentum strategy + KLineFeed +
 // BacktestBroker) and runs it, printing the report to the terminal.
 //
 //   app [--data app/data/us_1d.parquet] [--symbols MU,NVDA]
@@ -57,7 +57,7 @@ void run_backtest(int argc, const char* const* argv) {
         .maker_fee_bps = 2.0,
         .taker_fee_bps = 5.0,
     };
-    PythonStrategy strategy{ "qmmomentumswing", "QMMomentumSwingStrategy" };
+    PythonStrategy strategy{ "shorttermmomentum", "ShortTermMomentumStrategy" };
     // Declared indicator metadata — class-level, read before the move below.
     std::vector<IndicatorSpec> indicator_specs;
     for (const auto& s : strategy.indicator_specs()) {
@@ -84,8 +84,8 @@ void run_backtest(int argc, const char* const* argv) {
         engine.equity(),
         elapsed,
         broker_config,
-        StrategyRunInfo{ "qmmomentumswing", "QMMomentumSwingStrategy", {} },   // headless: no overrides
-        RunMeta{ "QMMomentumSwingStrategy", data_file,
+        StrategyRunInfo{ "shorttermmomentum", "ShortTermMomentumStrategy", {} },   // headless: no overrides
+        RunMeta{ "ShortTermMomentumStrategy", data_file,
                  std::filesystem::path{ data_file }.stem().string(), start, end, symbols },
         std::move(indicator_specs),
         engine.indicators(),
