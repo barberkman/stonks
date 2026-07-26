@@ -2,31 +2,33 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug app (GUI)",
+            "name": "macOS: Debug app --gui (lldb)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/app/app",
-            "args": ["--gui"],
+            "program": "${workspaceFolder}/build/macos-debug/app/app",
+            "args": [
+                "--gui"
+            ],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
+            "preLaunchTask": "CMake: build (macos-debug)"
         },
         {
-            "name": "Debug app",
+            "name": "macOS: Debug app (lldb)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/app/app",
+            "program": "${workspaceFolder}/build/macos-debug/app/app",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
+            "preLaunchTask": "CMake: build (macos-debug)"
         },
         {
-            "name": "Debug core_tests",
+            "name": "macOS: Debug core_tests (lldb)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/tests/core_tests",
+            "program": "${workspaceFolder}/build/macos-debug/tests/core_tests",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
+            "preLaunchTask": "CMake: build (macos-debug)"
         },
         {
             "name": "Debug active CMake target",
@@ -52,14 +54,16 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/home/baris/.config/Code/User/workspaceStorage/41426545544e0dbeb1722223aa55c767/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug app --gui (gdb)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/linux-debug/app/app",
-            "args": ["--gui"],
+            "args": [
+                "--gui"
+            ],
             "cwd": "${workspaceFolder}",
             "MIMode": "gdb",
             "setupCommands": [
@@ -70,7 +74,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/home/baris/.config/Code/User/workspaceStorage/41426545544e0dbeb1722223aa55c767/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug core_tests (gdb)",
@@ -88,7 +92,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/home/baris/.config/Code/User/workspaceStorage/41426545544e0dbeb1722223aa55c767/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
         }
     ]
 }

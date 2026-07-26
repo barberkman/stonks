@@ -42,15 +42,16 @@ std::vector<std::string> split_csv(const std::string& csv);
 //   app [--data app/data/us_1d.parquet] [--symbols MU,NVDA]
 //       [--start 2024-06-01] [--end 2026-07-01]
 //
-// Defaults reproduce the historical no-flag run (crypto 1h, 3 symbols).
+// Defaults run the BIST daily set with no symbol filter — an empty --symbols
+// list is KLineFeed's "all symbols in the file".
 void run_backtest(int argc, const char* const* argv) {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     const std::string data_file =
-        flag_value(argc, argv, "--data", "app/data/binance_1h.parquet");
+        flag_value(argc, argv, "--data", "app/data/bist_1d.parquet");
     const std::string start = flag_value(argc, argv, "--start", "2020-01-01");
     const std::string end = flag_value(argc, argv, "--end", "2026-01-30");
     const std::vector<std::string> symbols =
-        split_csv(flag_value(argc, argv, "--symbols", "BTCUSDT,ETHUSDT,SOLUSDT"));
+        split_csv(flag_value(argc, argv, "--symbols", ""));
     // Binance USDT-M VIP0 fee schedule; stamped into the report JSON.
     const stonks::broker::BrokerConfig broker_config{
         .maker_fee_bps = 2.0,
@@ -106,10 +107,10 @@ void run_backtest(int argc, const char* const* argv) {
 // load or raises mid-run is reported and skipped so the batch still completes.
 void run_all_backtests() {
     constexpr stonks::core::Balance starting_cash = 1000.0;
-    const std::string data_file = "app/data/binance_1d.parquet";
+    const std::string data_file = "app/data/bist_1d.parquet";
     const std::string start = "2024-01-01";
     const std::string end = "2026-01-30";
-    const std::vector<std::string> symbols{ "BTCUSDT", "ETHUSDT", "SOLUSDT" };
+    const std::vector<std::string> symbols{};   // empty = every symbol in the file
     const stonks::broker::BrokerConfig broker_config{
         .maker_fee_bps = 2.0,
         .taker_fee_bps = 5.0,
@@ -176,7 +177,7 @@ void run_all_backtests() {
                 elapsed,
                 broker_config,
                 StrategyRunInfo{ info.module, info.cls, {} },   // batch: no overrides
-                RunMeta{ info.display, data_file, "binance_1d", start, end, symbols },
+                RunMeta{ info.display, data_file, "bist_1d", start, end, symbols },
                 std::move(indicator_specs),
                 engine.indicators(),
             };

@@ -27,6 +27,32 @@
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "CMAKE_PREFIX_PATH": "/home/baris/Qt/6.10.1/gcc_64"
             }
+        },
+        {
+            "name": "macos-debug",
+            "displayName": "macOS Debug",
+            "description": "Debug build on macOS (Apple Silicon) with AppleClang + Homebrew Qt",
+            "binaryDir": "${sourceDir}/build/macos-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qt;/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/apache-arrow",
+                "Python_ROOT_DIR": "/opt/homebrew/opt/python@3.12",
+                "PYBIND11_FINDPYTHON": "ON"
+            }
+        },
+        {
+            "name": "macos-release",
+            "displayName": "macOS Release",
+            "description": "Release build on macOS (Apple Silicon) with AppleClang + Homebrew Qt",
+            "binaryDir": "${sourceDir}/build/macos-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/qt;/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/apache-arrow",
+                "Python_ROOT_DIR": "/opt/homebrew/opt/python@3.12",
+                "PYBIND11_FINDPYTHON": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -37,12 +63,27 @@
         {
             "name": "linux-release",
             "configurePreset": "linux-release"
+        },
+        {
+            "name": "macos-debug",
+            "configurePreset": "macos-debug"
+        },
+        {
+            "name": "macos-release",
+            "configurePreset": "macos-release"
         }
     ],
     "testPresets": [
         {
             "name": "linux-debug",
             "configurePreset": "linux-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "macos-debug",
+            "configurePreset": "macos-debug",
             "output": {
                 "outputOnFailure": true
             }

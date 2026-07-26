@@ -1,2 +1,4 @@
 CompileFlags:
-  CompilationDatabase: build
+  # Preset builds nest their compile_commands.json under build/<preset>.
+  # Flip this to build/linux-debug when working from the Linux box.
+  CompilationDatabase: build/macos-debug

@@ -26,6 +26,22 @@ ctest --preset linux-debug
 
 VSCode launch configs `Linux: Debug backtest_runner (gdb)` and `Linux: Debug core_tests (gdb)` use cppdbg/gdb against the `linux-debug` preset's build dir; they need the `ms-vscode.cpptools` extension.
 
+### macOS (Apple Silicon)
+
+Prerequisites: `brew install cmake qt apache-arrow openssl@3 python@3.12` (AppleClang + libcurl come from the Xcode command-line tools). Arrow ships Parquet, which `stonks_datafeed` links.
+
+Use the `macos-debug` / `macos-release` presets — they build into `build/macos-debug/` and `build/macos-release/`:
+
+```sh
+cmake --preset macos-debug
+cmake --build --preset macos-debug
+ctest --preset macos-debug
+```
+
+The presets pin `Python_ROOT_DIR` to the Homebrew `python@3.12` keg and set `PYBIND11_FINDPYTHON=ON`. Both matter: without them pybind11 falls back to its legacy probe and links `_core` against whatever `python3` resolves first (Xcode's 3.9, or a newer Homebrew keg pulled in as an Arrow dependency), which then can't load the 3.12 `app/python/.venv`. Keep the venv on the same interpreter the presets pin.
+
+VSCode launch configs `macOS: Debug app --gui (lldb)`, `macOS: Debug app (lldb)` and `macOS: Debug core_tests (lldb)` run against the `macos-debug` preset's build dir; they need the `vadimcn.vscode-lldb` extension.
+
 ## Structure
 
 - `include/stonks/<module>/` — public headers, all under the `stonks::` namespace (sub-namespaces match folders, e.g. `stonks::core`).
@@ -68,9 +84,11 @@ Build with `-DSTONKS_PYTHON=ON` (default) — requires CPython 3.10+ headers. Fu
 One-time setup of the app-local venv:
 
 ```sh
-python3 -m venv app/python/.venv
-app/python/.venv/bin/pip install -e python/
+python3 -m venv app/python/.venv          # macOS: /opt/homebrew/bin/python3.12 -m venv ...
+app/python/.venv/bin/pip install -e "python/[test]"
 ```
+
+The `[test]` extra (pandas, pyarrow) is what `PythonStrategyTest.HistoryExposesCombinedMultiSymbolDataFrame` imports — without it that test fails. The venv's interpreter must match the one the build links against (see the macOS preset note above).
 
 Smoke: `./build/linux-debug/app/app` (from project root) runs the reference strategy at `app/python/qmliteral.py`.
 

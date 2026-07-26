@@ -46,6 +46,29 @@
             "problemMatcher": []
         },
         {
+            "label": "CMake: configure (macos-debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["--preset", "macos-debug"],
+            "problemMatcher": []
+        },
+        {
+            "label": "CMake: build (macos-debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["--build", "--preset", "macos-debug"],
+            "dependsOn": ["CMake: configure (macos-debug)"],
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "CTest: run (macos-debug)",
+            "type": "shell",
+            "command": "ctest",
+            "args": ["--preset", "macos-debug"],
+            "dependsOn": ["CMake: build (macos-debug)"],
+            "problemMatcher": []
+        },
+        {
             "label": "CMake: configure (linux-debug)",
             "type": "shell",
             "command": "cmake",

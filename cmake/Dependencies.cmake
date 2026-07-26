@@ -27,7 +27,11 @@ if(STONKS_BUILD_TESTS)
 endif()
 
 if(STONKS_PYTHON)
-    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Embed)
+    # Development.Embed backs EmbeddedPython; Development.Module backs the `_core`
+    # extension built by pybind11_add_module() when pybind11 uses CMake's FindPython
+    # (PYBIND11_FINDPYTHON=ON, which the macOS presets set so pybind11 doesn't fall
+    # back to its legacy probe and pick up Xcode's Python 3.9).
+    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Embed Development.Module)
     FetchContent_Declare(
         pybind11
         GIT_REPOSITORY https://github.com/pybind/pybind11.git
