@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#141414"/>
+  <rect x="16.5" y="16.5" width="479" height="479" rx="111.5" fill="none" stroke="#2f2f2f" stroke-width="3"/>
+
+  <!-- ascending bars -->
+  <rect x="112" y="304" width="52" height="96" rx="10" fill="#4eb36e" opacity="0.35"/>
+  <rect x="192" y="256" width="52" height="144" rx="10" fill="#4eb36e" opacity="0.55"/>
+  <rect x="272" y="200" width="52" height="200" rx="10" fill="#4eb36e" opacity="0.75"/>
+  <rect x="352" y="128" width="52" height="272" rx="10" fill="#4eb36e"/>
+
+  <!-- trend line with arrow head -->
+  <path d="M104 264 L184 216 L264 168 L330 108" fill="none" stroke="#eaeaea" stroke-width="18"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M374 66 L364 138 L302 96 Z" fill="#eaeaea" stroke="#eaeaea" stroke-width="10"
+        stroke-linejoin="round"/>
+</svg>

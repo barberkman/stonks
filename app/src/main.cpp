@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QtQml/qqml.h>
@@ -377,6 +378,8 @@ int main(int argc, char* argv[]) {
     }
 
     QGuiApplication app{ argc, argv };
+    // Dock / taskbar icon (macOS routes this to NSApp.applicationIconImage).
+    app.setWindowIcon(QIcon{ ":/qt/qml/Stonks/qml/icons/appicon.png" });
     QQuickStyle::setStyle("Basic");   // fully customizable base (the native macOS style forbids the ComboBox overrides in StyledSelect.qml)
     stonks::app::BacktestController controller;
     qmlRegisterSingletonInstance("Stonks", 1, 0, "Backtest", &controller);

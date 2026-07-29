@@ -316,6 +316,8 @@ QVariantMap build_result(const RunConfig& cfg,
         const SymbolStat stat = it != by_symbol.end() ? it->second : SymbolStat{};
         const double sym_ret = metrics.starting_cash != 0.0
             ? stat.pnl / metrics.starting_cash * 100.0 : 0.0;
+        const double win_pct = stat.closed > 0
+            ? static_cast<double>(stat.winning) / static_cast<double>(stat.closed) * 100.0 : 0.0;
         QVariantMap row;
         row["id"] = qs(sym);
         row["ret"] = qs(pct_signed(sym_ret));
@@ -323,9 +325,13 @@ QVariantMap build_result(const RunConfig& cfg,
         row["pnl"] = qs(signed_usd(stat.pnl));
         row["trades"] = static_cast<int>(stat.closed);
         row["win"] = qs(stat.closed > 0
-            ? std::to_string(std::lround(static_cast<double>(stat.winning)
-                / static_cast<double>(stat.closed) * 100.0)) + "%"
+            ? std::to_string(std::lround(win_pct)) + "%"
             : std::string{ "0%" });
+        // Raw numbers behind the display strings, so the GUI can sort the
+        // per-symbol table without parsing "+$1,234" / "57%" back to doubles.
+        row["retVal"] = sym_ret;
+        row["pnlVal"] = stat.pnl;
+        row["winVal"] = win_pct;
         symbols.append(row);
     }
 

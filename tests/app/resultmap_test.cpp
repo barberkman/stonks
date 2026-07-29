@@ -216,6 +216,57 @@ TEST(BuildResult, DeclaredOrderPreservedOverAlphabeticalStoreOrder)
     EXPECT_EQ(indicators[1].toMap()["color"].toString(), "#b98ae8");
 }
 
+// The GUI's per-symbol table sorts on these raw numbers rather than parsing the
+// display strings ("+$80" / "50%") back to doubles.
+TEST(BuildResult, PerSymbolRowsCarryNumericSortKeys)
+{
+    std::vector<core::Trade> fills;
+    fills.push_back(fill("BTC", OrderSide::Buy, 1.0, 100.0, 10 * kDayMs));
+    fills.push_back(fill("BTC", OrderSide::Sell, 1.0, 200.0, 20 * kDayMs));   // +100
+    fills.push_back(fill("BTC", OrderSide::Buy, 1.0, 100.0, 30 * kDayMs));
+    fills.push_back(fill("BTC", OrderSide::Sell, 1.0, 80.0, 40 * kDayMs));    // -20
+    fills.push_back(fill("ETH", OrderSide::Buy, 1.0, 100.0, 10 * kDayMs));
+    fills.push_back(fill("ETH", OrderSide::Sell, 1.0, 50.0, 20 * kDayMs));    // -50
+
+    const app::ReportInput input{
+        1000.0, kCandles, fills, {}, {}, 1030.0, 1030.0, std::chrono::nanoseconds{ 0 },
+    };
+    const app::ReportMetrics metrics = app::compute_metrics(input);
+    std::map<core::Symbol, app::SymbolSeries> by_symbol;
+    by_symbol["BTC"] = make_series();
+    by_symbol["ETH"] = make_series();
+    const QVariantMap result = app::build_result(app::RunConfig{ "1", "Test", "data" },
+                                                 input, metrics, by_symbol, 252.0);
+
+    QVariantMap btc, eth;
+    for (const QVariant& v : result["symbols"].toList()) {
+        const QVariantMap row = v.toMap();
+        if (row["id"].toString() == "BTC") { btc = row; }
+        if (row["id"].toString() == "ETH") { eth = row; }
+    }
+    ASSERT_FALSE(btc.isEmpty());
+    ASSERT_FALSE(eth.isEmpty());
+
+    // Numbers, not strings — QML sorts them arithmetically.
+    EXPECT_EQ(btc["pnlVal"].userType(), QMetaType::Double);
+    EXPECT_EQ(btc["retVal"].userType(), QMetaType::Double);
+    EXPECT_EQ(btc["winVal"].userType(), QMetaType::Double);
+
+    EXPECT_DOUBLE_EQ(btc["pnlVal"].toDouble(), 80.0);    // +100 - 20
+    EXPECT_DOUBLE_EQ(btc["retVal"].toDouble(), 8.0);     // 80 / 1000 starting cash
+    EXPECT_DOUBLE_EQ(btc["winVal"].toDouble(), 50.0);    // 1 of 2 round-trips won
+    EXPECT_DOUBLE_EQ(eth["pnlVal"].toDouble(), -50.0);
+    EXPECT_DOUBLE_EQ(eth["retVal"].toDouble(), -5.0);
+    EXPECT_DOUBLE_EQ(eth["winVal"].toDouble(), 0.0);
+
+    // ...and they agree with the display strings shown in the same row.
+    EXPECT_EQ(btc["pnl"].toString(), "+$80");
+    EXPECT_EQ(btc["ret"].toString(), "+8.0%");
+    EXPECT_EQ(btc["win"].toString(), "50%");
+    EXPECT_EQ(eth["pnl"].toString(), "-$50");
+    EXPECT_EQ(eth["win"].toString(), "0%");
+}
+
 TEST(BuildResult, EquityTimestampsShipped)
 {
     constexpr std::int64_t t0 = 1704067200000;   // arbitrary epoch ms

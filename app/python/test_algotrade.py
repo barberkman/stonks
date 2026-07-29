@@ -12,6 +12,8 @@ fill mechanics (next-open market fills, bracket arming, reduce-only) are pinned
 by the C++ suite under tests/core/.
 """
 
+from unittest.mock import patch
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -478,14 +480,32 @@ def sessions(count, start="2024-01-02"):
             for d in pd.bdate_range(start=start, periods=count, tz="UTC")]
 
 
-def feed(timestamps, symbols=SYMBOLS, price=100.0):
-    return [FakeKLine(ts, s, price, price, price, price, 1_000.0)
-            for ts in timestamps for s in symbols]
+def feed(timestamps, symbols=SYMBOLS, price=100.0, paths=None):
+    """Flat bars at `price`, except where `paths` gives a symbol its own closes.
+
+    A path is aligned to the *end* of the feed, so {"AAA": [90.0]} means AAA
+    closed at 90 on the final bar and at `price` on every bar before it.
+    """
+    bars = []
+    for i, ts in enumerate(timestamps):
+        for symbol in symbols:
+            value = price
+            path = (paths or {}).get(symbol)
+            if path is not None:
+                offset = i - (len(timestamps) - len(path))
+                if offset >= 0:
+                    value = path[offset]
+            bars.append(FakeKLine(ts, symbol, value, value, value, value, 1_000.0))
+    return bars
 
 
 def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
-              train_end=TRAIN_END, monkeypatch=None, **overrides):
+              train_end=TRAIN_END, paths=None, **overrides):
     """A strategy driven to just past the cutoff, with a stub model attached.
+
+    Always goes through the real `on_start` with `load` patched, rather than
+    setting up the strategy's state by hand — hand-rolled setup silently rots
+    the moment `on_start` grows another attribute.
 
     Warmup is skipped by advancing without ticking: the strategy provably does
     nothing until it has LOOKBACK distinct timestamps (asserted separately), and
@@ -496,17 +516,13 @@ def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
         before = sessions(LOOKBACK, start="2023-10-02")
         before = [t for t in before if t <= train_end][-LOOKBACK:]
         after = [train_end + (i + 1) * 86_400_000 for i in range(ticks_after_cutoff)]
-        bars = feed(before + after)
+        bars = feed(before + after, paths=paths)
 
     ctx = FakeContext(bars, cash=cash)
     strategy = AlgoTradeStrategy()
     stub = StubModel(signal_frame(rows), train_end=train_end)
-    if monkeypatch is not None:
-        monkeypatch.setattr(ManipulationModel, "load", classmethod(lambda cls, d: stub))
+    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
         strategy.on_start(ctx)
-    else:
-        strategy.model = stub
-        strategy.book = set()
     for name, value in overrides.items():
         setattr(strategy, name, value)
 
@@ -527,10 +543,24 @@ def buys(ctx):
             if o.side == OrderSide.Buy and o.order_type == "market"]
 
 
-def test_on_start_loads_the_artifact(monkeypatch):
-    ctx, strategy, stub = start_run(monkeypatch=monkeypatch)
+def ma_exits(ctx):
+    """Market sells, i.e. moving-average exits — the stop is a resting order."""
+    return [o for o in ctx.orders
+            if o.side == OrderSide.Sell and o.order_type == "market"]
+
+
+def fill_entries(ctx):
+    """Report every pending entry as filled, like the broker would next bar."""
+    for order in buys(ctx):
+        ctx.positions.setdefault(
+            order.symbol, FakePosition(quantity=order.quantity, price=100.0))
+
+
+def test_on_start_loads_the_artifact_and_clears_state():
+    ctx, strategy, stub = start_run()
     assert strategy.model is stub
     assert strategy.book == set()
+    assert strategy.exiting == set()
 
 
 def test_warmup_takes_no_positions():
@@ -539,8 +569,8 @@ def test_warmup_takes_no_positions():
     ctx = FakeContext(feed(stamps), cash=100_000.0)
     strategy = AlgoTradeStrategy()
     stub = StubModel(signal_frame(ALL_PASS), train_end=0)
-    strategy.model = stub
-    strategy.book = set()
+    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
+        strategy.on_start(ctx)
 
     drive(strategy, ctx, ticks=20)
     assert ctx.orders == []
@@ -554,8 +584,8 @@ def test_no_trading_on_bars_the_model_was_trained_on():
     ctx = FakeContext(feed(before), cash=100_000.0)
     strategy = AlgoTradeStrategy()
     stub = StubModel(signal_frame(ALL_PASS), train_end=train_end)
-    strategy.model = stub
-    strategy.book = set()
+    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
+        strategy.on_start(ctx)
 
     drive(strategy, ctx, ticks=len(before))
     assert ctx.orders == []
@@ -618,25 +648,122 @@ def test_no_entries_when_nothing_qualifies():
     assert ctx.orders == []
 
 
-def test_every_entry_carries_a_stop_and_a_target():
-    """Bracket children hang off the entry, reduce-only, at the documented legs."""
-    ctx, strategy, _ = start_run(max_positions=1,
-                                 stop_pct=10.0, target_pct=30.0)
+def test_every_entry_carries_exactly_one_stop():
+    """The stop is the only resting leg; the target is gone, replaced by the MA."""
+    ctx, strategy, _ = start_run(max_positions=1, stop_pct=10.0)
     drive(strategy, ctx)
 
     entry = buys(ctx)[0]
     children = [o for o in ctx.orders if o.parent == entry.id]
-    assert len(children) == 2
-    stop = next(o for o in children if o.order_type == "stop")
-    target = next(o for o in children if o.order_type == "limit")
+    assert len(children) == 1
+    stop = children[0]
+    assert stop.order_type == "stop"
+    assert stop.price == pytest.approx(100.0 * 0.90)
+    assert stop.side == OrderSide.Sell
+    assert stop.reduce_only is True
+    assert stop.quantity == pytest.approx(entry.quantity)
+    assert not [o for o in ctx.orders if o.order_type == "limit"]
 
-    close = 100.0
-    assert stop.price == pytest.approx(close * 0.90)
-    assert target.price == pytest.approx(close * 1.30)
-    for child in (stop, target):
-        assert child.side == OrderSide.Sell
-        assert child.reduce_only is True
-        assert child.quantity == pytest.approx(entry.quantity)
+
+def test_ma_exit_fires_when_the_close_breaks_below():
+    """One bar at 90 against nineteen at 100 puts the close under the SMA(20)."""
+    ctx, strategy, _ = start_run(ticks_after_cutoff=2, paths={"AAA": [100.0, 90.0]})
+    drive(strategy, ctx)
+    fill_entries(ctx)
+
+    drive(strategy, ctx)
+    exits = ma_exits(ctx)
+    assert [o.symbol for o in exits] == ["AAA"]
+    assert exits[0].reduce_only is True
+    assert exits[0].quantity == pytest.approx(ctx.positions["AAA"].quantity)
+
+
+def test_no_ma_exit_while_the_close_holds_above():
+    """A name at or above its average is left alone — there is no time exit."""
+    ctx, strategy, _ = start_run(ticks_after_cutoff=3, paths={"AAA": [101.0, 102.0]})
+    drive(strategy, ctx)
+    fill_entries(ctx)
+
+    drive(strategy, ctx, ticks=2)
+    assert ma_exits(ctx) == []
+
+
+def test_ma_exit_is_not_resent_while_it_is_pending():
+    """The position survives one more bar before the sale settles; don't re-send."""
+    ctx, strategy, _ = start_run(ticks_after_cutoff=3,
+                                 paths={"AAA": [100.0, 90.0, 89.0]})
+    drive(strategy, ctx)
+    fill_entries(ctx)
+
+    drive(strategy, ctx)
+    assert len(ma_exits(ctx)) == 1
+    assert strategy.exiting == {"AAA"}
+
+    drive(strategy, ctx)                       # still below, still not flat
+    assert len(ma_exits(ctx)) == 1, "an exit must not be sent twice"
+
+
+def test_ma_exit_runs_even_with_a_full_book():
+    """The slot check must not short-circuit ahead of the exit rule."""
+    ctx, strategy, _ = start_run(max_positions=len(SYMBOLS), ticks_after_cutoff=2,
+                                 paths={"AAA": [100.0, 90.0]})
+    drive(strategy, ctx)
+    fill_entries(ctx)
+    assert len(strategy.book) == strategy.max_positions   # no free slot
+
+    drive(strategy, ctx)
+    assert [o.symbol for o in ma_exits(ctx)] == ["AAA"]
+
+
+def test_an_exiting_name_keeps_its_slot_until_it_is_flat():
+    """Entries must not be funded out of proceeds that have not settled."""
+    ctx, strategy, _ = start_run(max_positions=1, ticks_after_cutoff=3,
+                                 paths={"AAA": [100.0, 90.0, 90.0]})
+    drive(strategy, ctx)
+    fill_entries(ctx)
+    held = buys(ctx)[0].symbol
+
+    drive(strategy, ctx)                       # exit placed, not yet filled
+    assert len(ma_exits(ctx)) == 1
+    assert held in strategy.book, "the slot is still occupied this bar"
+    assert len(buys(ctx)) == 1, "no entry may be funded from an unsettled sale"
+
+    ctx.positions.pop(held)                    # the sale settles
+    drive(strategy, ctx)
+    assert held not in strategy.exiting
+    assert len(buys(ctx)) == 2, "the slot frees once the position is flat"
+
+
+def test_ma_exit_needs_a_full_window():
+    """A name with fewer than exit_ma bars has no average to break."""
+    ctx, strategy, _ = start_run(ticks_after_cutoff=2, exit_ma=LOOKBACK + 50,
+                                 paths={"AAA": [100.0, 1.0]})
+    drive(strategy, ctx)
+    fill_entries(ctx)
+
+    drive(strategy, ctx)
+    assert ma_exits(ctx) == []
+
+
+def test_tail_closes_slices_each_symbol_independently():
+    """The exit rule reads per-symbol tails off the ragged window, not a pivot."""
+    bars = [
+        FakeKLine(1_000, "AAA", 1.0, 1.0, 1.0, 1.0, 1.0),
+        FakeKLine(2_000, "AAA", 2.0, 2.0, 2.0, 2.0, 1.0),
+        FakeKLine(3_000, "AAA", 3.0, 3.0, 3.0, 3.0, 1.0),
+        FakeKLine(2_000, "BBB", 7.0, 7.0, 7.0, 7.0, 1.0),
+        FakeKLine(3_000, "BBB", 8.0, 8.0, 8.0, 8.0, 1.0),
+    ]
+    ctx = FakeContext(bars)
+    for _ in range(3):
+        ctx.advance()
+    w = ctx.history(5)
+
+    tails = AlgoTradeStrategy._tail_closes(w, {"AAA", "BBB"}, 2)
+    assert tails["AAA"].tolist() == [2.0, 3.0]
+    assert tails["BBB"].tolist() == [7.0, 8.0]
+    assert AlgoTradeStrategy._tail_closes(w, {"AAA"}, 99)["AAA"].tolist() == [1.0, 2.0, 3.0]
+    assert AlgoTradeStrategy._tail_closes(w, set(), 2) == {}
 
 
 def test_entry_size_respects_the_cash_buffer():
@@ -701,7 +828,7 @@ def test_entries_are_plotted():
 
 def test_declared_params_and_indicators():
     names = {p["name"] for p in stonks.param_specs(AlgoTradeStrategy)}
-    assert names == {"h5_q", "h10_q", "dn_q_max", "stop_pct", "target_pct",
+    assert names == {"h5_q", "h10_q", "dn_q_max", "stop_pct", "exit_ma",
                      "max_positions", "cash_buffer"}
     assert [i["name"] for i in stonks.indicator_specs(AlgoTradeStrategy)] == ["up_h10"]
 

@@ -1059,9 +1059,19 @@ class AlgoTradeStrategy(stonks.Strategy):
     """Long swings on the model's up heads, protected by a fixed bracket.
 
     Entry needs both up heads to agree and the down head to stay quiet — bist's
-    two-head conjunction with its down-head overlay. Held names exit on a -10%
-    stop or a +30% target and nothing else; bist's documented production rules
-    are "SL -10%, TP +30%, no time limit".
+    two-head conjunction with its down-head overlay.
+
+    Held names leave on whichever comes first: a resting -10% stop, or the close
+    finishing below its `exit_ma`-bar simple moving average. bist's documented
+    production rules are "SL -10%, TP +30%, no time limit"; the stop is kept
+    verbatim and the fixed target is replaced.
+
+    Keeping the stop is not cosmetic. The label this model was fit on is gated at
+    -10% — a name that gained 40% after first dipping 12% is labelled zero — so
+    the stop is what makes the strategy trade the thing the model was taught to
+    find. It is also the only exit that can act on a gap: the moving-average rule
+    is a bar-close decision and cannot fill until the next open. The +30% target
+    is the half with no support in the label, and it is what capped the winners.
 
     The thresholds are percentiles of each head's training-set prediction
     distribution, not bist's absolute sigmas. bist publishes h5 >= 3.0 and
@@ -1093,6 +1103,13 @@ class AlgoTradeStrategy(stonks.Strategy):
         eligible, so a thin name that spiked on almost no volume can take a
         slot and its fills will be more optimistic than a real order book
         would allow. See deviation 5 in the module docstring.
+     5. A moving-average exit fills one bar after it is decided, where the stop
+        fills intrabar on the bar it is breached. The rule gives back more on a
+        sharp reversal than the price-triggered exit it replaced.
+     6. An exiting name holds its slot until the position is actually flat. The
+        sale settles at the next open, and funding an entry out of proceeds that
+        have not arrived would have the broker reject it outright — it never
+        queues an order it cannot fund at fill time.
     """
 
     artifact = "app/python/artifacts/algotrade"
@@ -1100,7 +1117,7 @@ class AlgoTradeStrategy(stonks.Strategy):
     h10_q = 0.99          # top 1% of the 10-day head's
     dn_q_max = 0.90       # veto a name whose downside is in the top decile
     stop_pct = 10.0       # bist's documented production stop
-    target_pct = 30.0     # bist's documented production target
+    exit_ma = 20          # exit when the close finishes below this SMA
     max_positions = 10
     cash_buffer = 0.02
 
@@ -1113,7 +1130,8 @@ class AlgoTradeStrategy(stonks.Strategy):
             "downside prediction percentile above which entries are vetoed",
             unit="quantile"),
         "stop_pct": stonks.Param("protective stop below the entry bar's close", unit="%"),
-        "target_pct": stonks.Param("profit target above the entry bar's close", unit="%"),
+        "exit_ma": stonks.Param(
+            "close below this simple moving average exits the position", unit="bars"),
         "max_positions": stonks.Param("names held at once"),
         "cash_buffer": stonks.Param(
             "fraction of cash held back from entries for fees and gaps"),
@@ -1125,8 +1143,11 @@ class AlgoTradeStrategy(stonks.Strategy):
 
     def on_start(self, ctx):
         self.model = ManipulationModel.load(self.artifact)
-        # symbols we believe we hold; brackets close positions behind our back
+        # symbols we believe we hold; the stop closes positions behind our back
         self.book = set()
+        # exit order placed, position not yet flat — kept so the rule does not
+        # re-send an exit on the bar between placing it and its fill
+        self.exiting = set()
 
     def on_tick(self, ctx):
         w = ctx.history(LOOKBACK)
@@ -1141,7 +1162,13 @@ class AlgoTradeStrategy(stonks.Strategy):
         if np.unique(w.timestamp).size < LOOKBACK:
             return
 
+        # Positions the broker still reports: a filled stop or a settled exit
+        # drops out here.
         self.book = {s for s in self.book if ctx.position(s) is not None}
+        self.exiting &= self.book
+        # Exits run before the slot check, or a full book could never sell.
+        self._exit_below_ma(ctx, w)
+
         free = self.max_positions - len(self.book)
         if free <= 0:
             return
@@ -1168,17 +1195,39 @@ class AlgoTradeStrategy(stonks.Strategy):
                                            quantity=quantity)
             # Dormant until the entry fills, then eligible from its fill bar, so
             # the stop protects the entry bar itself. reduce_only keeps an
-            # orphaned leg from opening a short.
+            # orphaned leg from opening a short, and the engine cancels the leg
+            # once the position goes flat however it got there.
             ctx.place_stop_order(symbol=symbol, side=OrderSide.Sell,
                                  quantity=quantity,
                                  price=close * (1.0 - self.stop_pct / 100.0),
                                  parent=entry, reduce_only=True)
-            ctx.place_limit_order(symbol=symbol, side=OrderSide.Sell,
-                                  quantity=quantity,
-                                  price=close * (1.0 + self.target_pct / 100.0),
-                                  parent=entry, reduce_only=True)
             self.book.add(symbol)
             ctx.plot("up_h10", symbol, float(sig.at[symbol, "up_h10"]))
+
+    def _exit_below_ma(self, ctx, w):
+        """Sell held names that closed under their moving average.
+
+        The average moves every bar, so this cannot be a resting order the way
+        the stop is — it is re-decided each bar and sent as a market order, which
+        fills at the next open. The name keeps its slot until the position is
+        actually flat; see caveat 6.
+        """
+        pending = self.book - self.exiting
+        if not pending:
+            return
+        for symbol, tail in self._tail_closes(w, pending, self.exit_ma).items():
+            # A name with less than a full window has no average to break.
+            if len(tail) < self.exit_ma or not np.isfinite(tail).all():
+                continue
+            if tail[-1] >= tail.mean():
+                continue
+            position = ctx.position(symbol)
+            if position is None:
+                continue
+            ctx.place_market_order(symbol=symbol, side=OrderSide.Sell,
+                                   quantity=abs(position.quantity),
+                                   reduce_only=True)
+            self.exiting.add(symbol)
 
     def _rank(self, sig):
         """Symbols clearing every gate, best composite first.
@@ -1207,6 +1256,31 @@ class AlgoTradeStrategy(stonks.Strategy):
         ts = np.asarray(w.timestamp)
         return {w.symbol[i]: float(w.close[i])
                 for i in np.flatnonzero(ts == ts[-1])}
+
+    @staticmethod
+    def _tail_closes(w, symbols, count):
+        """The trailing `count` closes of each of `symbols`, newest last.
+
+        Slices the ragged window directly rather than pivoting it: the exit rule
+        needs a short average for at most `max_positions` names, and a full pivot
+        per bar to serve ten columns is the expensive way to get it. Rows are
+        contiguous per symbol and every symbol's slice ends at this tick, so the
+        rows stamped `ts[-1]` are the segment ends and the preceding boundary is
+        the previous end plus one.
+        """
+        ts = np.asarray(w.timestamp)
+        close = np.asarray(w.close, dtype=float)
+        ends = np.flatnonzero(ts == ts[-1])
+        starts = np.empty_like(ends)
+        starts[0] = 0
+        starts[1:] = ends[:-1] + 1
+
+        out = {}
+        for start, end in zip(starts, ends):
+            symbol = w.symbol[end]
+            if symbol in symbols:
+                out[symbol] = close[max(int(start), int(end) + 1 - count):int(end) + 1]
+        return out
 
 
 # ---------------------------------------------------------------------------

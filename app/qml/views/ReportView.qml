@@ -17,6 +17,14 @@ Column {
             { label: "ENDING EQUITY", value: b.endEqStr, color: Theme.accent }
         ];
     }
+    // "" = the report's own symbol order; otherwise a key of the rows below.
+    property string sortKey: ""
+    property bool sortDesc: true
+
+    function toggleSort(key) {
+        if (sortKey === key) { sortDesc = !sortDesc; }
+        else { sortKey = key; sortDesc = key !== "id"; }   // numbers start high→low, symbols A→Z
+    }
     function reportSymbols() {
         var syms = bt.symbols || [];
         var out = [];
@@ -25,7 +33,17 @@ Column {
             if (s.ret === undefined) continue;
             out.push({ id: s.id, seed: App.symMeta(s.id).seed, bias: (s.retPos ? 0.011 : -0.008),
                        ret: s.ret, pnl: s.pnl, trades: s.trades, win: s.win,
+                       retVal: s.retVal, pnlVal: s.pnlVal, winVal: s.winVal, order: out.length,
                        col: s.retPos ? Theme.positive : Theme.negative });
+        }
+        if (sortKey !== "") {
+            var key = sortKey;
+            var sign = sortDesc ? -1 : 1;
+            out.sort(function (a, b) {
+                var x = a[key], y = b[key];
+                var cmp = (key === "id") ? (x < y ? -1 : (x > y ? 1 : 0)) : (x - y);
+                return cmp !== 0 ? sign * cmp : a.order - b.order;   // stable on ties
+            });
         }
         return out;
     }
@@ -181,6 +199,31 @@ Column {
         readonly property real cAnalyze: Theme.sp(110)
         readonly property real cEq: cw - cSym - cRet - cPnl - cTrd - cWin - cAnalyze - gap * 6
 
+        // Clickable column header: click to sort by `key`, click again to flip.
+        component SortHeader: Item {
+            id: hdr
+            required property string label
+            required property string key
+            property bool alignRight: true
+            readonly property bool active: report.sortKey === hdr.key
+            height: Theme.sp(30)
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                horizontalAlignment: hdr.alignRight ? Text.AlignRight : Text.AlignLeft
+                text: hdr.label + (hdr.active ? (report.sortDesc ? " ↓" : " ↑") : "")
+                color: hdr.active ? Theme.accent : (hdrMa.containsMouse ? Theme.t4 : Theme.t6)
+                font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale
+            }
+            MouseArea {
+                id: hdrMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: report.toggleSort(hdr.key)
+            }
+        }
+
         Column {
             id: symCol
             x: Theme.sp(24); y: Theme.sp(20)
@@ -191,7 +234,7 @@ Column {
                 width: parent.width
                 height: Theme.sp(34)
                 Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "PER-SYMBOL PERFORMANCE"; color: Theme.t4; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 0.8 * Theme.scale }
-                Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "click a row → trade analysis"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontCaption }
+                Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "click a header → sort · click a row → trade analysis"; color: Theme.t6; font.family: Theme.mono; font.pixelSize: Theme.fontCaption }
             }
 
             // table header
@@ -202,12 +245,12 @@ Column {
                 Row {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: perSym.gap
-                    Text { width: perSym.cSym; text: "SYMBOL"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
+                    SortHeader { width: perSym.cSym; label: "SYMBOL"; key: "id"; alignRight: false }
                     Text { width: perSym.cEq; text: "EQUITY"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
-                    Text { width: perSym.cRet; horizontalAlignment: Text.AlignRight; text: "RETURN"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
-                    Text { width: perSym.cPnl; horizontalAlignment: Text.AlignRight; text: "P&L"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
-                    Text { width: perSym.cTrd; horizontalAlignment: Text.AlignRight; text: "TRADES"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
-                    Text { width: perSym.cWin; horizontalAlignment: Text.AlignRight; text: "WIN"; color: Theme.t6; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontMicro; font.letterSpacing: 1 * Theme.scale }
+                    SortHeader { width: perSym.cRet; label: "RETURN"; key: "retVal" }
+                    SortHeader { width: perSym.cPnl; label: "P&L"; key: "pnlVal" }
+                    SortHeader { width: perSym.cTrd; label: "TRADES"; key: "trades" }
+                    SortHeader { width: perSym.cWin; label: "WIN"; key: "winVal" }
                     Item { width: perSym.cAnalyze; height: 1 }
                 }
             }

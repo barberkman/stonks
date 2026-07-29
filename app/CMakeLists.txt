@@ -45,6 +45,7 @@ qt_add_qml_module(app
         qml/js/chartview.js
         qml/js/mockdata.js
     RESOURCES
+        qml/icons/appicon.png
         qml/fonts/IBMPlexSans-Variable.ttf
         qml/fonts/IBMPlexMono-Regular.ttf
         qml/fonts/IBMPlexMono-Medium.ttf
