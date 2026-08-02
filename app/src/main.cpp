@@ -47,16 +47,20 @@ std::vector<std::string> split_csv(const std::string& csv);
 // list is KLineFeed's "all symbols in the file".
 //
 // The default window is set by algo_trade's pre-trained artifact, which was fit
-// through 2024-12-31: the strategy refuses to trade any bar the fit could see,
-// and --start is ~300 bars earlier because KLineFeed truncates history at
-// --start and the model needs that much lookback before it can score anything.
-// Retrain with a different --train-end and this window moves with it.
+// through 2024-12-31: the strategy refuses to trade any bar the fit could see.
+// --start is the *beginning of the feed* rather than a lookback's worth earlier,
+// because two of the model's features (obv and days_since_past_extreme)
+// accumulate from a symbol's first bar. KLineFeed truncates history at --start,
+// so a later start silently reseeds both against a shorter history and scores
+// bars on values the fit never saw. Retrain with a different --train-end and only
+// the trading window moves; --start stays at the front of the data.
 void run_backtest(int argc, const char* const* argv) {
     constexpr stonks::core::Balance starting_cash = 1000.0;
     const std::string data_file =
         flag_value(argc, argv, "--data", "app/data/bist_1d.parquet");
-    const std::string start = flag_value(argc, argv, "--start", "2023-10-02");
-    const std::string end = flag_value(argc, argv, "--end", "2026-07-24");
+    const std::string start = flag_value(argc, argv, "--start", "2020-01-02");
+    // const std::string end = flag_value(argc, argv, "--end", "2026-07-24");
+    const std::string end = flag_value(argc, argv, "--end", "2025-06-01");
     const std::vector<std::string> symbols =
         split_csv(flag_value(argc, argv, "--symbols", ""));
     // Binance USDT-M VIP0 fee schedule; stamped into the report JSON.

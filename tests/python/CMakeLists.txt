@@ -1,5 +1,6 @@
 add_executable(python_tests
     contextadapter_test.cpp
+    embeddedpython_test.cpp
     pythonstrategy_test.cpp
     strategydiscovery_test.cpp
     ${PROJECT_SOURCE_DIR}/app/strategies/strategydiscovery.cpp

@@ -312,8 +312,15 @@ processes `.pth` files so editable installs work. `STONKS_PYTHONPATH`
 
 `algo_trade.py` is the one strategy here that does not decide anything from
 price rules: `ManipulationModel` is three XGBoost regressors (a port of
-`/Users/macmini-1/bist`) and the strategy trades their output. It needs two
-things the other strategies do not.
+`/Users/macmini-1/bist`) and the strategy trades their output — entry when the
+5-day head clears 3.0 sigma and the 10-day head clears 2.0, which is what bist
+backtests in `scripts_observation/walk_forward_static.py`. The exit is the one
+deliberate deviation: bist rests a -10% stop and a +30% target and holds until
+one fills, and here the stop is kept while the target is replaced by `exit_ma` —
+a held name leaves when its close finishes below its 20-bar simple moving
+average. The stop is what the label's drawdown gate encodes and the only exit
+that can act on a gap; the target encodes nothing and capped the winners. It
+needs two things the other strategies do not.
 
 **xgboost in the venv.** It is a hard import, and strategy discovery imports
 every `app/python/*.py` to find strategies — a module that fails to import is
@@ -337,19 +344,77 @@ That writes `app/python/artifacts/algotrade/` (one booster per head, the
 winsorize bounds, and `meta.json`). It is gitignored — regenerate it rather than
 committing it.
 
-Then mind the window. The artifact records its `train_end` and the strategy
-refuses to trade any bar the fit was allowed to see, so the backtest is only
-out-of-sample after that date. It also needs 300 bars of lookback before it can
-score anything, and `KLineFeed` truncates history at `--start` — there is no
-pre-window warmup data — so `--start` must sit ~300 trading bars *earlier* than
-where you want signals to begin:
+Note the trainer defaults to bist's **backtest** training window (full history),
+not its screen's 2024-01-01 — see `BACKTEST_TRAIN_START`. That pairing matters:
+the entry gate is an absolute sigma, and a fit restricted to 2024 predicts tightly
+enough that `h5 >= 3.0 AND h10 >= 2.0` almost never fires.
+
+Then mind the window — and here it is stricter than a 300-bar lookback. The
+artifact records its `train_end` and the strategy refuses to trade any bar the fit
+was allowed to see, so the backtest is only out-of-sample after that date. But two
+features (`obv` and `days_since_past_extreme`) accumulate from a symbol's *first*
+bar, so `--start` must sit at the **beginning of the feed**, not 300 bars before
+the signals:
 
 ```sh
-./build/macos-debug/app/app --start 2023-10-02 --end 2026-07-24
+./build/macos-debug/app/app --start 2020-01-02 --end 2026-07-24
 ```
 
-Retrain with a different `--train-end` and both dates move with it. `main.cpp`'s
-defaults match the command above.
+A later `--start` silently reseeds both, because `KLineFeed` truncates at load
+time and nothing downstream can tell that history was cut. The run is not cheap —
+the strategy scores every bar from the 300th onward, in-sample ones included,
+because the carried state has to see them all.
+
+### The result to be suspicious of
+
+**Every entry this strategy takes is a name that closed at the +10% price band.**
+Over the 2025-2026 out-of-sample stretch there are 14 bars where both up heads
+clear bist's thresholds, and on all 14 the symbol closed limit-up on the signal
+bar. Entries fill at the next open, so those are fills a real order book would not
+have given.
+
+This is not a porting artifact. bist's own backtest disables the same gate
+(`LU_OVERRIDE` in `run_static_fuzz.py`) and its published figures inherit it. It
+follows from what the model is: a detector for names about to make an outsized
+move, whose strongest readings land on names that already started making one.
+
+`skip_limit_locked = 1` excludes them, and leaves zero trades. Both settings are
+worth running; only one of them is bist.
+
+### Parity with bist
+
+The port is checked against bist mechanically rather than by inspection.
+`tools/bist_parity.py` runs *bist's own pipeline* over `app/data/bist_1d.parquet`
+and diffs it against `algo_trade.py` column by column:
+
+```sh
+app/python/.venv/bin/python tools/bist_parity.py --labels        # full panel
+app/python/.venv/bin/python tools/bist_parity.py --tail 500      # quick
+```
+
+Current state: 70 of 72 features and all 3 labels agree to float tolerance, 60
+bit-exact. The two exceptions are `volume_skew_20` and `volume_kurt_20`, where
+pandas' incremental rolling moments are not window-invariant and matching bist
+would break the batch-equals-window contract — argued at `algo_trade._moments`.
+`app/python/test_bist_parity.py` is the same check as a regression gate; both skip
+themselves when `/Users/macmini-1/bist` is absent.
+
+What parity does *not* mean: bist runs on a different feed — its `open` is a daily
+VWAP (`HGDG_AOF`), its `volume` is lira turnover rather than share count, and its
+history starts in 2016 — so the code matches and the numbers do not. A sigma here
+is not comparable to a sigma in a bist report.
+
+### The single-date screen
+
+`tools/bist_alerts.py` is the port's equivalent of bist's `configured_alerts`: it
+trains through a date, scores that date, and prints bist's table.
+
+```sh
+app/python/.venv/bin/python tools/bist_alerts.py --report-date 2026-07-24
+```
+
+It trains on the date it scores, exactly as bist's does, so it is a triage screen
+and not a result. `AlgoTradeStrategy` is the backtest.
 
 ## Unit-test strategies without the engine
 
@@ -398,6 +463,68 @@ simulated here by design — they are pinned by the C++ suite
 (`tests/core/*.cpp`) against the real broker, and whole runs are re-verified
 by `tools/verify_backtest.py`. Test your *logic* in pytest; trust the engine
 for execution.
+
+## Debug a strategy inside the engine
+
+A C++ debugger can't break in Python source. `lldb` / `gdb` see the host
+process; the strategy runs in an embedded interpreter they know nothing about,
+so an editor breakpoint in a `.py` file is inert in those sessions. To step
+through strategy code you attach a Python debugger to the interpreter instead.
+
+Install debugpy into the app venv once:
+
+```sh
+app/python/.venv/bin/pip install -e "python/[debug]"
+```
+
+Then set `STONKS_DEBUGPY` when you run. `EmbeddedPython` opens a debugpy
+listener during interpreter startup and blocks until an editor attaches, so
+breakpoints are in place before the first `on_tick`:
+
+```sh
+STONKS_DEBUGPY=1     ./build/macos-debug/app/app    # default port 5678
+STONKS_DEBUGPY=5679  ./build/macos-debug/app/app    # explicit port
+STONKS_DEBUGPY=0     ./build/macos-debug/app/app    # off (same as unset)
+```
+
+```
+[stonks] debugpy listening on 127.0.0.1:5678 — waiting for the debugger to attach...
+```
+
+In VSCode, run the **Python: Attach to strategy (debugpy)** launch config; the
+app prints `[stonks] debugger attached.` and the run proceeds. The compound
+**macOS: Debug app + Python (lldb + debugpy)** does both halves at once —
+lldb on the C++ side, debugpy on the Python side, breakpoints in both. The
+attach config gates on a `Wait for debugpy listener` task, so it can start
+before, with, or after the app — without it a compound would fire the attach
+while the app is still building and die on connection-refused.
+
+For GUI runs use **macOS: Debug app --gui + Python (lldb + debugpy)**. Both
+modes open the listener during startup, so one compound covers each. In `--gui`
+that happens earlier than you might expect: `BacktestController::listStrategies`
+runs during QML load, which brings the interpreter up on the worker thread while
+the GUI thread waits on it — **so the window does not appear until a debugger
+attaches.** A `--gui` app that launches to no window is this, not a hang; attach
+and it finishes loading.
+
+This works the same over Remote-SSH — the listener is on loopback on the host
+running the app, which is also where the VSCode server runs, so no port
+forwarding or `pathMappings` are needed. It replaces debugpy's
+attach-by-PID (*"Python: Attach using Process ID"*), which injects via gdb and
+is Linux-only — that route silently does nothing on macOS.
+
+Two things to expect:
+
+- **`Debugger warning: It seems that frozen modules are being used`** at
+  startup. `py::initialize_interpreter()` gives no way to pass
+  `-Xfrozen_modules=off`, so the warning is unavoidable. It affects breakpoints
+  inside frozen stdlib bootstrap modules only — strategy breakpoints bind and
+  fire normally.
+- **Pause / disconnect can lag.** The host thread holds the GIL for the process
+  lifetime, so debugpy's background thread only gets serviced while Python code
+  is running. Breakpoints are unaffected (tracing runs on the thread executing
+  the strategy), but a *Pause* issued during a long C++-only stretch takes
+  effect at the next `on_tick`.
 
 ## Context API
 

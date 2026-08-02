@@ -16,6 +16,9 @@ dependencies = ["numpy>=1.21"]
 # dtype that corrupts the pybind11 symbol strings from Context.history(), so
 # groupby("symbol") raises UnicodeDecodeError. pandas 2.x keeps object strings.
 test = ["pandas<3", "pyarrow"]
+# STONKS_DEBUGPY opens a debugpy listener in the embedded interpreter so an
+# editor can attach and break in Python strategy code.
+debug = ["debugpy"]
 
 [tool.setuptools]
 packages = ["stonks"]

@@ -46,6 +46,20 @@
             "problemMatcher": []
         },
         {
+            // Gate the debugpy attach on the listener actually being up. Without
+            // this the attach half of a compound fires while the app is still
+            // building and dies on connection-refused. Polls for up to 5 min.
+            "label": "Wait for debugpy listener",
+            "type": "shell",
+            "command": "for i in $(seq 1 600); do nc -z 127.0.0.1 5678 && exit 0; sleep 0.5; done; echo 'timed out waiting for 127.0.0.1:5678 — is STONKS_DEBUGPY set on the app config?'; exit 1",
+            "presentation": {
+                "reveal": "silent",
+                "close": true,
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "CMake: configure (macos-debug)",
             "type": "shell",
             "command": "cmake",

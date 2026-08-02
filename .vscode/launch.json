@@ -22,6 +22,49 @@
             "preLaunchTask": "CMake: build (macos-debug)"
         },
         {
+            // The listener opens during QML load — strategy discovery brings the
+            // interpreter up on the worker thread while the GUI thread waits on
+            // it — so the window does not appear until a debugger attaches.
+            // Prefer the "--gui + Python" compound, which attaches for you.
+            "name": "macOS: Debug app --gui + Python strategy (lldb)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/macos-debug/app/app",
+            "args": [
+                "--gui"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "STONKS_DEBUGPY": "5678"
+            },
+            "preLaunchTask": "CMake: build (macos-debug)"
+        },
+        {
+            "name": "macOS: Debug app + Python strategy (lldb)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/macos-debug/app/app",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "STONKS_DEBUGPY": "5678"
+            },
+            "preLaunchTask": "CMake: build (macos-debug)"
+        },
+        {
+            "name": "Python: Attach to strategy (debugpy)",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "127.0.0.1",
+                "port": 5678
+            },
+            "justMyCode": false,
+            // Blocks until the app's listener is up, so this is safe to start
+            // before, with, or after the app.
+            "preLaunchTask": "Wait for debugpy listener"
+        },
+        {
             "name": "macOS: Debug core_tests (lldb)",
             "type": "lldb",
             "request": "launch",
@@ -93,6 +136,27 @@
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
             "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
+        }
+    ],
+    "compounds": [
+        {
+            // The app blocks at startup until debugpy attaches, so the ordering
+            // here is safe. If the attach half errors out because the preLaunch
+            // build was slow, just start it again on its own.
+            "name": "macOS: Debug app + Python (lldb + debugpy)",
+            "configurations": [
+                "macOS: Debug app + Python strategy (lldb)",
+                "Python: Attach to strategy (debugpy)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "macOS: Debug app --gui + Python (lldb + debugpy)",
+            "configurations": [
+                "macOS: Debug app --gui + Python strategy (lldb)",
+                "Python: Attach to strategy (debugpy)"
+            ],
+            "stopAll": true
         }
     ]
 }
