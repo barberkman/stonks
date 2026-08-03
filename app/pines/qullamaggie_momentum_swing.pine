@@ -1,6 +1,7 @@
 //@version=6
 // ════════════════════════════════════════════════════════════════════════════
-//  QULLAMAGGIE MOMENTUM SWING — ENTRY/EXIT ARROWS  (v12: + TRAILING MA PLOT)
+//  QULLAMAGGIE MOMENTUM SWING — ENTRY/EXIT ARROWS  (v15: MA STACK = 10/20/50,
+//  SMA200 REMOVED FROM THE FILTER)
 //
 //  Triangle arrows pinned to exact prices just off each candle:
 //    ▲ Buy BO   — breakout above the pivot high of a tight flag/base
@@ -11,13 +12,25 @@
 //    ▲ Cover    — short partial cover / short exit
 //    ▼ Short / ▲ Cover — parabolic "first red bar" short (separate, off by default)
 //
-//  v12 CHANGES — TRAILING MA PLOT
-//    - Draws the trailing moving average the strategy uses to manage/trail exits
-//      (trailMA = SMA or EMA of length trailLen; default EMA 20). This is the SAME
-//      series the exit logic checks with "close < trailMA" (long) / "close > trailMA"
-//      (short) after a partial. Plotted on the main pane, yellow, linewidth 2.
-//      Switch SMA/EMA or change the length in "Trade management" and the line follows.
+//  v15 CHANGES — SMA200 REMOVED FROM THE MA-STACK FILTER
+//    - "Require full MA stack" now checks 10 > 20 > 50 for longs and
+//      10 < 20 < 50 for shorts. SMA200 is no longer computed, compared,
+//      or plotted anywhere.
+//    - Side benefit: the stack gate now only needs ~50 bars of history
+//      instead of 200, so it no longer suppresses every signal on short
+//      chart histories.
 //
+//  v14 (retained): OPTION B — breakout / ORB / breakdown fills trigger on the
+//                  touch while flat (like a real resting stop order); the
+//                  break-bar volume check no longer blocks entries but tags
+//                  weak breaks "⚠ weak vol" + fires the weak-volume alert.
+//                  State-coloured order lines (green/red = fillable, orange =
+//                  blocked by an open position, gray = expiring), live status
+//                  table (top-right), optional volume-threshold dots.
+//
+//  v13 (retained): optional strict MA-stack gate (10>20>50>200 long, inverse
+//                  short) via "Require full MA stack"; optional stack MA plots.
+//  v12 (retained): TRAILING MA PLOT — draws the trailing MA the exit logic uses.
 //  v11 (retained): ENTRY / EXIT / SELL VALUE LINES + value tags at each entry bar.
 //  v10 (retained): SHORT BREAKOUTS — resting SELL-STOP at the base LOW in a downtrend.
 //  v9  (retained): looser arming gates; min base age 3 bars.
@@ -45,6 +58,8 @@ minAdr     = input.float(0.1,      "Minimum ADR / avg bar range (%)",    minval=
 momLen     = input.int(24,         "Momentum lookback (bars)",           minval=5,             group=grpU, tooltip="Counted in chart bars.")
 minGain    = input.float(0.5,      "Minimum gain over lookback (%)",     minval=0.0, step=0.1, group=grpU, tooltip="Longs require up >= this over the window; short breakouts require down >= this.")
 requireMAs = input.bool(true,      "Require trend (close vs 20 SMA and 10 SMA vs 20 SMA)",     group=grpU, tooltip="Trend gate. Longs: close > 20-SMA & 10>20. Shorts: close < 20-SMA & 10<20. Tolerates a counter-move under/over the 10-SMA so bases still arm.")
+requireStack = input.bool(false,   "Require full MA stack (10>20>50 long, inverse short)",     group=grpU, tooltip="Optional STRICT trend-alignment gate. OFF by default. Longs need SMA10 > SMA20 > SMA50; shorts need SMA10 < SMA20 < SMA50. Needs >=50 bars of history for SMA50 to be valid.")
+showStackMAs = input.bool(false,   "Plot the stack MAs (10/20/50)",                            group=grpU, tooltip="Visual only. Draws the three SMAs the stack filter compares, so you can see the alignment.")
 
 grpB = "Setup 1 — momentum breakout (long)"
 enableBO    = input.bool(true,  "Enable breakout signals",                                       group=grpB)
@@ -54,10 +69,10 @@ maxDepth    = input.float(40.0, "Max retracement inside the base (%)",     minva
 useVolDry   = input.bool(false, "Require volume contraction in the base",                        group=grpB, tooltip="OFF by default: in an active trend recent volume is usually HIGHER than the longer average, which rejects most bases.")
 volDryRatio = input.float(1.0,  "5-bar avg vol < ratio x 50-bar avg vol", minval=0.1, maxval=1.5, step=0.05, group=grpB)
 bufTicks    = input.int(1,      "Entry buffer beyond pivot (ticks)",       minval=0,             group=grpB)
-entryMode   = input.string("Stop @ pivot (catch the break)", "Breakout entry", options=["Stop @ pivot (catch the break)", "Wait for bar close"], group=grpB, tooltip="STOP: a resting order at the pivot fills the instant price trades through it. CLOSE: only enter if the bar CLOSES beyond the pivot.")
+entryMode   = input.string("Stop @ pivot (catch the break)", "Breakout entry", options=["Stop @ pivot (catch the break)", "Wait for bar close"], group=grpB, tooltip="STOP: a resting order at the pivot fills the instant price trades through it — matches a real stop order at your broker. CLOSE: only enter if the bar CLOSES beyond the pivot.")
 boOrderBars = input.int(10,     "Resting order good for N bars",          minval=1,              group=grpB, tooltip="How long the order sits at the pivot before it's cancelled if price never reaches it.")
-showOrderLvl= input.bool(true,  "Plot the live resting order levels",                            group=grpB)
-useBOVol    = input.bool(true,  "Require volume expansion on the break bar",                     group=grpB, tooltip="Real breaks come on rising volume. Applies to long and short breakouts. Disable for more signals.")
+showOrderLvl= input.bool(true,  "Plot the live resting order levels",                            group=grpB, tooltip="State-coloured: green (long) / red (short) = armed and fillable. ORANGE = armed but an open position blocks fills. GRAY = expiring soon.")
+useBOVol    = input.bool(true,  "Flag weak-volume breaks (post-fill check, does NOT block entry)", group=grpB, tooltip="OPTION B: the fill happens on the touch regardless of volume (like a real resting stop order). If the break bar's volume is below the threshold, the entry is tagged '⚠ weak vol' and the 'QM: weak-volume break' alert fires — your cue to tighten the stop or scratch. Applies to long BO, ORB and short breakdowns. EP keeps its own hard volume gate.")
 boVolMult   = input.float(1.3,  "Break-bar volume >= x 50-bar avg",       minval=1.0, step=0.1,  group=grpB)
 
 grpO = "Setup 1b — opening range breakout (intraday, long)"
@@ -93,9 +108,15 @@ trailType   = input.string("EMA", "Trailing MA type", options=["SMA", "EMA"],   
 trailLen    = input.int(20,    "Trailing MA length (10 aggressive / 20 standard)", minval=2, group=grpX)
 showTrailMA = input.bool(true, "Plot the trailing MA used for exits",                        group=grpX, tooltip="Draws trailMA on the chart — the same series the exit logic checks (close < trailMA for longs / close > trailMA for shorts after a partial).")
 
+grpV = "Order status visuals (v14)"
+showStatusTbl = input.bool(true,  "Show live order status table (top-right)",  group=grpV, tooltip="Shows both resting orders with bars remaining, position state, the LIVE break-bar volume ratio vs the threshold (updates as the bar builds), and the entry mode.")
+warnBarsLeft  = input.int(2,      "Order line turns gray when <= N bars left", minval=1, group=grpV)
+showVolOKDots = input.bool(false, "Dot bars whose volume meets the threshold", group=grpV, tooltip="Tiny dot at the bottom of the pane on bars where volume >= threshold x 50-bar avg — shows how often the volume check passes on this symbol/timeframe.")
+
 // ─── Core calculations ───────────────────────────────────────────────────────
 sma10    = ta.sma(close, 10)
 sma20    = ta.sma(close, 20)
+sma50    = ta.sma(close, 50)
 emaTrail = ta.ema(close, trailLen)
 smaTrail = ta.sma(close, trailLen)
 trailMA  = trailType == "EMA" ? emaTrail : smaTrail
@@ -112,11 +133,17 @@ adrOK      = adrPct >= minAdr
 volDryOK   = not useVolDry or avgVol5 < volDryRatio * avgVol50
 maOKup     = not requireMAs or (close > sma20 and sma10 > sma20)   // tolerates a pullback under the 10-SMA
 maOKdn     = not requireMAs or (close < sma20 and sma10 < sma20)   // tolerates a bounce over the 10-SMA
-trendUpOK  = gainPct >= minGain and maOKup
-trendDnOK  = gainPct <= -minGain and maOKdn
+// Optional strict MA-stack alignment (needs SMA50 => >=50 bars of history)
+stackUpOK  = not requireStack or (not na(sma50) and sma10 > sma20 and sma20 > sma50)
+stackDnOK  = not requireStack or (not na(sma50) and sma10 < sma20 and sma20 < sma50)
+trendUpOK  = gainPct >= minGain and maOKup and stackUpOK
+trendDnOK  = gainPct <= -minGain and maOKdn and stackDnOK
 universeUp = liqOK and adrOK and trendUpOK
 universeDn = liqOK and adrOK and trendDnOK
 waitClose  = entryMode == "Wait for bar close"
+
+// v14: volume threshold check — INFORMATION ONLY, never blocks a fill.
+volMeets = not na(avgVol50[1]) and avgVol50[1] > 0 and volume >= boVolMult * avgVol50[1]
 
 // ─── Position state (signals only) ───────────────────────────────────────────
 var bool   inLong       = false
@@ -214,6 +241,14 @@ f_arrow(_buy, _txt, _col) =>
          style=_buy ? label.style_triangleup : label.style_triangledown,
          color=color.new(_col, 0), textcolor=color.new(_col, 0), size=size.small)
 
+// ─── Weak-volume tag (v14): flags a fill whose break bar missed the threshold ─
+// Placed on the OPPOSITE side of the bar from the entry arrow so they don't collide.
+f_weakTag(_long) =>
+    label.new(bar_index, _long ? high + labPad : low - labPad, "⚠ weak vol",
+         yloc=yloc.price, force_overlay=true,
+         style=_long ? label.style_label_down : label.style_label_up,
+         color=color.new(color.orange, 100), textcolor=color.orange, size=size.small)
+
 // ─── Value tags: print the actual entry / exit / sell prices at the entry bar ─
 f_valueLabels(_ePx, _sPx, _tPx, _long) =>
     sWord = _long ? "Exit" : "Cover"
@@ -239,6 +274,7 @@ bool sigShort   = false
 bool sigCover   = false
 bool sigShortBO = false
 bool sigCoverBO = false
+bool sigWeakBrk = false
 bool exitedNow  = false
 
 // ─── Long exit management (confirmed bars only) ──────────────────────────────
@@ -303,15 +339,17 @@ if closeShortNow
     exitedNow    := true
 
 // ─── Entries (confirmed bars, no same-bar exit-and-reenter) ──────────────────
-canEnter   = not inLong and not inShort and not exitedNow and barstate.isconfirmed
-volBreakOK = not useBOVol or volume >= boVolMult * avgVol50[1]
+// v14 / OPTION B: the volume check is GONE from the fill conditions below.
+// A touch of the level while flat = a fill, exactly like a resting stop order
+// at your broker. Weak-volume breaks are tagged after the fill instead.
+canEnter = not inLong and not inShort and not exitedNow and barstate.isconfirmed
 
 boBreak  = waitClose ? close >= boOrderPx : high >= boOrderPx
-boFill   = canEnter and boArmed and not na(boOrderPx) and boBreak and volBreakOK
+boFill   = canEnter and boArmed and not na(boOrderPx) and boBreak
 orbBreak = waitClose ? close >= orbLevel : high >= orbLevel
-orbFill  = canEnter and orbActive and orbBreak and volBreakOK and not boFill
+orbFill  = canEnter and orbActive and orbBreak and not boFill
 soBreak  = waitClose ? close <= soOrderPx : low <= soOrderPx
-soFill   = canEnter and soArmed and not na(soOrderPx) and soBreak and volBreakOK
+soFill   = canEnter and soArmed and not na(soOrderPx) and soBreak
 
 longTrig  = boFill or orbFill
 longLevel = boFill ? boOrderPx : orbLevel
@@ -335,6 +373,9 @@ if longTrig
         orbTaken  := true
     f_arrow(true, longTxt, longCol)
     f_valueLabels(entryPx, stopPx, targetPx, true)
+    if useBOVol and not volMeets                         // v14: post-fill quality check
+        f_weakTag(true)
+        sigWeakBrk := true
     if close < stopPx                                    // filled then collapsed below the stop same bar — bail
         f_arrow(false, "Exit", color.red)
         sigExit     := true
@@ -358,6 +399,9 @@ else if soFill
     sigShortBO := true
     f_arrow(false, "Short BO", color.fuchsia)
     f_valueLabels(sEntryPx, sStopPx, sTargetPx, false)
+    if useBOVol and not volMeets                         // v14: post-fill quality check
+        f_weakTag(false)
+        sigWeakBrk := true
     if close > sStopPx                                   // filled then snapped back above the stop same bar — bail
         f_arrow(true, "Cover", color.red)
         sigCoverBO   := true
@@ -391,13 +435,26 @@ else if canEnter and psSetup
     f_arrow(false, "Short", color.maroon)
     f_valueLabels(sEntryPx, sStopPx, sTargetPx, false)
 
-// ─── Visualize the live resting orders ───────────────────────────────────────
+// ─── Visualize the live resting orders (v14: state-coloured) ─────────────────
+// green (long) / red (short) = armed AND flat → your stop order can fill
+// ORANGE = armed but an open position blocks new fills (the misleading case)
+// GRAY   = order expiring within warnBarsLeft bars
+boBarsLeft  = boArmed ? boOrderBars - (bar_index - boArmedBar) : na
+soBarsLeft  = soArmed ? boOrderBars - (bar_index - soArmedBar) : na
+posOpen     = inLong or inShort
+boLineColor = posOpen ? color.orange : nz(boBarsLeft, 99) <= warnBarsLeft ? color.gray : color.green
+soLineColor = posOpen ? color.orange : nz(soBarsLeft, 99) <= warnBarsLeft ? color.gray : color.red
+
 plotBOlvl  = showOrderLvl and boArmed   ? boOrderPx : na
 plotORBlvl = showOrderLvl and orbActive ? orbLevel  : na
 plotSOlvl  = showOrderLvl and soArmed   ? soOrderPx : na
-plot(plotBOlvl,  "Resting BO buy-stop",     color=color.new(color.green, 0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(plotBOlvl,  "Resting BO buy-stop",     color=boLineColor,               style=plot.style_linebr, linewidth=1, force_overlay=true)
 plot(plotORBlvl, "Resting ORB level",       color=color.new(color.lime,  0), style=plot.style_linebr, linewidth=1, force_overlay=true)
-plot(plotSOlvl,  "Resting short sell-stop", color=color.new(color.red,   0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(plotSOlvl,  "Resting short sell-stop", color=soLineColor,               style=plot.style_linebr, linewidth=1, force_overlay=true)
+
+// ─── Volume-threshold dots (v14, optional) ───────────────────────────────────
+plotshape(showVolOKDots and volMeets, "Bar vol >= threshold", shape.circle, location.bottom,
+     color=color.new(color.orange, 40), size=size.tiny, force_overlay=true)
 
 // ─── Entry / exit / sell value lines (active trade; mirrors the breakout lines) ─
 valEntry  = inLong ? entryPx  : inShort ? sEntryPx  : na
@@ -413,11 +470,46 @@ plot(valTarget, "Sell / target level", color=color.new(color.orange, 0), style=p
 plot(showTrailMA ? trailMA : na, "Trailing MA (exit)",
      color=color.new(color.blue, 0), linewidth=2, force_overlay=true)
 
+// ─── Stack MAs (optional visual for the MA-stack filter) ─────────────────────
+// The same three series the stack gate compares: 10 > 20 > 50 (long) or the
+// exact inverse (short). Visual only — does not affect any signal.
+plot(showStackMAs ? sma10 : na, "SMA 10", color=color.new(color.green,  0), linewidth=1, force_overlay=true)
+plot(showStackMAs ? sma20 : na, "SMA 20", color=color.new(color.yellow, 0), linewidth=1, force_overlay=true)
+plot(showStackMAs ? sma50 : na, "SMA 50", color=color.new(color.orange, 0), linewidth=1, force_overlay=true)
+
 // ─── Scale anchor ────────────────────────────────────────────────────────────
 plot(close, "Scale anchor", color=color.new(color.gray, 100), editable=false, display=display.pane, force_overlay=true)
 
+// ─── Status table (v14): the conditions you couldn't see, live ───────────────
+var table statusTbl = showStatusTbl ? table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.new(color.gray, 60)) : na
+
+f_tRow(_row, _name, _val, _valCol) =>
+    table.cell(statusTbl, 0, _row, _name, text_color=color.new(color.gray, 20), text_halign=text.align_left,  text_size=size.small)
+    table.cell(statusTbl, 1, _row, _val,  text_color=_valCol,                   text_halign=text.align_right, text_size=size.small)
+
+if showStatusTbl and not na(statusTbl) and barstate.islast
+    // Long order row
+    longOrdTxt = boArmed ? str.tostring(boOrderPx, format.mintick) + " · " + str.tostring(math.max(nz(boBarsLeft), 0)) + "b left" : "—"
+    longOrdCol = not boArmed ? color.new(color.gray, 40) : posOpen ? color.orange : color.green
+    f_tRow(0, "Long order",  longOrdTxt, longOrdCol)
+    // Short order row
+    shortOrdTxt = soArmed ? str.tostring(soOrderPx, format.mintick) + " · " + str.tostring(math.max(nz(soBarsLeft), 0)) + "b left" : "—"
+    shortOrdCol = not soArmed ? color.new(color.gray, 40) : posOpen ? color.orange : color.green
+    f_tRow(1, "Short order", shortOrdTxt, shortOrdCol)
+    // Position row (flat = new fills possible)
+    posTxt = inLong ? "LONG — fills blocked" : inShort ? "SHORT (" + (na(shortType) ? "?" : shortType) + ") — fills blocked" : "flat — orders live"
+    posCol = posOpen ? color.orange : color.green
+    f_tRow(2, "Position", posTxt, posCol)
+    // Live break-bar volume vs threshold (updates while the bar builds)
+    volRatio = not na(avgVol50[1]) and avgVol50[1] > 0 ? volume / avgVol50[1] : na
+    volTxt   = not useBOVol ? "check off" : na(volRatio) ? "n/a" : str.tostring(volRatio, "#.##") + "× / need " + str.tostring(boVolMult, "#.#") + "× " + (volMeets ? "✓" : "⚠")
+    volCol   = not useBOVol ? color.new(color.gray, 40) : volMeets ? color.green : color.orange
+    f_tRow(3, "Bar volume", volTxt, volCol)
+    // Entry mode
+    f_tRow(4, "Entry mode", waitClose ? "wait for bar close" : "stop @ pivot", color.new(color.silver, 0))
+
 // ─── Alerts ──────────────────────────────────────────────────────────────────
-alertcondition(boSetup,    "QM: long order armed",   "Resting buy-stop parked at the pivot high")
+alertcondition(boSetup,    "QM: long order armed",   "Resting buy-stop parked at the pivot high — place your stop order at the green line")
 alertcondition(soSetup,    "QM: short order armed",  "Resting sell-stop parked at the base low")
 alertcondition(sigBuyBO,   "QM: BUY breakout",       "Resting buy-stop filled — price broke above the pivot")
 alertcondition(sigBuyORB,  "QM: BUY opening range",  "Price broke above the opening-range high")
@@ -426,5 +518,6 @@ alertcondition(sigShortBO, "QM: SHORT breakdown",    "Resting sell-stop filled �
 alertcondition(sigCoverBO, "QM: cover short break",  "Short breakdown covered — stop, target/time, or close back above the trail MA")
 alertcondition(sigPartial, "QM: partial profit",     "Partial point — stop moves to breakeven")
 alertcondition(sigExit,    "QM: exit long",          "Long exit — stop hit or close below the trail MA")
+alertcondition(sigWeakBrk, "QM: weak-volume break",  "Break filled on below-threshold volume — consider tightening the stop or scratching the trade")
 alertcondition(sigShort,   "QM: SHORT first red bar","Parabolic short trigger (first red bar)")
 alertcondition(sigCover,   "QM: cover parabolic",    "Parabolic short covered — stop, bounce or time")

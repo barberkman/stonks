@@ -1552,6 +1552,404 @@ class ManipulationModel:
         return model
 
 
+# ---------------------------------------------------------------------------
+# Qullamaggie momentum swing — the pine's long breakout, as a second model.
+#
+# Port of Setup 1 ("BO") from app/pines/qullamaggie_momentum_swing.pine (v15).
+# Nothing here touches ManipulationModel; the two share only the panel-packing
+# helpers above.
+#
+# The pine's breakout is a resting buy-stop parked at a pivot high, armed while a
+# flag is intact and good for `order_bars` bars. That level is knowable *before*
+# price trades through it, which is the whole reason this model exists: a caller
+# can park a real stop order in advance instead of reacting to the break.
+#
+# Deliberately NOT reusing `_panel` / `_packed_panel`: those apply bist's row
+# drops (`_drop_unusable`) and compute `_limit_hit` off BIST's price band, none of
+# which belongs in a momentum-breakout model. The row drops would shift the base
+# window and the order timer relative to the pine.
+# ---------------------------------------------------------------------------
+
+def _qm_sma(x, n, chunk=256):
+    """Rolling mean, window-invariant and correctly rounded — pine's `ta.sma`.
+
+    Not `x.rolling(n).mean()`, and not `_wsum(x, n, n) / n` either. The reason is
+    the one `_wsum`'s docstring gives, only sharper here. ManipulationModel
+    survives pandas' incremental accumulation because `_design_matrix` narrows to
+    float32 at the last step and rounds the drift away. This model emits booleans:
+    `close > sma20` and `sma10 > sma20` are strict comparisons that flip
+    discretely, so a last-bit difference becomes a *different armed order*.
+
+    And the ties are not hypothetical. On BIST dailies, where a 20-bar mean of
+    cent-quoted prices lands exactly on a cent often enough to matter, the true
+    value routinely equals the price being compared against — at which point the
+    answer is decided entirely by summation error. Measured over ~9,000 arm
+    events on 40 symbols, pandas' running sum and numpy's pairwise sum each
+    landed ~4e-16 off the true mean on three bars apiece, and each of those six
+    flipped a gate.
+
+    So the window is summed with Neumaier compensation: each window is summed
+    independently in a fixed order (window-invariant, unlike a running sum) and
+    the result is correctly rounded, so an exact tie compares equal instead of
+    resolving on noise. The loop runs over the window length, not the panel.
+
+    Requiring the whole window to be finite reproduces `ta.sma`'s na-until-n.
+    """
+    a = x.to_numpy(dtype=float)
+    T, N = a.shape
+    padded = np.vstack([np.full((n - 1, N), np.nan), a])
+    out = np.full((T, N), np.nan)
+
+    for lo in range(0, T, chunk):
+        hi = min(lo + chunk, T)
+        v = np.lib.stride_tricks.sliding_window_view(
+            padded[lo:hi + n - 1], n, axis=0)               # (hi-lo, N, n)
+        total = np.zeros(v.shape[:2])
+        comp = np.zeros(v.shape[:2])
+        for k in range(n):
+            term = np.nan_to_num(v[..., k])
+            moved = total + term
+            # the lost low-order bits go to `comp`, whichever operand dominates
+            comp += np.where(np.abs(total) >= np.abs(term),
+                             (total - moved) + term, (term - moved) + total)
+            total = moved
+        out[lo:hi] = np.where(np.isfinite(v).all(axis=2),
+                              (total + comp) / float(n), np.nan)
+
+    return pd.DataFrame(out, index=x.index, columns=x.columns)
+
+
+def _qm_extremes(H, L, w, chunk=128):
+    """(base_high, since_peak, pull_low) over a w-bar window. Pine's tie=recent.
+
+    Three pine series in one pass, because they share a window:
+
+        baseHigh   = ta.highest(high, w)
+        sincePk    = -ta.highestbars(high, w)          # 0 = the peak is this bar
+        pullLow    = ta.lowest(low, math.max(sincePk, 1))
+
+    The third is the awkward one — its window *length* depends on the second, so
+    it is a per-row variable-length reduction. But it is always a suffix of the
+    same w-bar window, so reversing the strided view once (index 0 = the current
+    bar) turns it into a cumulative minimum indexed at `sincePk - 1`. That window
+    spans [i - sincePk + 1, i], which correctly excludes the peak bar itself.
+
+    `argmax` returns the *first* maximal index, and on the reversed view that is
+    the most recent — TradingView's `highestbars` tie-break is undocumented, and
+    most-recent is what `tools/qm_pine_ref.py` uses by default, so a diff against
+    it is apples to apples. The choice is not cosmetic: ties on highs are common
+    at round numbers, and the other rule moves both the age gate and the depth
+    gate, in opposite directions, on exactly the bars that decide a signal.
+
+    Chunked like `_wsum` and `_moments`; smaller chunk because the cumulative
+    minimum materialises a second (chunk, N, w) array.
+    """
+    h = H.to_numpy(dtype=float)
+    l = L.to_numpy(dtype=float)
+    T, N = h.shape
+    pad = np.full((w - 1, N), np.nan)
+    ph = np.vstack([pad, h])
+    pl = np.vstack([pad, l])
+
+    base_high = np.full((T, N), np.nan)
+    since_peak = np.zeros((T, N))
+    pull_low = np.full((T, N), np.nan)
+
+    for lo in range(0, T, chunk):
+        hi = min(lo + chunk, T)
+        vh = np.lib.stride_tricks.sliding_window_view(
+            ph[lo:hi + w - 1], w, axis=0)[..., ::-1]     # (hi-lo, N, w), newest first
+        vl = np.lib.stride_tricks.sliding_window_view(
+            pl[lo:hi + w - 1], w, axis=0)[..., ::-1]
+        # pine's ta.* are na until the window is full, and on the packed view a
+        # short column's trailing slots are NaN, so this also kills dead region.
+        full = np.isfinite(vh).all(axis=2)
+        idx = np.argmax(np.nan_to_num(vh, nan=-np.inf), axis=2)
+        cum_min = np.minimum.accumulate(np.nan_to_num(vl, nan=np.inf), axis=2)
+        suffix = np.take_along_axis(
+            cum_min, np.maximum(idx - 1, 0)[..., None], axis=2)[..., 0]
+
+        base_high[lo:hi] = np.where(full, np.max(
+            np.nan_to_num(vh, nan=-np.inf), axis=2), np.nan)
+        since_peak[lo:hi] = np.where(full, idx, np.nan)
+        pull_low[lo:hi] = np.where(full, suffix, np.nan)
+
+    frame = lambda a: pd.DataFrame(a, index=H.index, columns=H.columns)
+    return frame(base_high), frame(since_peak), frame(pull_low)
+
+
+def _qm_register(bo_setup, entry_level, order_bars):
+    """(armed, level, bars_left) — pine's boArmed / boOrderPx / boArmedBar.
+
+    The pine is stateful here, but only nominally: all three variables are
+    assigned in exactly one place (pine:217-220), unconditionally, on every bar
+    `boSetup` holds. So the arm is a bounded-window function after all — at bar i
+    it is live iff some j <= i had a setup with i - j <= order_bars, carrying
+    `entry_level[j]` for the *largest* such j. That is why this model needs no
+    `ScoringState` analogue.
+
+    Two boundaries worth stating, both easy to get backwards:
+
+     * Expiry is pine's `bar_index - boArmedBar > boOrderBars` (pine:221), so the
+       order is live on order_bars + 1 bars and `bars_left == 0` is still
+       fillable. It is not "cancelled with zero bars left".
+     * Re-arming overwrites the level downward as happily as upward: `baseHigh`
+       falls when the old peak slides out of the base window, and the pine keeps
+       no memory of the higher level.
+    """
+    setup = bo_setup.to_numpy()
+    level = entry_level.to_numpy(dtype=float)
+    rows = np.arange(len(setup))[:, None]
+
+    last = np.maximum.accumulate(np.where(setup, rows, -1), axis=0)
+    age = rows - last
+    armed = (last >= 0) & (age <= order_bars)
+    live = np.take_along_axis(level, np.maximum(last, 0), axis=0)
+
+    frame = lambda a: pd.DataFrame(a, index=bo_setup.index,
+                                   columns=bo_setup.columns)
+    return (frame(armed),
+            frame(np.where(armed, live, np.nan)),
+            frame(np.where(armed, order_bars - age, np.nan)))
+
+
+class QullamaggieSwingModel:
+    """The pine's long momentum breakout, emitted before it triggers.
+
+    Port of Setup 1 from `app/pines/qullamaggie_momentum_swing.pine` (v15). Only
+    that setup: no opening-range breakout, no short breakdown, no episodic pivot,
+    no parabolic short, and none of the pine's trade management.
+
+    Same client surface as `ManipulationModel` minus everything training-related,
+    because a rule model has nothing to fit:
+
+        model = QullamaggieSwingModel()
+        candidates = model.signal(ctx.history(QullamaggieSwingModel.LOOKBACK))
+
+    `signal` returns one row per *live resting order* — the point of the port. A
+    caller reads `level` and parks a buy-stop there; `bars_left` says how long the
+    pine would leave it sitting.
+
+    Three things a consumer has to know:
+
+     1. **Position gating is dropped.** The pine's `boSetup` (pine:171) carries
+        `not inLong and not inShort`, so its arm state is a function of the
+        position's whole lifetime — unbounded, and invisible to a windowed model.
+        Everything here is computed as if flat. `bo_setup` is emitted per bar
+        precisely so a caller that wants pine fidelity can run the three-line
+        register from pine:217-223 against its own book. The `armed` / `level` /
+        `bars_left` columns are a convenience that is exact only while nothing is
+        held; they cannot be corrected by ANDing your own flat state onto them,
+        because the timer's *origin* is position-gated too.
+     2. **`stop` and `target` are planning numbers.** The pine computes both from
+        the realised fill, `max(open, level)`, and optionally tightens the stop to
+        the entry bar's low (pine:361-365). Neither is knowable while the order is
+        still resting, so these are anchored to `level`. A gap through the level
+        moves the real stop.
+     3. **Volume never gates.** Pine v15 made the break-bar volume check
+        information-only — `boFill` (pine:348) has no volume term and the tag is
+        applied after the fill (pine:376-378). `vol_ratio` and `vol_meets` are
+        reported and nothing is filtered on them. Note `tools/qm_pine_ref.py`
+        still ANDs volume into its fill: that file targets v12, so diff against it
+        with `--use-bo-vol false`.
+
+    Unlike `ManipulationModel` this model carries no cross-tick state, so a caller
+    may score any bar without having scored the ones before it.
+    """
+
+    # Deep enough for one row of the deepest series plus a full order life. At
+    # defaults the binding constraint is avgVol50[1] (51 bars), not the 40-bar
+    # base — and only because the informational volume ratio needs it:
+    #   max(sma20=20, mom_len+1=25, base_max_len=40, avgVol50[1]=51) + 10 = 61
+    # A maxed base (pine caps it at 80) needs 90. The headroom is slack: this is
+    # a count of *dates*, while the register runs on traded bars, so a symbol with
+    # missed sessions has fewer bars than the window has rows. `__init__` checks
+    # the configured params actually fit rather than trusting this comment.
+    LOOKBACK = 120
+
+    def __init__(self, *, min_price=5.0, min_avg_vol=0.0, adr_len=20,
+                 min_adr=0.1, mom_len=24, min_gain=0.5, require_mas=True,
+                 require_ma_stack=False, base_max_len=40, min_base_bars=3,
+                 max_depth=40.0, use_vol_dry=False, vol_dry_ratio=1.0,
+                 entry_buffer_bps=5.0, order_bars=10, bo_vol_mult=1.3,
+                 adr_stop_mult=1.0, target_rr=2.0):
+        # Pine's inputs, same defaults, with one deviation: the entry buffer is
+        # in basis points rather than `bufTicks * syminfo.mintick`. There is no
+        # mintick in the engine and a tick is not scale-free across a 4-lira and
+        # a 400-lira name; `qmmomentumswing.py` made the same substitution.
+        self.min_price = float(min_price)
+        self.min_avg_vol = float(min_avg_vol)
+        self.adr_len = int(adr_len)
+        self.min_adr = float(min_adr)
+        self.mom_len = int(mom_len)
+        self.min_gain = float(min_gain)
+        self.require_mas = bool(require_mas)
+        self.require_ma_stack = bool(require_ma_stack)
+        self.base_max_len = int(base_max_len)
+        self.min_base_bars = int(min_base_bars)
+        self.max_depth = float(max_depth)
+        self.use_vol_dry = bool(use_vol_dry)
+        self.vol_dry_ratio = float(vol_dry_ratio)
+        self.entry_buffer_bps = float(entry_buffer_bps)
+        self.order_bars = int(order_bars)
+        self.bo_vol_mult = float(bo_vol_mult)
+        self.adr_stop_mult = float(adr_stop_mult)
+        self.target_rr = float(target_rr)
+
+        if self.min_base_bars < 2:
+            # pine's minval (pine:67), and load-bearing: min_base_bars >= 2 with
+            # the most-recent tie-break is what makes high[j] < entry_level[j] on
+            # an arming bar, so an order can never arm and fill on the same bar.
+            raise ValueError("min_base_bars must be at least 2")
+        if self.depth() > self.LOOKBACK:
+            raise ValueError(
+                f"these params need {self.depth()} bars but LOOKBACK is "
+                f"{self.LOOKBACK}; lower base_max_len/mom_len/adr_len/order_bars")
+
+    def depth(self):
+        """Bars of history one scored row needs, including a full order life."""
+        series = [20, 51, self.adr_len, self.mom_len + 1, self.base_max_len]
+        if self.require_ma_stack:
+            series.append(50)
+        if self.use_vol_dry:
+            series.append(50)
+        return max(series) + self.order_bars
+
+    # -- panel --------------------------------------------------------------
+
+    @staticmethod
+    def _panel(source):
+        """Bars -> {field: (dates, symbols)}. Accepts a window, frame or panel.
+
+        Not `_panel`: that runs bist's `_drop_unusable`, and dropping rows here
+        would shift both the base window and the order timer off the pine's.
+        """
+        if isinstance(source, dict):
+            return source
+        frame = source if isinstance(source, pd.DataFrame) else pd.DataFrame({
+            "symbol": list(source.symbol),
+            "timestamp": np.asarray(source.timestamp),
+            **{f: np.asarray(getattr(source, f), dtype=float) for f in FIELDS},
+        })
+        return {f: frame.pivot(index="timestamp", columns="symbol", values=f)
+                .sort_index() for f in FIELDS}
+
+    # -- signal -------------------------------------------------------------
+
+    def setups(self, window):
+        """Per-bar, per-symbol frames for the whole window.
+
+        Returns a dict of (dates x symbols) DataFrames:
+
+            bo_setup     pine's boSetup, position gating removed
+            entry_level  the level an arm on that bar would carry
+            armed        is a resting order live on this bar
+            level        that order's price
+            bars_left    bars before it expires; 0 is still fillable
+            stop         planning stop, anchored to `level` — see caveat 2
+            target       planning target at `target_rr` R
+            adr_pct      pine's adrPct, the stop's basis
+            vol_ratio    volume / avgVol50[1], informational
+            vol_meets    vol_ratio >= bo_vol_mult, informational
+
+        Everything runs on the *packed* view, so a window covers a symbol's last
+        N **traded** bars the way pine's `bar_index` counts chart bars. On a dated
+        panel a symbol that missed three sessions would expire its order three
+        calendar rows early.
+        """
+        panel = self._panel(window)
+        index = panel["close"].index
+        printed = panel["close"].notna()
+        order = _pack_order(printed)
+        O, H, L, C, V = (_pack(panel[f], order) for f in FIELDS)
+
+        # ── gates (pine:117-142) ──
+        sma10 = _qm_sma(C, 10)
+        sma20 = _qm_sma(C, 20)
+        adr_pct = _qm_sma(100.0 * (H / L - 1.0), self.adr_len)
+        avg_vol20 = _qm_sma(V, 20)
+        avg_vol50 = _qm_sma(V, 50)
+        gain_pct = 100.0 * (C / C.shift(self.mom_len) - 1.0)
+
+        liq_ok = (C >= self.min_price) & (avg_vol20 >= self.min_avg_vol)
+        adr_ok = adr_pct >= self.min_adr
+        # A comparison against NaN is False in pandas, which is pine's `na >= x`.
+        ma_ok_up = ((C > sma20) & (sma10 > sma20)) if self.require_mas else True
+        if self.require_ma_stack:
+            sma50 = _qm_sma(C, 50)
+            stack_up_ok = sma50.notna() & (sma10 > sma20) & (sma20 > sma50)
+        else:
+            stack_up_ok = True
+        vol_dry_ok = ((_qm_sma(V, 5) < self.vol_dry_ratio * avg_vol50)
+                      if self.use_vol_dry else True)
+        universe_up = (liq_ok & adr_ok
+                       & (gain_pct >= self.min_gain) & ma_ok_up & stack_up_ok)
+
+        # ── base geometry and the armed level (pine:165-171) ──
+        base_high, since_peak, pull_low = _qm_extremes(H, L, self.base_max_len)
+        retrace_pct = 100.0 * (base_high - pull_low) / base_high
+        flag_up_ok = ((since_peak >= self.min_base_bars)
+                      & (retrace_pct <= self.max_depth) & vol_dry_ok)
+        entry_level = base_high * (1.0 + self.entry_buffer_bps / 10_000.0)
+        bo_setup = universe_up & flag_up_ok & base_high.notna()
+
+        armed, level, bars_left = _qm_register(bo_setup, entry_level,
+                                               self.order_bars)
+
+        # The pine's stop is ADR-based off the realised fill and then floored at
+        # 0.1% of it (pine:362-364); anchored to `level` here, because the fill is
+        # unknown while the order rests. `use_lod_stop` cannot apply for the same
+        # reason. Computed on the packed view like everything else — on the dated
+        # panel a single missed session NaNs the whole ADR window.
+        stop = np.minimum(level * (1.0 - self.adr_stop_mult * adr_pct / 100.0),
+                          level * 0.999)
+        target = level + self.target_rr * (level - stop)
+
+        # ── informational volume, never a gate (pine:146, v15) ──
+        prev = avg_vol50.shift(1)
+        vol_ratio = (V / prev).where(prev > 0)
+        vol_meets = (vol_ratio >= self.bo_vol_mult).fillna(False)
+
+        out = {
+            "bo_setup": bo_setup, "entry_level": entry_level.where(bo_setup),
+            "armed": armed, "level": level, "bars_left": bars_left,
+            "stop": stop, "target": target,
+            "adr_pct": adr_pct, "vol_ratio": vol_ratio, "vol_meets": vol_meets,
+        }
+        return {k: _unpack(v.astype(float), order, index, printed)
+                for k, v in out.items()}
+
+    def signal(self, window):
+        """Live resting orders on the window's last bar, one row each.
+
+        Columns: symbol, setup, side, action, level, stop, target, bars_left,
+        bo_setup, vol_ratio, vol_meets. Empty (with those columns) when nothing
+        is armed, so a caller can iterate unconditionally.
+        """
+        frames = self.setups(window)
+        last = {k: v.iloc[-1].to_numpy(dtype=float) for k, v in frames.items()}
+        live = np.nan_to_num(last["armed"]) > 0.0
+
+        def flag(key):
+            return np.nan_to_num(last[key])[live] > 0.0
+
+        return pd.DataFrame({
+            "symbol": np.asarray(frames["armed"].columns)[live],
+            "setup": "BO",
+            "side": "long",
+            "action": "arm",
+            "level": last["level"][live],
+            "stop": last["stop"][live],
+            "target": last["target"][live],
+            "bars_left": last["bars_left"][live],
+            "bo_setup": flag("bo_setup"),
+            "vol_ratio": last["vol_ratio"][live],
+            "vol_meets": flag("vol_meets"),
+        }, columns=["symbol", "setup", "side", "action", "level", "stop",
+                    "target", "bars_left", "bo_setup", "vol_ratio",
+                    "vol_meets"]).reset_index(drop=True)
+
+
 class AlgoTradeStrategy(stonks.Strategy):
     """Long swings on the model's two up heads, exited on a trend break.
 
