@@ -36,6 +36,9 @@ from algo_trade import (
     AlgoTradeStrategy,
     Head,
     ManipulationModel,
+    QullamaggieSwingModel,
+    _qm_extremes,
+    _qm_sma,
 )
 
 HEAD_BY_NAME = {h.name: h for h in HEADS}
@@ -737,6 +740,18 @@ def feed(timestamps, symbols=SYMBOLS, price=100.0, paths=None):
     return bars
 
 
+def _universe_bars(rows, ticks_after_cutoff=1, train_end=TRAIN_END):
+    """A flat feed covering exactly the symbols in `rows`.
+
+    The default feed carries SYMBOLS; the slice-width tests need a universe big
+    enough for a percentage of it to be more than one name.
+    """
+    before = sessions(LOOKBACK, start="2023-10-02")
+    before = [t for t in before if t <= train_end][-LOOKBACK:]
+    after = [train_end + (i + 1) * 86_400_000 for i in range(ticks_after_cutoff)]
+    return feed(before + after, symbols=list(rows))
+
+
 def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
               train_end=TRAIN_END, paths=None, **overrides):
     """A strategy driven to just past the cutoff, with a stub model attached.
@@ -764,6 +779,12 @@ def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
     stub = StubModel(signal_frame(rows), train_end=train_end)
     with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
         strategy.on_start(ctx)
+    # Most tests here are about ordering, sizing or exits, not about how wide the
+    # entry slice is — and with a five-symbol universe the production 0.5% would
+    # admit exactly one name and mask all of it. Widening to the whole universe
+    # keeps those tests measuring what they claim to; the slice width has its own
+    # tests below.
+    overrides.setdefault("top_pct", 100.0)
     for name, value in overrides.items():
         setattr(strategy, name, value)
 
@@ -852,28 +873,47 @@ def test_enters_the_qualifying_names():
     assert strategy.book == set(SYMBOLS)
 
 
-@pytest.mark.parametrize("veto,expected", [
-    ({"up_h5": 2.9}, "up_h5 below h5_min"),
-    ({"up_h10": 1.9}, "up_h10 below h10_min"),
-])
-def test_each_up_gate_vetoes_independently(veto, expected):
-    """Both up heads must clear their own threshold. bist's two-head conjunction.
+def test_the_slice_is_a_share_of_the_scored_universe():
+    """`top_pct` selects the day's best N, not everything above a fixed sigma.
 
-    The gates are pinned here rather than inherited from the tunables block, so
-    the veto values stay just under them however the block is tuned.
+    bist gates on absolute sigmas; this takes a cross-sectional slice instead,
+    because the heads are a ranker and a fixed threshold both discards the
+    ranking and drifts in meaning with every retrain. See ENTRY_TOP_PCT.
     """
-    rows = dict(ALL_PASS)
-    fields = [h.name for h in HEADS]
-    values = list(rows["AAA"])
-    for key, value in veto.items():
-        values[fields.index(key)] = value
-    rows["AAA"] = tuple(values)
+    rows = {f"S{i:02d}": (10.0 - i, 9.0 - i, 0.1) for i in range(20)}
+    for pct, expected in ((100.0, 20), (50.0, 10), (25.0, 5), (5.0, 1)):
+        ctx, strategy, _ = start_run(rows, bars=_universe_bars(rows), top_pct=pct,
+                                     max_positions=99)
+        drive(strategy, ctx)
+        assert len(buys(ctx)) == expected, f"top_pct={pct}"
+        # and it is the TOP of the ranking, not an arbitrary subset
+        assert [o.symbol for o in buys(ctx)] == [f"S{i:02d}" for i in range(expected)]
 
-    ctx, strategy, _ = start_run(rows, h5_min=3.0, h10_min=2.0)
+
+def test_a_slice_narrower_than_one_name_still_takes_one():
+    """int() truncation must not silently disable the strategy on a small universe."""
+    rows = {s: (4.0, 3.0, 0.1) for s in SYMBOLS}
+    ctx, strategy, _ = start_run(rows, top_pct=0.5)
     drive(strategy, ctx)
-    entered = {o.symbol for o in buys(ctx)}
-    assert "AAA" not in entered, expected
-    assert entered == set(SYMBOLS) - {"AAA"}
+    assert len(buys(ctx)) == 1
+
+
+def test_the_slice_is_measured_before_held_names_are_removed():
+    """Otherwise the gate quietly widens as the book fills.
+
+    Ranking the *unheld* remainder would promote the next-best candidate into the
+    slice every time a name is held, so a nearly-full book would end up buying
+    names the gate was built to exclude. The cut is taken against the whole
+    scored universe and the book applied afterwards.
+    """
+    rows = {f"S{i:02d}": (10.0 - i, 9.0 - i, 0.1) for i in range(20)}
+    ctx, strategy, _ = start_run(rows, bars=_universe_bars(rows), top_pct=25.0)
+    held = {f"S{i:02d}" for i in range(5)}            # the whole top slice
+    strategy.book = set(held)
+    for symbol in held:                              # the broker must agree, or
+        ctx.positions[symbol] = FakePosition(quantity=1.0, price=100.0)
+    drive(strategy, ctx)
+    assert buys(ctx) == [], "the slice is exhausted by held names, not refilled"
 
 
 def test_the_down_head_never_vetoes():
@@ -888,8 +928,24 @@ def test_the_down_head_never_vetoes():
     assert "AAA" in {o.symbol for o in buys(ctx)}
 
 
-def test_no_entries_when_nothing_qualifies():
-    ctx, strategy, _ = start_run({s: (1.0, 1.0, 0.1) for s in SYMBOLS})
+def test_the_percentile_gate_never_sits_out():
+    """A behaviour change worth pinning: there is no longer a "nothing qualifies".
+
+    bist's absolute gate could return an empty day — every name below 3.0 sigma
+    meant no trade. A cross-sectional slice always has a top, so the strategy
+    takes its best available name however weak the whole cohort is, and cannot
+    step aside in a bad tape. Whatever regime protection the strategy has now
+    comes from the exit, not the entry.
+    """
+    ctx, strategy, _ = start_run({s: (0.01, 0.01, 0.1) for s in SYMBOLS},
+                                 top_pct=25.0)
+    drive(strategy, ctx)
+    assert len(buys(ctx)) == 1, "weak scores still produce the day's best pick"
+
+
+def test_nothing_is_entered_when_the_model_scores_nobody():
+    """NaN sigmas are the model declining to score, not a weak score."""
+    ctx, strategy, _ = start_run({s: (np.nan, np.nan, np.nan) for s in SYMBOLS})
     drive(strategy, ctx)
     assert ctx.orders == []
 
@@ -916,17 +972,29 @@ def test_ties_break_on_symbol():
     assert [o.symbol for o in buys(ctx)] == ["AAA", "BBB", "CCC", "DDD", "EEE"]
 
 
-def test_there_is_no_position_cap():
-    """bist caps one position per symbol and nothing else."""
-    many = [f"S{i:02d}" for i in range(30)]
-    before = sessions(LOOKBACK, start="2023-10-02")
-    before = [t for t in before if t <= TRAIN_END][-LOOKBACK:]
-    bars = feed(before + [TRAIN_END + 86_400_000], symbols=many)
-    rows = {s: (4.0, 3.0, 0.1) for s in many}
+def test_the_book_is_capped_at_max_positions():
+    """bist caps nothing, which only survives because its gate rarely fires.
 
-    ctx, strategy, _ = start_run(rows, bars=bars)
+    A percentile gate fires every session, so an uncapped book would exhaust
+    cash within a few entries and everything after would be a broker rejection.
+    """
+    rows = {f"S{i:02d}": (10.0 - i * 0.1, 9.0 - i * 0.1, 0.1) for i in range(30)}
+    ctx, strategy, _ = start_run(rows, bars=_universe_bars(rows),
+                                 max_positions=4)
     drive(strategy, ctx)
-    assert len(buys(ctx)) == len(many)
+    assert len(buys(ctx)) == 4, "only the free slots are filled"
+    assert [o.symbol for o in buys(ctx)] == [f"S{i:02d}" for i in range(4)]
+
+
+def test_a_full_book_takes_nothing():
+    rows = {s: (4.0, 3.0, 0.1) for s in SYMBOLS}
+    ctx, strategy, _ = start_run(rows, ticks_after_cutoff=2, max_positions=2)
+    drive(strategy, ctx)
+    fill_entries(ctx)
+    assert len(buys(ctx)) == 2
+
+    drive(strategy, ctx)
+    assert len(buys(ctx)) == 2, "no slot free, so no new entry"
 
 
 def test_every_entry_carries_a_stop_and_no_target():
@@ -1048,16 +1116,34 @@ def test_ma_exit_only_sells_a_position_the_broker_reports():
     assert sells(ctx) == []
 
 
-def test_entry_size_is_a_share_of_free_cash():
-    """bist commits 5% of available balance per name."""
-    ctx, strategy, _ = start_run(cash=1_000.0, position_pct=5.0, cash_buffer=0.02)
+def test_entry_size_is_equity_over_the_position_cap():
+    """Full deployment lands exactly at the cap, never before it."""
+    ctx, strategy, _ = start_run({"AAA": (4.0, 3.0, 0.1)}, cash=1_000.0,
+                                 max_positions=4, cash_buffer=0.02)
     drive(strategy, ctx)
 
     orders = buys(ctx)
-    assert len(orders) == len(SYMBOLS)
-    budget = 1_000.0 * 0.98 * 0.05
-    for order in orders:
-        assert order.quantity == pytest.approx(budget / 100.0)
+    assert len(orders) == 1
+    assert orders[0].quantity == pytest.approx(1_000.0 / 4 / 100.0)
+
+
+def test_a_bar_wanting_several_names_cannot_order_more_cash_than_it_has():
+    """The cash leg binds when one bar fills many slots at once.
+
+    equity/max_positions alone would commit 5 x 25% of a 4-slot book on a bar
+    that picks five names, and the broker rejects — never queues — an order it
+    cannot fund at fill time.
+    """
+    ctx, strategy, _ = start_run(cash=1_000.0, max_positions=4, cash_buffer=0.02)
+    drive(strategy, ctx)
+
+    orders = buys(ctx)
+    assert len(orders) == 4, "five names qualify but only four slots exist"
+    committed = sum(o.quantity * 100.0 for o in orders)
+    assert committed <= 1_000.0 * 0.98 + 1e-9, f"committed {committed}"
+    # the cash leg is the binding one here: equity/max_positions alone would be
+    # 250 a name, and four of those overdraw the 980 that is actually spendable.
+    assert orders[0].quantity == pytest.approx(1_000.0 * 0.98 / 4 / 100.0)
 
 
 def test_held_names_are_not_re_entered():
@@ -1108,14 +1194,17 @@ def test_limit_locked_reads_this_ticks_return():
     (1, {"BBB", "CCC", "DDD", "EEE"}),
     (0, {"AAA", "BBB", "CCC", "DDD", "EEE"}),
 ])
-def test_the_limit_locked_gate_is_opt_in(skip, expected):
-    """A close at the +10% band cannot be bought at tomorrow's open — but bist
-    buys it anyway, and reproducing bist is the point.
+def test_the_limit_locked_gate_skips_the_name_without_backfilling(skip, expected):
+    """A close at the +10% band cannot be bought at tomorrow's open.
 
-    Measured on the real artifact: of the 14 signals bist's gate produces over the
-    2025-2026 out-of-sample stretch, all 14 closed at the band on the signal bar.
-    So `skip_limit_locked=1` is not a marginal filter, it empties the strategy —
-    which is itself the most useful thing the port has to say about these rules.
+    On by default now. bist's backtest disables it (LU_OVERRIDE), and while the
+    gate was bist's absolute sigma that mattered enormously — 77 of its 92
+    out-of-sample signals closed at the band, and refusing them left 15 trades.
+    The percentile gate makes it affordable, and measurably better.
+
+    Note the skipped name is *not* replaced by the next-best candidate: it
+    consumed its place in the slice. Backfilling would let a locked day quietly
+    reach further down the ranking than the gate allows.
     """
     # One out-of-sample bar, and it is the locked one, so AAA never gets an
     # unlocked tick on which it could have been bought first. The previous close
@@ -1124,6 +1213,34 @@ def test_the_limit_locked_gate_is_opt_in(skip, expected):
                                  skip_limit_locked=skip)
     drive(strategy, ctx)
     assert {o.symbol for o in buys(ctx)} == expected
+
+
+def test_a_token_sized_entry_is_skipped_rather_than_placed():
+    """Cash still tied up in an unsettled sale must not buy a dust position.
+
+    The moving-average exit settles at the next open, so on the bar it is placed
+    the proceeds do not exist yet. Sizing off the remaining cash would buy a
+    token quantity that holds a slot for the whole trade and contributes nothing
+    — the first engine run produced four, the smallest 0.0009 lira.
+    """
+    # FakeContext reports equity == cash, but the situation being modelled is
+    # equity held in positions with the cash leg still in flight, so equity is
+    # pinned high while cash is drained.
+    def run_with(cash):
+        ctx, strategy, _ = start_run({"AAA": (4.0, 3.0, 0.1)}, max_positions=4)
+        ctx._cash = cash
+        ctx.equity = lambda: 1_000.0        # target slot = 250
+        drive(strategy, ctx)
+        return buys(ctx)
+
+    assert run_with(1.0) == [], "1 lira against a 250 slot is not a position"
+    # ...and a budget that is merely reduced, not vestigial, still trades.
+    assert len(run_with(200.0)) == 1
+
+
+def test_the_limit_locked_gate_is_on_by_default():
+    """The one bist default this port overrides on measured grounds."""
+    assert AlgoTradeStrategy.skip_limit_locked == 1
 
 
 def test_tail_closes_slices_each_symbol_independently():
@@ -1165,9 +1282,8 @@ def test_entries_are_logged_with_the_signal_that_produced_them(capsys):
     the model, which is the whole point of printing the raw sigmas rather than
     just the composite.
     """
-    rows = dict(ALL_PASS)
-    rows["AAA"] = (4.0, 3.0, 2.5)
-    ctx, strategy, _ = start_run(rows, cash=1_000.0, position_pct=5.0,
+    rows = {"AAA": (4.0, 3.0, 2.5)}
+    ctx, strategy, _ = start_run(rows, cash=1_000.0, max_positions=4,
                                  cash_buffer=0.02, stop_pct=10.0, exit_ma=20)
     drive(strategy, ctx)
 
@@ -1181,11 +1297,12 @@ def test_entries_are_logged_with_the_signal_that_produced_them(capsys):
     assert "h10 3.000 (+30.00%)" in line
     assert "dn 2.500" in line
     assert "composite 3.500" in line
-    assert f"qty {1_000.0 * 0.98 * 0.05 / 100.0:.6g}" in line
+    assert f"qty {1_000.0 / 4 / 100.0:.6g}" in line
 
 
 def test_nothing_is_logged_when_no_order_is_placed(capsys):
-    ctx, strategy, _ = start_run({s: (1.0, 1.0, 0.1) for s in SYMBOLS})
+    """Weak scores are no longer silent — only an unscored universe is."""
+    ctx, strategy, _ = start_run({s: (np.nan, np.nan, np.nan) for s in SYMBOLS})
     drive(strategy, ctx)
     assert capsys.readouterr().out == ""
 
@@ -1201,26 +1318,24 @@ def test_entries_are_plotted_for_all_three_heads():
 
 def test_declared_params_and_indicators():
     names = {p["name"] for p in stonks.param_specs(AlgoTradeStrategy)}
-    assert names == {"h5_min", "h10_min", "stop_pct", "exit_ma",
-                     "position_pct", "cash_buffer", "skip_limit_locked"}
+    assert names == {"top_pct", "stop_pct", "exit_ma",
+                     "max_positions", "cash_buffer", "skip_limit_locked"}
     assert {i["name"] for i in stonks.indicator_specs(AlgoTradeStrategy)} == {
         "up_h5", "up_h10", "dn_h5"}
 
 
-def test_entry_gates_are_absolute_sigmas_not_percentiles():
-    """bist publishes h5 >= 3.0 / h10 >= 2.0, and the block is expected to drift
-    from those — tuning is what it is for. What must not drift is the *scale*.
+def test_the_entry_gate_is_a_percentage_of_the_universe():
+    """`top_pct` is a percent, not a fraction and not a sigma.
 
-    An earlier version of this port gated on percentiles of the training
-    prediction distribution, because its fit predicted roughly 4x tighter than
-    bist's. The current fit reproduces bist's scale, so these are raw sigmas: a
-    value in [0, 1] would silently read as a percentile and select nearly
-    everything.
+    All three have been the gate's units at some point in this port's life — an
+    early version used quantiles in [0, 1], bist uses raw sigmas — and each reads
+    as a plausible number in the others' scale, so a silent unit swap would
+    change what the strategy trades without failing anything else.
     """
-    for name in ("h5_min", "h10_min"):
-        value = getattr(AlgoTradeStrategy, name)
-        assert isinstance(value, float)
-        assert 1.0 < value < 10.0, f"{name}={value} is not on a sigma scale"
+    value = AlgoTradeStrategy.top_pct
+    assert isinstance(value, float)
+    assert 0.0 < value <= 100.0
+    assert value > 0.05, "a fraction in [0,1] would read as a near-empty slice"
 
 
 def test_the_stop_still_matches_the_labels_drawdown_gate():
@@ -1242,11 +1357,10 @@ def test_every_tunable_binds_to_the_block_at_the_top_of_the_module():
     ignore the block, which is the one failure this arrangement can have.
     """
     bound = {
-        "h5_min": "ENTRY_H5_MIN",
-        "h10_min": "ENTRY_H10_MIN",
+        "top_pct": "ENTRY_TOP_PCT",
         "stop_pct": "STOP_PCT",
         "exit_ma": "EXIT_MA",
-        "position_pct": "POSITION_PCT",
+        "max_positions": "MAX_POSITIONS",
         "cash_buffer": "CASH_BUFFER",
         "skip_limit_locked": "SKIP_LIMIT_LOCKED",
     }
@@ -1376,3 +1490,233 @@ def test_heads_match_bists_configuration():
     assert HEAD_BY_NAME["up_h5"] == Head("up_h5", 5, "up", -0.10)
     assert HEAD_BY_NAME["up_h10"] == Head("up_h10", 10, "up", -0.10)
     assert HEAD_BY_NAME["dn_h5"] == Head("dn_h5", 5, "dn", None)
+
+
+# ---------------------------------------------------------------------------
+# QullamaggieSwingModel — the pine's long breakout, emitted before it triggers
+#
+# The contract that matters is batch-equals-window: the model has no carried
+# state, so a bar scored from a 120-bar window must equal the same bar scored
+# from the whole panel, exactly. A stray `.rolling().mean()` anywhere in the
+# gate path breaks it, and because this model emits booleans rather than
+# float32-rounded features the breakage is a different armed order, not a
+# rounding error. Nothing else here would catch that.
+# ---------------------------------------------------------------------------
+
+def qm_bars(closes, symbol="AAA", start=0, highs=None, lows=None):
+    """Flat OHLC bars at `closes`, one per consecutive day."""
+    n = len(closes)
+    return pd.DataFrame({
+        "timestamp": pd.to_datetime(
+            [np.datetime64("2024-01-01") + np.timedelta64(start + i, "D")
+             for i in range(n)]),
+        "symbol": symbol,
+        "open": closes,
+        "high": closes if highs is None else highs,
+        "low": closes if lows is None else lows,
+        "close": closes,
+        "volume": [1_000_000.0] * n,
+    })
+
+
+def qm_setup_feed(base_bars=6, tail=0, symbol="AAA", start=0):
+    """A momentum run, a pivot high, then a tight base — enough to arm."""
+    run = list(np.linspace(10.0, 30.0, 60))
+    closes = run + [31.0] + [30.2 + 0.05 * (i % 2) for i in range(base_bars)]
+    return qm_bars(closes + [30.2] * tail, symbol=symbol, start=start)
+
+
+QM = dict(min_price=1.0, min_adr=0.0)
+
+
+def test_qm_arms_a_resting_order_after_a_base_forms():
+    model = QullamaggieSwingModel(**QM)
+    sig = model.signal(qm_setup_feed())
+    assert len(sig) == 1
+    row = sig.iloc[0]
+    assert row["setup"] == "BO" and row["side"] == "long" and row["action"] == "arm"
+    assert row["level"] == pytest.approx(31.0 * (1.0 + 5.0 / 10_000.0))
+    assert row["stop"] < row["level"] < row["target"]
+
+
+def qm_walk(n=400, seed=7, start=20.0):
+    """A cent-quoted random walk — the shape that exposes summation drift.
+
+    Smooth synthetic ramps do not: a 20-bar mean of `linspace` values never lands
+    exactly on the price it is compared against, so every gate is decided by a
+    comfortable margin and any summation gives the same answer. Real quotes are
+    multiples of 0.01, their rolling means land on a cent constantly, and there
+    the comparison is decided by the last bit. Tests that want to catch that have
+    to be built on prices of this shape.
+    """
+    rng = np.random.default_rng(seed)
+    px = np.maximum(np.round(np.cumsum(rng.normal(0.0, 0.03, n)) + start, 2), 1.0)
+    return qm_bars(list(px))
+
+
+def test_qm_rolling_mean_is_exactly_rounded():
+    """`_qm_sma` must equal the exactly-rounded window mean, not merely be close.
+
+    This is the load-bearing property, and it is not pedantry. The model emits
+    booleans — `close > sma20`, `sma10 > sma20` — and on cent-quoted prices the
+    true mean lands exactly on the compared price often enough that a last-bit
+    difference flips the gate and arms a different order. Measured against the
+    pine reference over ~9,000 arm events, pandas' running sum and numpy's
+    pairwise sum each got three bars wrong; compensated summation got none.
+
+    pandas' `.rolling(n).mean()` fails this on roughly a fifth of windows below,
+    which is exactly what makes the test worth having.
+    """
+    import math
+
+    frame = qm_walk(n=1_200)[["close"]].rename(columns={"close": 0})
+    px = frame[0].to_numpy()
+    for n in (10, 20, 50):
+        got = _qm_sma(frame, n).iloc[:, 0].to_numpy()
+        for i in range(n - 1, len(px)):
+            assert got[i] == math.fsum(px[i - n + 1:i + 1]) / n, \
+                f"n={n} row={i} is not the exactly-rounded mean"
+        assert np.isnan(got[:n - 1]).all(), "na until the window fills, like ta.sma"
+
+
+def test_qm_is_window_bounded():
+    """The contract the whole model rests on: no carried state, so a bar scored
+    from a LOOKBACK window must equal the same bar scored from the whole panel.
+
+    Built on a cent-quoted walk rather than a smooth ramp so that the gates sit
+    on real float boundaries — see `qm_walk`.
+    """
+    model = QullamaggieSwingModel(**QM)
+    feed = qm_walk(n=400)
+    whole = model.setups(feed)
+    stamps = feed["timestamp"].unique()
+    L = model.LOOKBACK
+    assert len(stamps) > L
+    assert np.nan_to_num(whole["bo_setup"].to_numpy(dtype=float)).any(), \
+        "a feed that never arms would make this test vacuous"
+
+    checked = 0
+    for i in range(L - 1, len(stamps)):
+        window = feed[(feed["timestamp"] >= stamps[i - L + 1])
+                      & (feed["timestamp"] <= stamps[i])]
+        tail = model.setups(window)
+        for key in ("bo_setup", "entry_level", "armed", "level", "bars_left"):
+            np.testing.assert_array_equal(
+                whole[key].iloc[i].to_numpy(dtype=float),
+                tail[key].iloc[-1].to_numpy(dtype=float),
+                err_msg=f"{key} differs at row {i}")
+        checked += 1
+    assert checked > 0
+
+
+def test_qm_order_lives_for_order_bars_plus_one():
+    """pine:221 expires on a strict `>`, so bars_left == 0 is still fillable."""
+    model = QullamaggieSwingModel(**QM, order_bars=10)
+    # after the base, drift down hard enough that no new setup can fire
+    run = list(np.linspace(10.0, 30.0, 60)) + [31.0] + [30.2] * 5
+    frames = model.setups(qm_bars(run + list(np.linspace(29.0, 24.0, 20))))
+    setup = np.nan_to_num(frames["bo_setup"].iloc[:, 0].to_numpy()) > 0
+    armed = np.nan_to_num(frames["armed"].iloc[:, 0].to_numpy()) > 0
+    left = frames["bars_left"].iloc[:, 0].to_numpy(dtype=float)
+
+    assert setup.any()
+    j = int(np.flatnonzero(setup)[-1])
+    assert np.flatnonzero(armed).max() == j + 10
+    assert left[j] == 10 and left[j + 10] == 0
+    assert not armed[j + 11]
+
+
+def test_qm_arming_bar_never_pierces_its_own_level():
+    """Structural, and it is what makes an arm safe to read as next-bar.
+
+    With the most-recent tie-break, `since_peak >= min_base_bars >= 2` forces the
+    arming bar's high strictly below the pivot, so no bar can both arm and fill.
+    `min_base_bars < 2` would break that, which is why the constructor refuses it.
+    """
+    model = QullamaggieSwingModel(**QM)
+    feed = qm_setup_feed(base_bars=30)
+    frames = model.setups(feed)
+    fired = np.nan_to_num(frames["bo_setup"].iloc[:, 0].to_numpy()) > 0
+    level = frames["entry_level"].iloc[:, 0].to_numpy(dtype=float)
+    high = feed["high"].to_numpy()
+    assert fired.any()
+    for i in np.flatnonzero(fired):
+        assert high[i] < level[i], f"bar {i} arms at {level[i]} and reaches {high[i]}"
+
+
+def test_qm_expiry_counts_traded_bars_not_calendar_rows():
+    """Two identical bar sequences on different calendars must behave identically.
+
+    pine's `bar_index` counts chart bars, so the register has to run on the
+    packed view. On a dated panel a symbol that misses sessions would expire its
+    order early — this fails loudly if the packing is ever skipped.
+    """
+    model = QullamaggieSwingModel(**QM)
+    dense = qm_setup_feed(base_bars=20)
+    sparse = dense.copy()
+    sparse["symbol"] = "BBB"
+    sparse["timestamp"] = pd.to_datetime(
+        [np.datetime64("2024-01-01") + np.timedelta64(2 * i, "D")
+         for i in range(len(sparse))])
+    frames = model.setups(pd.concat([dense, sparse]).sort_values("timestamp"))
+
+    armed = frames["armed"]
+    a = np.nan_to_num(armed["AAA"].to_numpy(dtype=float)) > 0
+    b = np.nan_to_num(armed["BBB"].to_numpy(dtype=float)) > 0
+    assert a.sum() == b.sum() and a.sum() > 0
+    span = lambda m: (armed.index[np.flatnonzero(m)].max()
+                      - armed.index[np.flatnonzero(m)].min()).days
+    assert span(b) == 2 * span(a), "same bars, twice the calendar"
+
+
+def test_qm_extremes_matches_a_naive_pine_loop():
+    """The strided kernel against the definition, including the tie-break."""
+    rng = np.random.default_rng(0)
+    n, w = 160, 40
+    high = pd.DataFrame(rng.uniform(10.0, 20.0, (n, 3)))
+    low = high - rng.uniform(0.1, 2.0, (n, 3))
+    base_high, since_peak, pull_low = _qm_extremes(high, low, w)
+
+    for i in range(w - 1, n):
+        for c in range(3):
+            window = high.iloc[i - w + 1:i + 1, c].to_numpy()
+            peak_off = int(np.argmax(window[::-1]))      # ties -> most recent
+            k = max(peak_off, 1)
+            assert base_high.iat[i, c] == pytest.approx(window.max())
+            assert since_peak.iat[i, c] == peak_off
+            assert pull_low.iat[i, c] == pytest.approx(
+                low.iloc[i - k + 1:i + 1, c].to_numpy().min())
+    # warmup is na until the window fills, as ta.highest is
+    assert base_high.iloc[:w - 1].isna().all().all()
+
+
+def test_qm_volume_never_gates():
+    """pine v15 demoted the break-bar volume check to an informational tag.
+
+    `bo_vol_mult` must move `vol_meets` and nothing else — if it ever re-enters
+    the fill condition the port has silently reverted to v12.
+    """
+    feed = qm_setup_feed(base_bars=10)
+    strict = QullamaggieSwingModel(**QM, bo_vol_mult=1e9).setups(feed)
+    loose = QullamaggieSwingModel(**QM, bo_vol_mult=0.0).setups(feed)
+    for key in ("bo_setup", "entry_level", "armed", "level", "bars_left"):
+        pd.testing.assert_frame_equal(strict[key], loose[key])
+    assert not strict["vol_meets"].to_numpy(dtype=float).any()
+
+
+def test_qm_rejects_params_that_do_not_fit_the_lookback():
+    with pytest.raises(ValueError, match="LOOKBACK"):
+        QullamaggieSwingModel(base_max_len=200)
+    with pytest.raises(ValueError, match="min_base_bars"):
+        QullamaggieSwingModel(min_base_bars=1)
+
+
+def test_qm_signal_is_empty_but_shaped_when_nothing_is_armed():
+    """A caller must be able to iterate the frame unconditionally."""
+    model = QullamaggieSwingModel(**QM)
+    flat = qm_bars([10.0] * 150)          # no momentum, no base, no arm
+    out = model.signal(flat)
+    assert out.empty
+    assert list(out.columns) == ["symbol", "setup", "side", "action", "level",
+                                 "stop", "target", "bars_left", "bo_setup",
+                                 "vol_ratio", "vol_meets"]

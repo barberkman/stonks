@@ -59,8 +59,7 @@ void run_backtest(int argc, const char* const* argv) {
     const std::string data_file =
         flag_value(argc, argv, "--data", "app/data/bist_1d.parquet");
     const std::string start = flag_value(argc, argv, "--start", "2020-01-02");
-    // const std::string end = flag_value(argc, argv, "--end", "2026-07-24");
-    const std::string end = flag_value(argc, argv, "--end", "2025-06-01");
+    const std::string end = flag_value(argc, argv, "--end", "2026-07-24");
     const std::vector<std::string> symbols =
         split_csv(flag_value(argc, argv, "--symbols", ""));
     // Binance USDT-M VIP0 fee schedule; stamped into the report JSON.

@@ -96,16 +96,39 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # --- Entry -----------------------------------------------------------------
-# Both up heads must clear their own threshold. Absolute sigmas rather than
-# percentiles, which only means anything because the fit reproduces bist's
-# prediction scale. bist's own ALPHA5 / ALPHA10 are 3.0 / 2.0; loosening them
-# trades more bars at a lower average predicted edge.
-ENTRY_H5_MIN = 2.8
-ENTRY_H10_MIN = 1.8
+# Take the day's top slice of the model's own cross-sectional ranking, rather
+# than bist's absolute ALPHA5 / ALPHA10 sigmas.
+#
+# Measured, and the difference is the whole strategy. The heads are a *ranker* —
+# the out-of-sample decile lift on up_h5 is clean and monotone across the full
+# score range — and an absolute threshold throws that away to ask a question the
+# model cannot answer, "is 2.8 big?", whose meaning drifts with every retrain.
+# Worse, a threshold that extreme only trips on the most explosive bars, and on
+# this feed those are the ones that closed at the +10% band: 77 of the 92 signals
+# bist's gate produced over 2025-2026, which are fills a real book would not have
+# given.
+#
+# Walk-forward over four cutoffs (2024-06-30, 2024-12-31, 2025-06-30,
+# 2025-12-31), each fit evaluated only on bars after itself, mean return per
+# trade with limit-locked bars refused:
+#
+#            abs 2.8/1.8   top 0.5%   top 1%   top 2%
+#   mean        -6.14%      +2.35%    +2.33%   +2.15%
+#   worst       -7.38%      -1.76%    -0.38%   +0.66%
+#
+# The absolute gate is negative at every cutoff — that much is robust. Among the
+# slices the means are indistinguishable, so the choice is about variance, and
+# 2% is the only one positive in all four periods. 0.5% won the window it was
+# first measured on (+5.3%) and lost the most recent one, on 78 trades; taking it
+# would be fitting the slice width to a single sample.
+ENTRY_TOP_PCT = 2.0
 # 1 refuses names that closed at the +10% band. bist's backtest disables this
-# gate (LU_OVERRIDE) and every one of its entries is such a name; read
-# `AlgoTradeStrategy._limit_locked` before turning it on.
-SKIP_LIMIT_LOCKED = 0
+# (LU_OVERRIDE), and reproducing bist was the point while the gate was bist's.
+# It is on now because the percentile gate makes it affordable: refusing locked
+# names *improves* the top-0.5% slice (+5.3% against +4.5% including them), which
+# says buying an exhausted locked move is bad on its own terms and not merely an
+# execution nuisance. See `AlgoTradeStrategy._limit_locked`.
+SKIP_LIMIT_LOCKED = 1
 
 # --- Exit ------------------------------------------------------------------
 # bist's SL_PCT, kept verbatim. The label is drawdown-gated at -10%, so this is
@@ -117,9 +140,15 @@ STOP_PCT = 10.0
 EXIT_MA = 20
 
 # --- Sizing ----------------------------------------------------------------
-# Share of free cash committed per name, with no cap on how many are held at
-# once — so N concurrent signals commit N x this. bist's own figure is 5.0.
-POSITION_PCT = 20.0
+# Names held at once, and the sizing that follows from it. bist sizes at 5% of
+# available balance with no cap, which was survivable only because its absolute
+# gate fired 92 times in 18 months. A percentile gate fires every session — top
+# 0.5% of ~630 scored names is roughly three a day — so an uncapped book would
+# exhaust cash within a few entries and the rest would be broker rejections,
+# leaving the strategy holding whatever happened to rank first that morning.
+# Sizing at equity/MAX_POSITIONS instead reaches full deployment exactly at the
+# cap and cannot overcommit before it.
+MAX_POSITIONS = 10
 CASH_BUFFER = 0.02   # held back from entries for fees and overnight gaps
 
 
@@ -1953,11 +1982,15 @@ class QullamaggieSwingModel:
 class AlgoTradeStrategy(stonks.Strategy):
     """Long swings on the model's two up heads, exited on a trend break.
 
-    Entry is a port of the strategy bist backtests in
-    `scripts_observation/walk_forward_static.py` on top of
-    `stonks/strategy/sweep_1000/_base.py`, which is the most rigorous evaluation
-    bist has: both up heads must clear their thresholds, and the fill is the next
-    open.
+    Entry takes the day's top `top_pct` of the model's own cross-sectional
+    ranking, ordered by the mean of the two up sigmas, and fills at the next open.
+
+    That is a deliberate break from bist, which gates on absolute sigmas
+    (ALPHA5 3.0 / ALPHA10 2.0). The heads are a ranker, so an absolute threshold
+    discards the ranking and asks an unanswerable question whose meaning moves
+    with every retrain; and set high enough to be selective it fires almost only
+    on bars that closed at the price band, which cannot be bought. `ENTRY_TOP_PCT`
+    carries the measurements.
 
     The exit is the one place this deliberately parts from bist. bist rests a -10%
     stop and a +30% target and holds until one leg fills; the stop is kept
@@ -1972,20 +2005,21 @@ class AlgoTradeStrategy(stonks.Strategy):
     is the half of the pair with nothing behind it — the label encodes a drawdown
     floor and no ceiling at all — and it is what capped the winners.
 
-    Every other number is bist's, including the ones this port would not have
-    chosen:
+    What remains bist's:
 
-     * `h5_min` / `h10_min` are absolute sigmas, not percentiles. They only mean
-       anything because the fit now reproduces bist's prediction scale; an earlier
-       version of this port predicted roughly 4x tighter and had to substitute
-       percentile gates to select anything at all.
+     * The -10% stop, verbatim, for the reason above.
      * The down head is computed and plotted but **not** gated on. bist only ever
        displays it as an avoidance overlay, so a `dn` veto would be this port's
        invention rather than a port of anything.
-     * Sizing is 5% of available cash per name with no cap on how many names are
-       held at once.
-     * `skip_limit_locked` defaults to 0, bist's setting. Read caveat 4 before
-       reading any performance number this produces.
+     * The composite the ranking sorts on — the mean of the two up sigmas.
+
+    What is not:
+
+     * The percentile gate and `skip_limit_locked = 1`, above.
+     * `max_positions` with sizing at equity/max_positions. bist commits 5% of
+       available balance per name and caps nothing, which is survivable only
+       because its gate fires ~92 times in 18 months; a percentile gate fires
+       every session and would exhaust cash in a handful of entries.
 
     The model is pre-trained to a dated artifact and frozen, so the strategy
     refuses to trade any bar the fit was allowed to see — though it still *scores*
@@ -2001,28 +2035,42 @@ class AlgoTradeStrategy(stonks.Strategy):
         reseeds both against a shorter history and scores bars on values the fit
         never saw. Nothing can detect this from inside the strategy — the feed
         simply begins where it begins.
-     2. `signal` runs on every tick from the moment the window fills, both because
-        the state needs every bar and because with no position cap there is no bar
-        on which a pick would be discarded. Building 72 features over a
-        300 x ~600 window is far and away the run's dominant cost, and this is
-        roughly 3.5x more of it than scoring only the out-of-sample stretch.
-     3. Entry size is capped by free cash less `cash_buffer`. A market order sized
-        on today's close and filled at tomorrow's open can overdraw, and the
-        broker rejects — never queues — an order it cannot fund at fill time.
-     4. **Every entry is a name that closed at the +10% price band.** Measured on
-        the 2025-2026 out-of-sample stretch: of the 14 bars where both up heads
-        clear their thresholds, all 14 had the symbol closing limit-up on the
-        signal bar. The strategy buys at the next open, so these are fills a real
-        order book would not have given. bist's backtest disables the same gate
-        (`LU_OVERRIDE`) and its published figures carry the same problem. Setting
-        `skip_limit_locked = 1` removes them and leaves zero trades.
-     5. The liquid universe comes from the artifact and is computed from training
+     2. `signal` runs on every tick from the moment the window fills, whether or
+        not a slot is free, because `ScoringState` has to see every bar in order.
+        Building 72 features over a 300 x ~600 window is far and away the run's
+        dominant cost, and there is no way to skip it.
+     3. Entry size is `equity / max_positions`, further capped by free cash less
+        `cash_buffer`. A market order sized on today's close and filled at
+        tomorrow's open can still overdraw on a gap, and the broker rejects —
+        never queues — an order it cannot fund at fill time.
+     4. **The gate's shape decides how much of the result is real.** bist's
+        absolute gate produced 92 signals over 2025-2026 and 77 of them closed at
+        the +10% band, which the strategy would have bought at the next open:
+        fills a real order book would not have given. That is why the gate is now
+        a percentile and `skip_limit_locked` is on. The exposure is reduced, not
+        eliminated — a top-slice name can still be locked, and it is simply
+        skipped when it is.
+     5. **The return is a handful of trades.** On the engine's own 2025-2026 run
+        — 221 round trips, 34.8% winners, mean +5.1%, median -4.7% — the five
+        best contribute about 150% of the summed P&L, so the remaining 216 lose
+        money together. One penny stock at +577% is over half of it. The gate
+        width barely moves this: it was 160% at top 0.5% and 148% at 2%. Any
+        expectation drawn from the headline return is an expectation about
+        catching one of those, and nothing in the walk-forward says they recur on
+        schedule.
+     6. Two limits the engine cannot model here: the broker fills **fractional
+        quantities**, and starting cash is 1000 against names priced into the
+        thousands, so fractional sizing is doing real work. Under whole-lot
+        constraints much of this book is not buyable at this account size.
+        Separately, a stop is not a floor — the worst round trip was -48%, filled
+        through the -10% stop on a gap.
+     7. The liquid universe comes from the artifact and is computed from training
         turnover only. bist takes the median over its whole frame, future
         included; see `_liquid_universe`.
-     6. A moving-average exit fills one bar after it is decided, where the stop
+     8. A moving-average exit fills one bar after it is decided, where the stop
         fills intrabar on the bar it is breached. The rule gives back more on a
         sharp reversal than the fixed target it replaced.
-     7. An exiting name holds its place in `book` until the position is actually
+     9. An exiting name holds its place in `book` until the position is actually
         flat, so it cannot be re-entered on the bar its own sale is in flight.
         The sale settles at the next open, and funding an entry out of proceeds
         that have not arrived would have the broker reject it outright — it never
@@ -2031,23 +2079,21 @@ class AlgoTradeStrategy(stonks.Strategy):
 
     artifact = "app/python/artifacts/algotrade"
     # Bound to the tunables block at the top of this module — change them there.
-    h5_min = ENTRY_H5_MIN
-    h10_min = ENTRY_H10_MIN
+    top_pct = ENTRY_TOP_PCT
     stop_pct = STOP_PCT
     exit_ma = EXIT_MA
-    position_pct = POSITION_PCT
+    max_positions = MAX_POSITIONS
     cash_buffer = CASH_BUFFER
     skip_limit_locked = SKIP_LIMIT_LOCKED
 
     params = {
-        "h5_min": stonks.Param(
-            "minimum predicted 5-day sigma to enter", unit="sigma"),
-        "h10_min": stonks.Param(
-            "minimum predicted 10-day sigma to enter", unit="sigma"),
+        "top_pct": stonks.Param(
+            "enter the day's top slice of the model's cross-sectional ranking",
+            unit="%"),
         "stop_pct": stonks.Param("protective stop below the entry bar's close", unit="%"),
         "exit_ma": stonks.Param(
             "close below this simple moving average exits the position", unit="bars"),
-        "position_pct": stonks.Param("share of free cash committed per name", unit="%"),
+        "max_positions": stonks.Param("names held at once"),
         "cash_buffer": stonks.Param(
             "fraction of cash held back from entries for fees and gaps"),
         "skip_limit_locked": stonks.Param(
@@ -2101,13 +2147,28 @@ class AlgoTradeStrategy(stonks.Strategy):
         # nothing qualifies — and that is most bars.
         self._exit_below_ma(ctx, w)
 
-        picks = self._rank(sig)
+        free = self.max_positions - len(self.book)
+        if free <= 0:
+            return
+        picks = self._rank(sig).iloc[:free]
         if picks.empty:
             return
 
         latest = self._closes(w)
-        budget = ctx.cash() * (1.0 - self.cash_buffer) * self.position_pct / 100.0
-        if budget <= 0.0 or not np.isfinite(budget):
+        # equity/max_positions reaches full deployment exactly at the cap; the
+        # cash leg keeps a bar that wants several names at once from ordering
+        # more than it can fund, which the broker would reject outright.
+        target = ctx.equity() / self.max_positions
+        budget = min(target, ctx.cash() * (1.0 - self.cash_buffer) / len(picks))
+        # A budget far below the per-slot target means the cash is still tied up
+        # in a position being sold — the moving-average exit places a market sell
+        # that only settles at the next open, so on that bar the proceeds are not
+        # there yet. Entering anyway buys a token quantity that occupies a slot
+        # for the whole trade while contributing nothing; the first engine run
+        # produced four such orders, one of them 0.0009 lira. Wait for the sale
+        # instead. The threshold is deliberately not a knob: anything under a
+        # tenth of a slot is noise on any account size.
+        if budget <= 0.0 or not np.isfinite(budget) or budget < 0.1 * target:
             return
 
         for symbol in picks.index:
@@ -2142,7 +2203,8 @@ class AlgoTradeStrategy(stonks.Strategy):
         """One line per entry: the order, and the signal that produced it.
 
         The two up sigmas are the numbers the gates were applied to, so the line
-        can be read back against `h5_min`/`h10_min` without re-running anything.
+        can be read back without re-running anything — the gate is a percentile,
+        so the raw sigma is the only record of how strong a pick actually was.
         The percents are the model's `expected_excess_pct` over each head's
         horizon, and bist's caveat travels with them — rank on sigma, treat the
         percent as a magnitude check and not a calibrated forecast. `dn` rides
@@ -2259,24 +2321,33 @@ class AlgoTradeStrategy(stonks.Strategy):
         return self._ret.get(symbol, 0.0) >= LIMIT_HIT
 
     def _rank(self, sig):
-        """Rows clearing both up gates, best composite first.
+        """The day's top `top_pct` of the scored universe, best composite first.
 
         Indexed by symbol, carrying each head's raw sigma and expected excess
-        percent — the numbers the gates were applied to, so a pick can be read
-        back without re-joining against `sig`.
+        percent, so a pick can be read back without re-joining against `sig`.
 
         `composite` is bist's: the mean of the two up sigmas. Ties break on symbol
         so the ordering is deterministic. The down head rides along unused; see
         the class docstring.
+
+        The slice is taken over **every symbol scored this bar**, before the held
+        names are removed. Ranking after the removal would quietly widen the gate
+        as the book fills — holding nine of ten names would promote the tenth-best
+        remaining candidate into the top slice — so the cut has to be measured
+        against the whole universe and the book applied afterwards.
+
+        A symbol the model declined to score is NaN and drops out of the ranking
+        rather than sorting to one end.
         """
-        ok = sig.loc[(sig["up_h5"] >= self.h5_min) & (sig["up_h10"] >= self.h10_min)]
-        ok = ok.loc[[s for s in ok.index if s not in self.book]]
         columns = ["up_h5", "up_h5_pct", "up_h10", "up_h10_pct", "dn_h5"]
-        if ok.empty:
-            return ok[columns]
-        composite = (ok["up_h5"] + ok["up_h10"]) / 2.0
+        composite = ((sig["up_h5"] + sig["up_h10"]) / 2.0).dropna()
+        if composite.empty:
+            return sig.iloc[:0][columns]
+
+        keep = max(1, int(len(composite) * self.top_pct / 100.0))
         order = sorted(composite.index, key=lambda s: (-composite[s], s))
-        return ok.loc[order, columns]
+        order = [s for s in order[:keep] if s not in self.book]
+        return sig.loc[order, columns]
 
     @classmethod
     def _closes(cls, w):
