@@ -2,9 +2,9 @@
 
 Two halves. The model half checks the properties the port rests on: features are
 causal, they are window-bounded except for the two `ScoringState` carries, and
-labels never read past the training cutoff. The strategy half injects a stub model
-so the entry rule, the bracket shape and the leak guard can be tested without
-training anything.
+labels simulate the trade the strategy holds without ever reading past the
+training cutoff. The strategy half injects a stub model so the entry rule, the
+bracket shape and the leak guard can be tested without training anything.
 
 What is *not* here is parity with bist itself — that lives in test_bist_parity.py,
 which diffs this module against bist's own code on the same input. These tests
@@ -16,6 +16,7 @@ fill mechanics (next-open market fills, bracket arming, reduce-only) are pinned
 by the C++ suite under tests/core/.
 """
 
+import json
 from unittest.mock import patch
 
 import numpy as np
@@ -29,19 +30,18 @@ from stonks.testing import FakeContext, FakeKLine, FakePosition
 import algo_trade
 from algo_trade import (
     DAYS_SINCE_COLUMN,
+    EXPECTED_PCT,
     FEATURE_NAMES,
-    HEADS,
     LOOKBACK,
+    MAX_HOLD,
     OBV_COLUMN,
+    SCORE,
     AlgoTradeStrategy,
-    Head,
     ManipulationModel,
     QullamaggieSwingModel,
     _qm_extremes,
     _qm_sma,
 )
-
-HEAD_BY_NAME = {h.name: h for h in HEADS}
 
 # Every column except the two that accumulate from a symbol's first bar ever:
 # `obv` is a running signed-volume sum and `days_since_past_extreme` is a counter
@@ -333,111 +333,208 @@ def test_drop_unusable_tolerates_float_noise_in_ohlc():
 # Labels
 # ---------------------------------------------------------------------------
 
-def ramp_panel(T=200, N=8, end_row=150, bars=8, per_bar=0.05, seed=5):
-    """A noisy panel where symbol 0 ramps up over `bars` bars, ending at end_row.
+def trade_panel(series, T=200):
+    """{symbol: {dated row: close}} -> a panel. Absent rows are halted sessions.
 
-    The move is spread across bars rather than applied as one jump because a
-    single +40% print is a corporate action as far as `_returns` is concerned and
-    gets booked as 0%. Per-bar steps stay inside the daily band, so the move is a
-    return the model can actually see.
-
-    Peers keep drifting, so the equal-weighted market return absorbs 1/N of the
-    move and symbol 0's excess return keeps its sign. The noise keeps
-    `excess_return_vol_60` — the label's denominator — off zero.
+    `open` is set equal to `close` so the expected fills read straight off the
+    closes the test wrote, which is the whole point of hand-building these.
     """
-    rng = np.random.default_rng(seed)
-    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, size=(T, N)), axis=0))
-    start = end_row - bars + 1
-    factor = np.ones(T)
-    for i in range(start, end_row + 1):
-        factor[i:] *= 1.0 + per_bar
-    close[:, 0] = close[:, 0] * factor
-    return panel_from_arrays(close), start
+    syms = sorted(series)
+    close = pd.DataFrame(np.nan, index=range(T), columns=range(len(syms)))
+    for sym, rows in series.items():
+        for row, value in rows.items():
+            close.iloc[row, syms.index(sym)] = value
+    high, low = close * 1.01, close * 0.99
+    panel = {"open": close.copy(), "high": high, "low": low, "close": close,
+             "volume": pd.DataFrame(1_000_000.0, index=close.index,
+                                    columns=close.columns)}
+    panel["ret"] = algo_trade._returns(panel["close"])
+    return panel, {s: i for i, s in enumerate(syms)}
 
 
-def test_label_takes_the_better_of_forward_and_centered():
-    """bist's target is max(fwd, centered), and the centered term reaches back.
+def flat_then_ramp(T=200, break_row=44, level=100.0, step=2.0):
+    """Flat for 30 bars, a ramp, then one close far under the average."""
+    rows = {r: level for r in range(30)}
+    rows.update({r: level + step * (r - 29) for r in range(30, break_row)})
+    rows[break_row] = level * 0.9
+    rows.update({r: level * 0.9 for r in range(break_row + 1, T)})
+    return rows
 
-    Its centered window for h=10 spans [T-4, T+5], so a move that finished at T
-    still labels T even though an entry at T+1 cannot capture any of it. bist's
-    published precision figures inherit that optimism. Reproduced because it is
-    what the shipped model was fit on: dropping it shrinks the label's spread by
-    roughly a quarter at q90 and the fit shrinks with it.
+
+def halted_variant(T=200, break_row=44, halt_at=35, gap=2):
+    """`flat_then_ramp` with `gap` halted sessions spliced in at `halt_at`.
+
+    The same traded bars as `flat_then_ramp(T, break_row)` over the range that
+    matters, just `gap` dates further along — so every traded-bar answer has to
+    come out identical from a later dated row.
     """
-    h10 = HEAD_BY_NAME["up_h10"]
-    end_row = 150
-    panel, start = ramp_panel(T=200, end_row=end_row, bars=8, per_bar=0.05)
-    y = algo_trade._labels(panel, h10)
-
-    # The bar just before the ramp sees all of it in [T+1, T+10].
-    ahead = y[start - 1, 0]
-    # The bar the ramp finished on sees it *behind* — and is labelled anyway,
-    # because the centered window covers [T-4, T+5].
-    behind = y[end_row, 0]
-    assert ahead > 3.0, ahead
-    assert behind > 3.0, behind
+    rows = flat_then_ramp(T - gap, break_row)
+    out = {r: v for r, v in rows.items() if r < halt_at}
+    out.update({r + gap: v for r, v in rows.items() if r >= halt_at})
+    return out
 
 
-def test_centered_window_is_what_lifts_a_finished_move():
-    """Isolate the centered term: forward-only would score the last bar ~0."""
-    h10 = HEAD_BY_NAME["up_h10"]
-    end_row = 150
-    panel, _ = ramp_panel(T=200, end_row=end_row, bars=8, per_bar=0.05)
+def test_label_runs_from_the_next_open_to_the_open_after_the_break():
+    """The trade: buy open[T+1], sell open[K+1] where K is the first close < MA.
 
-    with_center = algo_trade._labels(panel, h10)[end_row, 0]
-    # h=1 degenerates to forward-only in bist, which is the comparison we want,
-    # but the cleanest isolation is to check the bar 6 ahead of the ramp's end:
-    # past the centered reach (h//2 = 5), nothing should be left.
-    past_reach = algo_trade._labels(panel, h10)[end_row + 6, 0]
-    assert with_center > 3.0
-    assert abs(past_reach) < with_center / 3.0, past_reach
-
-
-def test_label_gates_on_drawdown():
-    """A +40% run you would have been stopped out of first is worth zero.
-
-    The gate is what makes the up target tradable rather than a move detector.
-    The down head is unconditional and keeps its value.
+    Three places to be off by one and none of them announce themselves, so the
+    fills are asserted against the exact rows rather than against a shape.
     """
-    h5 = HEAD_BY_NAME["up_h5"]
-    dn5 = HEAD_BY_NAME["dn_h5"]
-    T, N, row = 200, 8, 150
+    T, brk = 200, 44
+    panel, ci = trade_panel({"A": flat_then_ramp(T, brk)}, T)
+    got = algo_trade._labels(panel)
+    o = panel["open"].to_numpy()
+    a = ci["A"]
 
-    rng = np.random.default_rng(5)
-    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, size=(T, N)), axis=0))
-    # Symbol 0: down 15% on the very next bar, then up 40% — inside h=5.
-    base = close[row, 0]
-    close[row + 1, 0] = base * 0.85
-    close[row + 2:, 0] = base * 1.40
-
-    panel = panel_from_arrays(close)
-    assert algo_trade._labels(panel, h5)[row, 0] == 0.0
-    assert np.isfinite(algo_trade._labels(panel, dn5)[row, 0])
+    # Signalled at bar 40; the break lands at 44, so the pair is open[41] -> open[45].
+    assert got["entry_ok"][40, a] == 1.0
+    assert got["bars_held"][40, a] == 4.0
+    assert got["raw"][40, a] == pytest.approx(o[45, a] / o[41, a] - 1.0)
+    assert got["exit_row"][40, a] == 45.0
 
 
-def test_label_stops_short_of_the_end_by_its_shortest_forward_reach():
-    """How far a label resolves is set by the shortest window it needs.
+def test_y_is_the_log_of_the_realised_return():
+    """The training target is a log return; `raw` is the same trade as a percent."""
+    T = 200
+    panel, ci = trade_panel({"A": flat_then_ramp(T)}, T)
+    got = algo_trade._labels(panel)
+    live = np.isfinite(got["y"])
+    assert live.any()
+    assert np.allclose(got["y"][live], np.log1p(got["raw"][live]))
 
-    The up heads need the drawdown gate, whose forward minimum spans [T+1, T+h],
-    so they stop `h` rows short. The down head is unconditional and its centered
-    window only reaches T + h//2, so it resolves further.
+
+def test_the_break_is_strict():
+    """A close exactly on the average holds, matching `_exit_below_ma`'s `>=`.
+
+    A flat series sits exactly on its own mean forever, so if the comparison
+    were `<=` every bar would break and nothing would ever be held.
     """
-    T = 300
-    panel = random_panel(T=T, N=8, seed=21)
-    reach = {"up_h5": 5, "up_h10": 10, "dn_h5": 5 // 2}
-    for head in HEADS:
-        y = algo_trade._labels(panel, head)
-        resolved = np.flatnonzero(np.isfinite(y).any(axis=1))
-        assert resolved.max() == T - 1 - reach[head.name], head.name
+    T = 200
+    panel, ci = trade_panel({"FLAT": {r: 100.0 for r in range(T)}}, T)
+    got = algo_trade._labels(panel)
+    a = ci["FLAT"]
+    assert got["entry_ok"][40, a] == 1.0
+    # Never breaks, so the cap is what closes it.
+    assert got["bars_held"][40, a] == float(MAX_HOLD)
+
+
+def test_a_trade_that_never_breaks_is_capped():
+    T = 200
+    panel, ci = trade_panel({"UP": {r: 100.0 + r for r in range(T)}}, T)
+    got = algo_trade._labels(panel)
+    o, a = panel["open"].to_numpy(), ci["UP"]
+
+    assert got["bars_held"][40, a] == float(MAX_HOLD)
+    assert got["raw"][40, a] == pytest.approx(
+        o[40 + MAX_HOLD + 1, a] / o[41, a] - 1.0)
+    assert got["exit_row"][40, a] == float(40 + MAX_HOLD + 1)
+
+
+def test_a_close_below_the_average_is_never_entered():
+    """No trade, so no label — not a zero, and not a poor score.
+
+    This is the population the fit is restricted to, which is why
+    `ManipulationModel.signal` refuses the same rows at scoring time.
+    """
+    T = 200
+    panel, ci = trade_panel({"DOWN": {r: 500.0 - 2.0 * r for r in range(T)}}, T)
+    got = algo_trade._labels(panel)
+    a = ci["DOWN"]
+    assert np.nansum(got["entry_ok"][:, a]) == 0.0
+    assert not np.isfinite(got["raw"][:, a]).any()
+
+
+def test_the_breaking_bar_is_not_itself_enterable():
+    T, brk = 200, 44
+    panel, ci = trade_panel({"A": flat_then_ramp(T, brk)}, T)
+    got = algo_trade._labels(panel)
+    a = ci["A"]
+    assert got["entry_ok"][brk, a] == 0.0
+    assert not np.isfinite(got["raw"][brk, a])
+
+
+def test_the_average_counts_traded_bars_not_calendar_rows():
+    """Halted sessions must not consume a window slot.
+
+    `D` is `A` with two halted sessions inserted mid-ramp: the same traded bars,
+    two dates further along. It has to resolve to the identical trade from a
+    different dated row, or the label is measuring a different average than
+    `AlgoTradeStrategy._tail_closes` does on the live exit.
+    """
+    T, brk = 200, 44
+    panel, ci = trade_panel(
+        {"A": flat_then_ramp(T, brk), "D": halted_variant(T, brk)}, T)
+
+    got = algo_trade._labels(panel)
+    a, d = ci["A"], ci["D"]
+    o = panel["open"].to_numpy()
+
+    assert got["bars_held"][42, d] == got["bars_held"][40, a] == 4.0
+    assert got["raw"][42, d] == pytest.approx(got["raw"][40, a])
+    assert got["raw"][42, d] == pytest.approx(o[47, d] / o[43, d] - 1.0)
+    assert got["exit_row"][42, d] == 47.0
+    # A halted date carries nothing at all.
+    assert not np.isfinite(got["raw"][35, d])
+    assert not np.isfinite(got["entry_ok"][35, d])
+
+
+def test_a_trade_whose_exit_would_fall_off_the_end_is_unresolved():
+    """Still open at the last bar means unknown, not zero."""
+    T = 200
+    panel, ci = trade_panel({"UP": {r: 100.0 + r for r in range(T)}}, T)
+    got = algo_trade._labels(panel)
+    a = ci["UP"]
+    # The capped exit fills at T + MAX_HOLD + 1, so this is the last row that fits.
+    assert np.isfinite(got["raw"][T - 2 - MAX_HOLD, a])
+    assert not np.isfinite(got["raw"][T - 1 - MAX_HOLD, a])
+
+
+def test_a_price_scale_glitch_voids_the_trades_that_straddle_it():
+    """A 100x one-bar spike is a unit error, not a move. See GLITCH_RATIO.
+
+    BIST's daily band is +/-10%, so nothing legitimate travels 5x in a session.
+    Left in, the spike prices an entry or an exit off a tick that never traded
+    and books a -99% "loss" in one bar.
+    """
+    T, spike = 200, 60
+    rows = {r: 100.0 for r in range(T)}
+    rows[spike] = 10_000.0                    # kurus recorded as lira
+    panel, ci = trade_panel({"G": rows}, T)
+    got = algo_trade._labels(panel)
+    a = ci["G"]
+
+    # Every trade whose window contains the spike is dropped...
+    for row in range(40, spike):
+        assert not np.isfinite(got["raw"][row, a]), row
+    # ...and the -99% revert is never booked as a return.
+    finite = got["raw"][np.isfinite(got["raw"][:, a]), a]
+    assert (finite > -0.5).all()
+
+
+def test_the_exit_row_is_the_dated_row_of_the_exit_fill():
+    """What makes the training embargo exact rather than horizon arithmetic.
+
+    `train` admits a row only when `exit_row < end`, so this value has to be a
+    dated row index into the panel — not a packed slot, and not an offset.
+    """
+    T, brk = 200, 44
+    panel, ci = trade_panel(
+        {"A": flat_then_ramp(T, brk), "D": halted_variant(T, brk)}, T)
+    got = algo_trade._labels(panel)
+
+    for symbol, signal_row, expected in (("A", 40, 45.0), ("D", 42, 47.0)):
+        col = ci[symbol]
+        assert got["exit_row"][signal_row, col] == expected
+        # The dated row it names has to be one this symbol actually traded.
+        assert np.isfinite(panel["close"].to_numpy()[int(expected), col])
 
 
 def test_label_never_resolves_inside_a_symbols_dead_tail():
     """A symbol that stops printing must not borrow its own delisting.
 
     Packing lifts each symbol's traded bars to the top of the column, leaving dead
-    slots below. `min_periods` will happily resolve a rolling window inside that
-    dead region, and `shift(-h)` would then pull the value back onto real rows —
-    where bist has NaN because its per-symbol group genuinely ended.
+    slots below. A forward read would happily resolve inside that dead region and
+    pull the value back onto real rows, where the symbol has genuinely ended.
     """
     T, N = 200, 6
     panel = random_panel(T=T, N=N, seed=4, quirks=False)
@@ -446,17 +543,18 @@ def test_label_never_resolves_inside_a_symbols_dead_tail():
         panel[key].iloc[T - 30:, 1] = np.nan
     panel["ret"] = algo_trade._returns(panel["close"])
 
-    for head in HEADS:
-        y = algo_trade._labels(panel, head)
-        live = np.flatnonzero(np.isfinite(y[:, 1]))
-        assert live.max() <= T - 30 - 1, head.name
+    got = algo_trade._labels(panel)
+    live = np.flatnonzero(np.isfinite(got["raw"][:, 1]))
+    assert live.max() <= T - 30 - 1
 
 
-def test_label_is_nan_where_dispersion_collapsed():
-    """A perfectly flat panel has no idiosyncratic vol to normalise by."""
-    panel = panel_from_arrays(np.full((120, 5), 50.0))
-    for head in HEADS:
-        assert not np.isfinite(algo_trade._labels(panel, head)).any(), head.name
+def test_a_symbol_shorter_than_the_average_has_no_trade():
+    """No full window means no average to be above, so nothing is enterable."""
+    T = 200
+    panel, ci = trade_panel({"SHORT": {r: 100.0 + r for r in range(15)}}, T)
+    got = algo_trade._labels(panel)
+    a = ci["SHORT"]
+    assert np.nansum(got["entry_ok"][:, a]) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -539,16 +637,15 @@ def test_train_stops_at_the_cutoff(trained):
     """train_end is a hard boundary: the fit records the last bar it could see."""
     model, frame, cutoff = trained
     assert model.train_end == int(pd.Timestamp(cutoff).value // 1_000_000)
-    assert set(model.models) == {h.name for h in HEADS}
+    assert model.booster is not None
 
 
 def test_train_labels_never_read_past_the_cutoff(trained):
     """The embargo is structural, so assert it on the labels themselves.
 
-    A label at row r reads at most `reach` rows ahead — `horizon` for the up heads,
-    whose drawdown gate spans [T+1, T+h], and `horizon // 2` for the unconditional
-    down head, whose centered window is its longest-resolving term. Every row the
-    fit could keep must satisfy r + reach <= last in-sample row.
+    Holding periods vary, so there is no `horizon` to subtract — each label
+    carries the dated row of its own exit fill instead, and every trade the fit
+    could keep has to have closed inside the training window.
     """
     _, frame, cutoff = trained
     panel = algo_trade._panel(frame)
@@ -556,11 +653,39 @@ def test_train_labels_never_read_past_the_cutoff(trained):
     end = int(np.searchsorted(index, np.datetime64(pd.Timestamp(cutoff)), side="right"))
     truncated = algo_trade._truncate(panel, end)
 
-    for head in HEADS:
-        reach = head.horizon if head.max_drawdown is not None else head.horizon // 2
-        y = algo_trade._labels(truncated, head)
-        newest = np.flatnonzero(np.isfinite(y).any(axis=1)).max()
-        assert newest + reach <= end - 1, head.name
+    label = algo_trade._labels(truncated)
+    exit_row = label["exit_row"]
+    resolved = np.isfinite(exit_row)
+    assert resolved.any(), "nothing resolved at all"
+    assert exit_row[resolved].max() <= end - 1
+
+
+def test_a_trade_still_open_at_the_cutoff_is_dropped_not_truncated(trained):
+    """The embargo's actual mechanism, asserted against the trades it removes.
+
+    `train` truncates before labelling, so a trade that would still be open at
+    the cutoff cannot resolve and goes NaN. The strong form of that: every row
+    whose *full-panel* trade closes at or after `end` must be unlabelled in the
+    truncated panel — otherwise the fit would be learning from a bar it was
+    never allowed to see.
+    """
+    _, frame, cutoff = trained
+    panel = algo_trade._panel(frame)
+    index = panel["close"].index.to_numpy()
+    end = int(np.searchsorted(index, np.datetime64(pd.Timestamp(cutoff)), side="right"))
+
+    full = algo_trade._labels(panel)
+    truncated = algo_trade._labels(algo_trade._truncate(panel, end))
+
+    exit_row = full["exit_row"][:end]
+    reaches_past = np.isfinite(exit_row) & (exit_row >= end)
+    assert reaches_past.any(), "no trade straddles the cutoff — weak fixture"
+    assert not np.isfinite(truncated["y"][:end][reaches_past]).any()
+
+    # ...and a trade that closed well inside the window is untouched by the cut.
+    inside = np.isfinite(exit_row) & (exit_row < end - MAX_HOLD)
+    assert np.allclose(full["y"][:end][inside], truncated["y"][:end][inside],
+                       equal_nan=True)
 
 
 def test_train_records_the_liquid_universe(trained):
@@ -586,9 +711,7 @@ def test_train_fills_the_design_matrix(trained):
     lo, hi = model._bounds
     rows = np.clip(F[-1], lo, hi)
 
-    head = HEADS[0]
-    filled = model._predict(head, np.nan_to_num(rows, nan=0.0, posinf=0.0,
-                                                neginf=0.0))
+    filled = model._predict(np.nan_to_num(rows, nan=0.0, posinf=0.0, neginf=0.0))
     assert np.isfinite(filled).all()
 
 
@@ -602,6 +725,29 @@ def test_save_load_round_trip_is_exact(trained, tmp_path):
     assert reloaded.liquid == model.liquid
     assert reloaded.params == model.params
     pd.testing.assert_frame_equal(model.signal(window), reloaded.signal(window))
+
+
+def test_the_artifact_records_which_trade_it_was_fit_for(trained, tmp_path):
+    """`signal` gates entries on the same average the label exited on.
+
+    An artifact that did not carry `exit_ma` could be scored against a different
+    one after a constant moved, and nothing would report it — the scores would
+    just quietly describe a trade the strategy is not taking.
+    """
+    model, _, _ = trained
+    model.save(tmp_path)
+    meta = json.loads((tmp_path / "meta.json").read_text())
+
+    assert meta["exit_ma"] == model.exit_ma
+    assert meta["max_hold"] == model.max_hold
+    # One booster, not one per head.
+    assert (tmp_path / "model.json").exists()
+    assert isinstance(meta["best_iteration"], int)
+
+    reloaded = ManipulationModel.load(tmp_path)
+    assert reloaded.exit_ma == model.exit_ma
+    assert reloaded.max_hold == model.max_hold
+    assert reloaded.best_iteration == model.best_iteration
 
 
 def test_load_rejects_a_stale_feature_set(trained, tmp_path, monkeypatch):
@@ -627,15 +773,46 @@ def _window_from_frame(frame, cutoff):
     return algo_trade._panel(sub)
 
 
-def test_signal_reports_sigma_and_expected_pct_per_head(trained):
-    """Two columns per head, on bist's raw-sigma scale. No percentile layer."""
+def test_signal_reports_a_score_and_its_expected_pct(trained):
+    """Two columns, on the model's raw log-return scale. No percentile layer."""
     model, frame, cutoff = trained
     sig = model.signal(_window_from_frame(frame, cutoff))
 
-    assert set(sig.columns) == {
-        f"{h.name}{suffix}" for h in HEADS for suffix in ("", "_pct")}
-    for head in HEADS:
-        assert sig[head.name].notna().any()
+    assert set(sig.columns) == {SCORE, EXPECTED_PCT}
+    assert sig[SCORE].notna().any()
+
+
+def test_expected_pct_is_the_score_read_as_a_return(trained):
+    """A log return converts directly — no vol and no horizon in the way."""
+    model, frame, cutoff = trained
+    sig = model.signal(_window_from_frame(frame, cutoff)).dropna()
+    assert not sig.empty
+    assert np.allclose(sig[EXPECTED_PCT], np.expm1(sig[SCORE]) * 100.0)
+
+
+def test_signal_refuses_names_below_their_exit_average(trained):
+    """The entry half of the trade, enforced where the fit's population is set.
+
+    The model never saw a row trading under its average, so a name below it is
+    not ranked poorly — it is not scored at all.
+    """
+    model, frame, cutoff = trained
+    window = _window_from_frame(frame, cutoff)
+    sig = model.signal(window)
+
+    closes = window["close"].to_numpy(dtype=float)
+    printed = window["close"].notna()
+    order = algo_trade._pack_order(printed)
+    packed = algo_trade._pack(window["close"], order)
+    sma = algo_trade._sma(packed, model.exit_ma,
+                          algo_trade._real_slots(printed).to_numpy())
+    dated = algo_trade._unpack(pd.DataFrame(sma, columns=packed.columns), order,
+                               window["close"].index, printed).to_numpy()
+
+    below = closes[-1] < dated[-1]
+    assert below.any(), "no name is below its average — weak fixture"
+    assert sig[SCORE].to_numpy()[below].size
+    assert np.isnan(sig[SCORE].to_numpy()[below]).all()
 
 
 def test_signal_refuses_symbols_without_enough_history(trained):
@@ -656,14 +833,14 @@ def test_signal_refuses_symbols_without_enough_history(trained):
         sig = model.signal(algo_trade._panel(pd.concat([sub, newborn])))
     finally:
         model.liquid = liquid
-    assert np.isnan(sig.at["NEW", "up_h10"])
+    assert np.isnan(sig.at["NEW", SCORE])
 
 
 def test_signal_only_scores_the_liquid_universe(trained):
     """Symbols under bist's turnover percentile are not scored at all."""
     model, frame, cutoff = trained
     sig = model.signal(_window_from_frame(frame, cutoff))
-    scored = set(sig.index[sig["up_h5"].notna()])
+    scored = set(sig.index[sig[SCORE].notna()])
     assert scored <= model.liquid
     assert scored, "the liquid universe cannot be empty"
 
@@ -690,9 +867,13 @@ class StubModel:
 
     LOOKBACK = LOOKBACK
 
-    def __init__(self, frame, train_end=TRAIN_END):
+    def __init__(self, frame, train_end=TRAIN_END, exit_ma=algo_trade.EXIT_MA):
         self.frame = frame
         self.train_end = train_end
+        # The strategy compares this against its own `exit_ma`: the entry gate is
+        # the artifact's average and the exit is the run's, so a mismatch means
+        # the two ends of the trade disagree.
+        self.exit_ma = exit_ma
         self.calls = 0
         self.states = []
 
@@ -703,17 +884,16 @@ class StubModel:
 
 
 def signal_frame(rows):
-    """{symbol: (up_h5, up_h10, dn_h5)} -> a signal frame of raw sigmas."""
-    frame = pd.DataFrame.from_dict(
-        rows, orient="index", columns=[h.name for h in HEADS])
-    for head in HEADS:
-        frame[f"{head.name}_pct"] = frame[head.name] * 10.0
+    """{symbol: score} -> a signal frame shaped like `signal` returns."""
+    frame = pd.DataFrame({SCORE: pd.Series(rows, dtype=float)})
+    frame[EXPECTED_PCT] = np.expm1(frame[SCORE]) * 100.0
     return frame
 
 
-# Clears bist's h5 >= 3.0 and h10 >= 2.0 with the down head elevated, which must
-# not matter — bist never gates on it.
-ALL_PASS = {s: (4.0, 3.0, 2.5) for s in SYMBOLS}
+# Every name scored and enterable. The strategy gates on the ranking, not on a
+# level, so the value only has to be finite — `signal` has already refused
+# anything trading below its exit average by the time `_rank` sees it.
+ALL_PASS = {s: 0.4 for s in SYMBOLS}
 
 
 def sessions(count, start="2024-01-02"):
@@ -777,16 +957,20 @@ def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
     ctx = FakeContext(bars, cash=cash)
     strategy = AlgoTradeStrategy()
     stub = StubModel(signal_frame(rows), train_end=train_end)
-    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
-        strategy.on_start(ctx)
     # Most tests here are about ordering, sizing or exits, not about how wide the
     # entry slice is — and with a five-symbol universe the production 0.5% would
     # admit exactly one name and mask all of it. Widening to the whole universe
     # keeps those tests measuring what they claim to; the slice width has its own
     # tests below.
     overrides.setdefault("top_pct", 100.0)
+    # Applied BEFORE on_start, which is where the engine applies them — see
+    # pythonstrategy.h, "set on the instance ... before on_start, so strategies
+    # see final values". Setting them afterwards would hide anything on_start
+    # decides from a param.
     for name, value in overrides.items():
         setattr(strategy, name, value)
+    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
+        strategy.on_start(ctx)
 
     stamps = sorted({b.timestamp for b in bars})
     for _ in range(len(stamps) - ticks_after_cutoff):
@@ -880,7 +1064,7 @@ def test_the_slice_is_a_share_of_the_scored_universe():
     because the heads are a ranker and a fixed threshold both discards the
     ranking and drifts in meaning with every retrain. See ENTRY_TOP_PCT.
     """
-    rows = {f"S{i:02d}": (10.0 - i, 9.0 - i, 0.1) for i in range(20)}
+    rows = {f"S{i:02d}": 1.0 - i / 100.0 for i in range(20)}
     for pct, expected in ((100.0, 20), (50.0, 10), (25.0, 5), (5.0, 1)):
         ctx, strategy, _ = start_run(rows, bars=_universe_bars(rows), top_pct=pct,
                                      max_positions=99)
@@ -892,7 +1076,7 @@ def test_the_slice_is_a_share_of_the_scored_universe():
 
 def test_a_slice_narrower_than_one_name_still_takes_one():
     """int() truncation must not silently disable the strategy on a small universe."""
-    rows = {s: (4.0, 3.0, 0.1) for s in SYMBOLS}
+    rows = dict(ALL_PASS)
     ctx, strategy, _ = start_run(rows, top_pct=0.5)
     drive(strategy, ctx)
     assert len(buys(ctx)) == 1
@@ -906,7 +1090,7 @@ def test_the_slice_is_measured_before_held_names_are_removed():
     names the gate was built to exclude. The cut is taken against the whole
     scored universe and the book applied afterwards.
     """
-    rows = {f"S{i:02d}": (10.0 - i, 9.0 - i, 0.1) for i in range(20)}
+    rows = {f"S{i:02d}": 1.0 - i / 100.0 for i in range(20)}
     ctx, strategy, _ = start_run(rows, bars=_universe_bars(rows), top_pct=25.0)
     held = {f"S{i:02d}" for i in range(5)}            # the whole top slice
     strategy.book = set(held)
@@ -914,18 +1098,6 @@ def test_the_slice_is_measured_before_held_names_are_removed():
         ctx.positions[symbol] = FakePosition(quantity=1.0, price=100.0)
     drive(strategy, ctx)
     assert buys(ctx) == [], "the slice is exhausted by held names, not refilled"
-
-
-def test_the_down_head_never_vetoes():
-    """bist displays dn as an avoidance overlay and never subtracts it.
-
-    A veto here would be this port's invention, so its absence is pinned.
-    """
-    rows = dict(ALL_PASS)
-    rows["AAA"] = (4.0, 3.0, 99.0)     # maximally alarming downside
-    ctx, strategy, _ = start_run(rows)
-    drive(strategy, ctx)
-    assert "AAA" in {o.symbol for o in buys(ctx)}
 
 
 def test_the_percentile_gate_never_sits_out():
@@ -937,27 +1109,26 @@ def test_the_percentile_gate_never_sits_out():
     step aside in a bad tape. Whatever regime protection the strategy has now
     comes from the exit, not the entry.
     """
-    ctx, strategy, _ = start_run({s: (0.01, 0.01, 0.1) for s in SYMBOLS},
-                                 top_pct=25.0)
+    ctx, strategy, _ = start_run({s: 0.0001 for s in SYMBOLS}, top_pct=25.0)
     drive(strategy, ctx)
     assert len(buys(ctx)) == 1, "weak scores still produce the day's best pick"
 
 
 def test_nothing_is_entered_when_the_model_scores_nobody():
     """NaN sigmas are the model declining to score, not a weak score."""
-    ctx, strategy, _ = start_run({s: (np.nan, np.nan, np.nan) for s in SYMBOLS})
+    ctx, strategy, _ = start_run({s: np.nan for s in SYMBOLS})
     drive(strategy, ctx)
     assert ctx.orders == []
 
 
-def test_ranks_on_the_composite():
-    """Order is by mean up sigma descending, not frame order."""
+def test_ranks_on_the_score():
+    """Order is by score descending, not frame order."""
     rows = {
-        "AAA": (4.0, 3.0, 0.1),    # composite 3.5
-        "BBB": (9.0, 8.0, 0.1),    # composite 8.5 — best
-        "CCC": (3.5, 2.5, 0.1),    # composite 3.0
-        "DDD": (6.0, 5.0, 0.1),    # composite 5.5 — second
-        "EEE": (3.2, 2.1, 0.1),
+        "AAA": 0.35,
+        "BBB": 0.85,    # best
+        "CCC": 0.30,
+        "DDD": 0.55,    # second
+        "EEE": 0.21,
     }
     ctx, strategy, _ = start_run(rows)
     drive(strategy, ctx)
@@ -965,8 +1136,8 @@ def test_ranks_on_the_composite():
 
 
 def test_ties_break_on_symbol():
-    """Equal composites must order deterministically, not by frame order."""
-    rows = {s: (4.0, 3.0, 0.1) for s in ["EEE", "CCC", "AAA", "DDD", "BBB"]}
+    """Equal scores must order deterministically, not by frame order."""
+    rows = {s: 0.4 for s in ["EEE", "CCC", "AAA", "DDD", "BBB"]}
     ctx, strategy, _ = start_run(rows)
     drive(strategy, ctx)
     assert [o.symbol for o in buys(ctx)] == ["AAA", "BBB", "CCC", "DDD", "EEE"]
@@ -978,7 +1149,7 @@ def test_the_book_is_capped_at_max_positions():
     A percentile gate fires every session, so an uncapped book would exhaust
     cash within a few entries and everything after would be a broker rejection.
     """
-    rows = {f"S{i:02d}": (10.0 - i * 0.1, 9.0 - i * 0.1, 0.1) for i in range(30)}
+    rows = {f"S{i:02d}": 1.0 - i / 100.0 for i in range(30)}
     ctx, strategy, _ = start_run(rows, bars=_universe_bars(rows),
                                  max_positions=4)
     drive(strategy, ctx)
@@ -987,7 +1158,7 @@ def test_the_book_is_capped_at_max_positions():
 
 
 def test_a_full_book_takes_nothing():
-    rows = {s: (4.0, 3.0, 0.1) for s in SYMBOLS}
+    rows = dict(ALL_PASS)
     ctx, strategy, _ = start_run(rows, ticks_after_cutoff=2, max_positions=2)
     drive(strategy, ctx)
     fill_entries(ctx)
@@ -1068,7 +1239,7 @@ def test_ma_exit_runs_when_nothing_qualifies_to_enter():
                                     paths={"AAA": [100.0, 90.0]})
     drive(strategy, ctx)
     fill_entries(ctx)
-    stub.frame = signal_frame({s: (1.0, 1.0, 0.1) for s in SYMBOLS})
+    stub.frame = signal_frame({s: 0.2 for s in SYMBOLS})
 
     drive(strategy, ctx)
     assert [o.symbol for o in sells(ctx)] == ["AAA"]
@@ -1118,7 +1289,7 @@ def test_ma_exit_only_sells_a_position_the_broker_reports():
 
 def test_entry_size_is_equity_over_the_position_cap():
     """Full deployment lands exactly at the cap, never before it."""
-    ctx, strategy, _ = start_run({"AAA": (4.0, 3.0, 0.1)}, cash=1_000.0,
+    ctx, strategy, _ = start_run({"AAA": 0.4}, cash=1_000.0,
                                  max_positions=4, cash_buffer=0.02)
     drive(strategy, ctx)
 
@@ -1227,7 +1398,7 @@ def test_a_token_sized_entry_is_skipped_rather_than_placed():
     # equity held in positions with the cash leg still in flight, so equity is
     # pinned high while cash is drained.
     def run_with(cash):
-        ctx, strategy, _ = start_run({"AAA": (4.0, 3.0, 0.1)}, max_positions=4)
+        ctx, strategy, _ = start_run({"AAA": 0.4}, max_positions=4)
         ctx._cash = cash
         ctx.equity = lambda: 1_000.0        # target slot = 250
         drive(strategy, ctx)
@@ -1276,13 +1447,13 @@ def test_tail_closes_slices_each_symbol_independently():
 
 
 def test_entries_are_logged_with_the_signal_that_produced_them(capsys):
-    """One line per entry, carrying the order and the sigmas the gates read.
+    """One line per entry, carrying the order and the score the gate ranked on.
 
-    The line has to be readable back against h5_min/h10_min without re-running
-    the model, which is the whole point of printing the raw sigmas rather than
-    just the composite.
+    The gate is a percentile, so the raw score is the only record of how strong
+    a pick actually was — the line has to carry it, or a pick cannot be read
+    back without re-running the model.
     """
-    rows = {"AAA": (4.0, 3.0, 2.5)}
+    rows = {"AAA": 0.4}
     ctx, strategy, _ = start_run(rows, cash=1_000.0, max_positions=4,
                                  cash_buffer=0.02, stop_pct=10.0, exit_ma=20)
     drive(strategy, ctx)
@@ -1292,28 +1463,25 @@ def test_entries_are_logged_with_the_signal_that_produced_them(capsys):
     assert "enter market @ 100.0000" in line
     assert "SL 90.0000 (-10.00%)" in line
     assert "exit < MA20" in line
-    # sigma, then expected excess percent — signal_frame sets _pct to 10x sigma.
-    assert "h5 4.000 (+40.00%)" in line
-    assert "h10 3.000 (+30.00%)" in line
-    assert "dn 2.500" in line
-    assert "composite 3.500" in line
+    # the score, then that score read as a return
+    assert "score 0.4000" in line
+    assert f"({100.0 * np.expm1(0.4):+.2f}%)" in line
     assert f"qty {1_000.0 / 4 / 100.0:.6g}" in line
 
 
 def test_nothing_is_logged_when_no_order_is_placed(capsys):
     """Weak scores are no longer silent — only an unscored universe is."""
-    ctx, strategy, _ = start_run({s: (np.nan, np.nan, np.nan) for s in SYMBOLS})
+    ctx, strategy, _ = start_run({s: np.nan for s in SYMBOLS})
     drive(strategy, ctx)
     assert capsys.readouterr().out == ""
 
 
-def test_entries_are_plotted_for_all_three_heads():
+def test_entries_are_plotted_with_their_score():
     ctx, strategy, _ = start_run()
     drive(strategy, ctx)
     plotted = {(p.name, p.symbol) for p in ctx.plots}
     for symbol in SYMBOLS:
-        for head in ("up_h5", "up_h10", "dn_h5"):
-            assert (head, symbol) in plotted
+        assert (SCORE, symbol) in plotted
 
 
 def test_declared_params_and_indicators():
@@ -1321,7 +1489,7 @@ def test_declared_params_and_indicators():
     assert names == {"top_pct", "stop_pct", "exit_ma",
                      "max_positions", "cash_buffer", "skip_limit_locked"}
     assert {i["name"] for i in stonks.indicator_specs(AlgoTradeStrategy)} == {
-        "up_h5", "up_h10", "dn_h5"}
+        SCORE}
 
 
 def test_the_entry_gate_is_a_percentage_of_the_universe():
@@ -1338,14 +1506,34 @@ def test_the_entry_gate_is_a_percentage_of_the_universe():
     assert value > 0.05, "a fraction in [0,1] would read as a near-empty slice"
 
 
-def test_the_stop_still_matches_the_labels_drawdown_gate():
-    """The stop is the half of bist's bracket this port kept, and it is kept
-    because the up labels are zeroed on exactly this drawdown. Tying the test to
-    that reason rather than to bist's number says why it matters if it moves.
+def test_a_mismatched_exit_average_is_reported(caplog):
+    """Both ends of the trade are one average, read from two places.
+
+    The entry gate lives in `signal` and uses the artifact's `exit_ma`; the exit
+    uses the run's, which the GUI can override. Overriding without retraining
+    enters on one average and leaves on another, and nothing in a report would
+    show it — so it has to say so out loud.
     """
-    gated = [h.max_drawdown for h in HEADS if h.max_drawdown is not None]
-    assert AlgoTradeStrategy.stop_pct == pytest.approx(
-        100.0 * abs(gated[0])), "the stop no longer enforces the label's gate"
+    with caplog.at_level("WARNING"):
+        start_run(exit_ma=10)          # the stub artifact stays at EXIT_MA
+    assert any("exit_ma" in r.getMessage() for r in caplog.records)
+
+
+def test_a_matching_exit_average_is_silent(caplog):
+    with caplog.at_level("WARNING"):
+        start_run(exit_ma=algo_trade.EXIT_MA)
+    assert not [r for r in caplog.records if "exit_ma" in r.getMessage()]
+
+
+def test_the_stop_is_risk_management_not_a_mirror_of_the_label():
+    """The stop used to encode the label's -10% drawdown gate. It no longer can.
+
+    The trade label has no drawdown floor — it holds until the average breaks —
+    so the stop now cuts trades the label counts as winners. It is kept anyway,
+    as the only exit that can act on an overnight gap. What is pinned here is
+    that it still exists and that the target is still gone.
+    """
+    assert AlgoTradeStrategy.stop_pct > 0.0, "the gap defence must still exist"
     assert not hasattr(AlgoTradeStrategy, "target_pct"), "replaced by exit_ma"
     assert AlgoTradeStrategy.exit_ma >= 2, "an average needs at least two bars"
 
@@ -1471,10 +1659,10 @@ def test_carried_scoring_matches_batch_scoring(trained):
                                 state=state)
     assert state.bars == end + 1 - LOOKBACK
 
-    both = batch["up_h5"].notna() & windowed["up_h5"].notna()
+    both = batch[SCORE].notna() & windowed[SCORE].notna()
     assert both.any()
-    pd.testing.assert_series_equal(batch.loc[both, "up_h5"],
-                                   windowed.loc[both, "up_h5"])
+    pd.testing.assert_series_equal(batch.loc[both, SCORE],
+                                   windowed.loc[both, SCORE])
 
 
 def test_the_strategy_hands_its_state_to_the_model():
@@ -1485,11 +1673,15 @@ def test_the_strategy_hands_its_state_to_the_model():
     assert stub.states[-1] is strategy.state
 
 
-def test_heads_match_bists_configuration():
-    """Two drawdown-gated up horizons and one unconditional down horizon."""
-    assert HEAD_BY_NAME["up_h5"] == Head("up_h5", 5, "up", -0.10)
-    assert HEAD_BY_NAME["up_h10"] == Head("up_h10", 10, "up", -0.10)
-    assert HEAD_BY_NAME["dn_h5"] == Head("dn_h5", 5, "dn", None)
+def test_the_model_is_fit_for_the_trade_the_strategy_holds():
+    """One head, and the exit average is shared by the label and the strategy.
+
+    If these drift apart the model is ranking names for a trade nobody takes,
+    which is exactly the state this target replaced.
+    """
+    assert algo_trade.EXIT_MA == AlgoTradeStrategy.exit_ma
+    assert ManipulationModel().exit_ma == algo_trade.EXIT_MA
+    assert ManipulationModel().max_hold == MAX_HOLD
 
 
 # ---------------------------------------------------------------------------

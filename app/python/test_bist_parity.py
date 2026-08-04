@@ -44,8 +44,12 @@ KNOWN_DIFFERENT = {"volume_skew_20", "volume_kurt_20"}
 
 @pytest.fixture(scope="module")
 def parity():
-    """(feature table, label table) from the same harness the tool uses."""
-    import algo_trade
+    """(feature table, column names) from the same harness the tool uses.
+
+    Features only. `algo_trade._labels` simulates the trade the strategy holds
+    rather than bist's fixed-horizon drawdown-gated sigma, so there is nothing
+    in `bist_manipulation` left to diff it against.
+    """
     import bist_parity
 
     frame = pd.read_parquet(DATA)
@@ -60,10 +64,7 @@ def parity():
     feature_table = bist_parity.compare(
         bist_parity.port_features(port_input),
         features[["date", "symbol", *names]], names, "features")
-    label_table = bist_parity.compare(
-        bist_parity.port_labels(port_input), bist_parity.bist_labels(features),
-        [h.name for h in algo_trade.HEADS], "labels")
-    return feature_table, label_table, names
+    return feature_table, names
 
 
 def test_feature_names_match_bists_column_selection(parity):
@@ -74,13 +75,13 @@ def test_feature_names_match_bists_column_selection(parity):
     """
     import algo_trade
 
-    _, _, names = parity
+    _, names = parity
     assert tuple(names) == algo_trade.FEATURE_NAMES
 
 
 def test_every_feature_matches_bist(parity):
     """The gate. Two known exceptions, argued at algo_trade._moments."""
-    table, _, _ = parity
+    table, _ = parity
     off = table.loc[(table.n_off > 0) | (table.nan_only_port > 0)
                     | (table.nan_only_bist > 0)]
     unexpected = set(off.index) - KNOWN_DIFFERENT
@@ -91,17 +92,9 @@ def test_every_feature_matches_bist(parity):
 
 def test_the_known_exceptions_are_still_only_two(parity):
     """Guards the other direction: if pandas' moments get fixed, drop the waiver."""
-    table, _, _ = parity
+    table, _ = parity
     for name in KNOWN_DIFFERENT:
         assert name in table.index, f"{name} vanished from the feature set"
-
-
-def test_every_label_matches_bist(parity):
-    """All three heads, including the centered window and the drawdown gate."""
-    _, table, _ = parity
-    off = table.loc[(table.n_off > 0) | (table.nan_only_port > 0)
-                    | (table.nan_only_bist > 0)]
-    assert off.empty, f"labels drifted from bist:\n{off.to_string()}"
 
 
 def test_most_features_are_bit_exact(parity):
@@ -111,7 +104,7 @@ def test_most_features_are_bit_exact(parity):
     still passes the tolerance gate, which is worth knowing before it drifts
     further.
     """
-    table, _, _ = parity
+    table, _ = parity
     exact = table.loc[(table.max_abs == 0) & (table.nan_only_port == 0)
                       & (table.nan_only_bist == 0)]
     assert len(exact) >= 55, (

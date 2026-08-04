@@ -1,9 +1,15 @@
 """Parity harness: algo_trade's reimplementation vs bist's own code, same input.
 
-`app/python/algo_trade.py` reimplements the feature and label pipeline from
+`app/python/algo_trade.py` reimplements the 72-column feature pipeline from
 /Users/macmini-1/bist so it can run inside the C++ engine one bar at a time.
 This tool checks the reimplementation against the original by running BOTH on
 the same OHLCV frame and diffing every column.
+
+Features only. The labels used to be diffed here too, against bist's
+`synthetic_labels`, but `algo_trade._labels` no longer computes a fixed-horizon
+drawdown-gated sigma — it simulates the trade the strategy holds, which has no
+counterpart in bist to diff against. The feature half is untouched and is what
+keeps the port honest.
 
 Why not just compare against bist's shipped `data_artifacts/features.parquet`:
 that was built on bist's own feed, which is different data — its `open` is
@@ -122,55 +128,6 @@ def port_features(df):
     return frame.reset_index()
 
 
-def port_labels(df):
-    """`algo_trade._labels` for every head, as a long frame."""
-    import algo_trade as A
-
-    panel = A._panel(df)
-    index = panel["close"].index
-    columns = panel["close"].columns
-    out = {}
-    for head in A.HEADS:
-        out[head.name] = pd.DataFrame(
-            A._labels(panel, head), index=index, columns=columns
-        ).stack(future_stack=True).rename(head.name)
-    frame = pd.concat(out.values(), axis=1)
-    frame.index.names = ["date", "symbol"]
-    return frame.reset_index()
-
-
-def bist_labels(features):
-    """bist's labels for the same three heads.
-
-    `build_labels` only emits the module-level `EXTREME_MOVE_THRESHOLDS` config
-    (horizon 10), so the per-head targets are built the way
-    `configured_alerts.train_and_score_config` builds them: an explicit cfg per
-    (horizon, max_drawdown), the up target gated on the drawdown and the down
-    target unconditional.
-    """
-    from bist_manipulation.config import (
-        EXTREME_DOWN_THRESHOLDS, EXTREME_MOVE_THRESHOLDS)
-    from bist_manipulation.labels.synthetic_labels import (
-        extreme_dn_sigma, extreme_up_sigma, has_loss)
-    import algo_trade as A
-
-    df = features.sort_values(["symbol", "date"], kind="mergesort").reset_index(drop=True)
-    out = df[["symbol", "date"]].copy()
-    for head in A.HEADS:
-        if head.direction == "up":
-            cfg = {**EXTREME_MOVE_THRESHOLDS, "horizon": head.horizon,
-                   "max_drawdown": head.max_drawdown}
-            sigma = extreme_up_sigma(df, cfg)
-            loss = has_loss(df, cfg)
-            valid = sigma.notna() & loss.notna()
-            out[head.name] = (sigma.where(~loss.fillna(False).astype(bool), 0.0)
-                              .where(valid))
-        else:
-            cfg = {**EXTREME_DOWN_THRESHOLDS, "horizon": head.horizon}
-            out[head.name] = extreme_dn_sigma(df, cfg)
-    return out
-
-
 # A column passes when every shared cell is within numpy's isclose band. rtol
 # alone is useless on features that legitimately sit near zero — a cum_return of
 # 1e-12 differing by 1e-15 is a 0.1% relative error and complete noise — and atol
@@ -233,9 +190,6 @@ def main():
                         help="feed the port bist's surviving rows (default) or "
                              "the parquet as-is; 'raw' measures what bist's row "
                              "drops are worth on their own")
-    parser.add_argument("--labels", action="store_true",
-                        help="also diff the three label heads (reads forward, "
-                             "so it is slower)")
     args = parser.parse_args()
 
     if not BIST_ROOT.exists():
@@ -277,10 +231,6 @@ def main():
 
     ref = features[["date", "symbol", *names]]
     compare(port_features(port_input), ref, names, "features")
-
-    if args.labels:
-        compare(port_labels(port_input), bist_labels(features),
-                [h.name for h in A.HEADS], "labels")
 
 
 if __name__ == "__main__":

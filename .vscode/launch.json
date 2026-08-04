@@ -22,10 +22,6 @@
             "preLaunchTask": "CMake: build (macos-debug)"
         },
         {
-            // The listener opens during QML load — strategy discovery brings the
-            // interpreter up on the worker thread while the GUI thread waits on
-            // it — so the window does not appear until a debugger attaches.
-            // Prefer the "--gui + Python" compound, which attaches for you.
             "name": "macOS: Debug app --gui + Python strategy (lldb)",
             "type": "lldb",
             "request": "launch",
@@ -60,8 +56,6 @@
                 "port": 5678
             },
             "justMyCode": false,
-            // Blocks until the app's listener is up, so this is safe to start
-            // before, with, or after the app.
             "preLaunchTask": "Wait for debugpy listener"
         },
         {
@@ -97,7 +91,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug app --gui (gdb)",
@@ -117,7 +111,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
         },
         {
             "name": "Linux: Debug core_tests (gdb)",
@@ -135,7 +129,7 @@
                 }
             ],
             "preLaunchTask": "CMake: build (linux-debug)",
-            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2/tonka3000.qtvsctools/qt.natvis.xml"
+            "visualizerFile": "/Users/macmini-1/.vscode-server/data/User/workspaceStorage/f916120416e956326d3fb512734993e2-1/tonka3000.qtvsctools/qt.natvis.xml"
         }
     ],
     "compounds": [

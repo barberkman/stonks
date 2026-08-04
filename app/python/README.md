@@ -311,16 +311,32 @@ processes `.pth` files so editable installs work. `STONKS_PYTHONPATH`
 ## AlgoTrade — a strategy that loads a pre-trained model
 
 `algo_trade.py` is the one strategy here that does not decide anything from
-price rules: `ManipulationModel` is three XGBoost regressors (a port of
-`/Users/macmini-1/bist`) and the strategy trades their output — entry when the
-5-day head clears 3.0 sigma and the 10-day head clears 2.0, which is what bist
-backtests in `scripts_observation/walk_forward_static.py`. The exit is the one
-deliberate deviation: bist rests a -10% stop and a +30% target and holds until
-one fills, and here the stop is kept while the target is replaced by `exit_ma` —
-a held name leaves when its close finishes below its 20-bar simple moving
-average. The stop is what the label's drawdown gate encodes and the only exit
-that can act on a gap; the target encodes nothing and capped the winners. It
-needs two things the other strategies do not.
+price rules: `ManipulationModel` is a single XGBoost regressor over bist's 72
+daily features (a port of `/Users/macmini-1/bist`) and the strategy trades its
+ranking — entry takes the day's top `top_pct` of the scored cross-section and
+fills at the next open.
+
+The target is the largest deviation from bist. bist fits three heads on a
+drawdown-gated forward excess return over a fixed 5 or 10 bars; `_labels` here
+fits one head on the outcome of the trade the strategy actually holds:
+
+| | |
+|---|---|
+| enter | next open, but only while the close sits at or above its 20-bar SMA |
+| exit | next open after the first close *below* that SMA |
+| cap | 60 traded bars if the break never comes |
+
+So the entry gate, the exit rule and the training target are one thing —
+`EXIT_MA`. A name below its average is not ranked poorly, it is not scored at
+all, because the fit never saw such a row.
+
+bist's -10% stop is kept, but as risk management rather than as a mirror of the
+label: the trade target has no drawdown floor, so the stop now cuts trades the
+label counts as winners. It stays because it is the only exit that can act on an
+overnight gap. bist's +30% target is gone — it capped the winners and this label
+has no ceiling for it to correspond to.
+
+It needs two things the other strategies do not.
 
 **xgboost in the venv.** It is a hard import, and strategy discovery imports
 every `app/python/*.py` to find strategies — a module that fails to import is
@@ -340,14 +356,16 @@ its own trainer. Roughly a minute over the full BIST panel:
 app/python/.venv/bin/python app/python/algo_trade.py --train-end 2024-12-31
 ```
 
-That writes `app/python/artifacts/algotrade/` (one booster per head, the
-winsorize bounds, and `meta.json`). It is gitignored — regenerate it rather than
+That writes `app/python/artifacts/algotrade/` — `model.json`, the winsorize
+bounds, and `meta.json` (which records `exit_ma` and `max_hold`, so an artifact
+says which trade it was fit for). It is gitignored — regenerate it rather than
 committing it.
 
 Note the trainer defaults to bist's **backtest** training window (full history),
-not its screen's 2024-01-01 — see `BACKTEST_TRAIN_START`. That pairing matters:
-the entry gate is an absolute sigma, and a fit restricted to 2024 predicts tightly
-enough that `h5 >= 3.0 AND h10 >= 2.0` almost never fires.
+not its screen's 2024-01-01 — see `BACKTEST_TRAIN_START`. It mattered more under
+bist's absolute gate, where a narrow fit never reached the threshold at all; it
+is kept because the trade label's entry gate already drops about half the panel
+and the remaining sample is worth having.
 
 Then mind the window — and here it is stricter than a 300-bar lookback. The
 artifact records its `train_end` and the strategy refuses to trade any bar the fit
@@ -367,19 +385,22 @@ because the carried state has to see them all.
 
 ### The result to be suspicious of
 
-**Every entry this strategy takes is a name that closed at the +10% price band.**
-Over the 2025-2026 out-of-sample stretch there are 14 bars where both up heads
-clear bist's thresholds, and on all 14 the symbol closed limit-up on the signal
-bar. Entries fill at the next open, so those are fills a real order book would not
-have given.
+**The return is a handful of trades.** Out of sample the trade label wins about
+38% of the time, at a +6.5% mean against a -1.7% median — a trend-following
+payoff, where a thin right tail carries everything and the median trade loses.
+Any expectation drawn from a headline return is an expectation about catching
+one of those.
 
-This is not a porting artifact. bist's own backtest disables the same gate
-(`LU_OVERRIDE` in `run_static_fuzz.py`) and its published figures inherit it. It
-follows from what the model is: a detector for names about to make an outsized
-move, whose strongest readings land on names that already started making one.
+The ranking is also weak: Spearman of the score against the realised return is
+about +0.05 out of sample. The previous fixed-horizon target scored +0.35, but
+that number was inflated by a label that leaked `h//2` bars through bist's
+centred window and by drawdown-gated zeros the model could learn trivially.
 
-`skip_limit_locked = 1` excludes them, and leaves zero trades. Both settings are
-worth running; only one of them is bist.
+What did improve is what the gate selects. Under bist's absolute sigma gate
+**every** out-of-sample signal was a name that closed at the +10% price band —
+fills a real order book would not have given at the next open. Under the
+percentile gate that share is about 1%, and `skip_limit_locked = 1` refuses the
+rest rather than leaving zero trades.
 
 ### Parity with bist
 
@@ -388,26 +409,31 @@ The port is checked against bist mechanically rather than by inspection.
 and diffs it against `algo_trade.py` column by column:
 
 ```sh
-app/python/.venv/bin/python tools/bist_parity.py --labels        # full panel
+app/python/.venv/bin/python tools/bist_parity.py                 # full panel
 app/python/.venv/bin/python tools/bist_parity.py --tail 500      # quick
 ```
 
-Current state: 70 of 72 features and all 3 labels agree to float tolerance, 60
-bit-exact. The two exceptions are `volume_skew_20` and `volume_kurt_20`, where
-pandas' incremental rolling moments are not window-invariant and matching bist
-would break the batch-equals-window contract — argued at `algo_trade._moments`.
+Current state: 70 of 72 features agree to float tolerance, 60 bit-exact. The two
+exceptions are `volume_skew_20` and `volume_kurt_20`, where pandas' incremental
+rolling moments are not window-invariant and matching bist would break the
+batch-equals-window contract — argued at `algo_trade._moments`.
 `app/python/test_bist_parity.py` is the same check as a regression gate; both skip
 themselves when `/Users/macmini-1/bist` is absent.
 
+**Features only.** Labels used to be diffed here too, but the trade target has no
+counterpart in bist's `synthetic_labels` to diff against, so that half is gone
+rather than adapted. The feature half is what keeps the port honest.
+
 What parity does *not* mean: bist runs on a different feed — its `open` is a daily
 VWAP (`HGDG_AOF`), its `volume` is lira turnover rather than share count, and its
-history starts in 2016 — so the code matches and the numbers do not. A sigma here
+history starts in 2016 — so the code matches and the numbers do not. A score here
 is not comparable to a sigma in a bist report.
 
 ### The single-date screen
 
 `tools/bist_alerts.py` is the port's equivalent of bist's `configured_alerts`: it
-trains through a date, scores that date, and prints bist's table.
+trains through a date, scores that date, and prints the slice the strategy would
+enter — the day's top `--top-pct` by score, best first.
 
 ```sh
 app/python/.venv/bin/python tools/bist_alerts.py --report-date 2026-07-24
