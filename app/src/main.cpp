@@ -6,9 +6,13 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <QGuiApplication>
@@ -35,16 +39,26 @@ namespace stonks::app {
 bool has_flag(int argc, const char* const* argv, std::string_view flag);
 std::string flag_value(int argc, const char* const* argv, std::string_view flag,
                        std::string fallback);
+std::vector<std::string> flag_values(int argc, const char* const* argv, std::string_view flag);
 std::vector<std::string> split_csv(const std::string& csv);
+std::map<std::string, double> parse_params(const std::vector<std::string>& items);
+std::pair<std::string, std::string> resolve_strategy(const std::string& arg);
 
 // Wires up the Engine (the algo_trade strategy + KLineFeed + BacktestBroker)
 // and runs it, printing the report to the terminal.
 //
 //   app [--data app/data/us_1d.parquet] [--symbols MU,NVDA]
 //       [--start 2024-06-01] [--end 2026-07-01]
+//       [--strategy module[:Class]] [--param name=value ...]
+//       [--cash 100000] [--out app/reports/run.json]
 //
 // Defaults run the BIST daily set with no symbol filter — an empty --symbols
-// list is KLineFeed's "all symbols in the file".
+// list is KLineFeed's "all symbols in the file" — against algo_trade with its
+// declared param defaults, so the flag-free invocation is unchanged.
+//
+// --param is repeatable and is validated by PythonStrategy against the
+// strategy's declared `params`; --out lets concurrent runs write distinct
+// reports, which the second-granularity default path cannot.
 //
 // The default window is set by algo_trade's pre-trained artifact, which was fit
 // through 2024-12-31: the strategy refuses to trade any bar the fit could see.
@@ -54,8 +68,9 @@ std::vector<std::string> split_csv(const std::string& csv);
 // so a later start silently reseeds both against a shorter history and scores
 // bars on values the fit never saw. Retrain with a different --train-end and only
 // the trading window moves; --start stays at the front of the data.
-void run_backtest(int argc, const char* const* argv) {
-    constexpr stonks::core::Balance starting_cash = 1000.0;
+int run_backtest_impl(int argc, const char* const* argv) {
+    const stonks::core::Balance starting_cash =
+        std::stod(flag_value(argc, argv, "--cash", "1000"));
     const std::string data_file =
         flag_value(argc, argv, "--data", "app/data/bist_1d.parquet");
     const std::string start = flag_value(argc, argv, "--start", "2020-01-02");
@@ -67,7 +82,20 @@ void run_backtest(int argc, const char* const* argv) {
         .maker_fee_bps = 2.0,
         .taker_fee_bps = 5.0,
     };
-    PythonStrategy strategy{ "algo_trade", "AlgoTradeStrategy" };
+
+    // The interpreter must be live before resolve_strategy() can discover a
+    // bare module name, so bring it up here rather than leaving it to
+    // PythonStrategy's ctor. Same path defaults as the batch and live runners
+    // (overwrite=0, so a caller-supplied env still wins).
+    ::setenv("STONKS_VENV", "app/python/.venv", 0);
+    ::setenv("STONKS_PYTHONPATH", "app/python", 0);
+    stonks::python::EmbeddedPython python{};
+
+    const auto [module, cls] =
+        resolve_strategy(flag_value(argc, argv, "--strategy", "algo_trade:AlgoTradeStrategy"));
+    const std::map<std::string, double> overrides =
+        parse_params(flag_values(argc, argv, "--param"));
+    PythonStrategy strategy{ module, cls, overrides };
     // Declared indicator metadata — class-level, read before the move below.
     std::vector<IndicatorSpec> indicator_specs;
     for (const auto& s : strategy.indicator_specs()) {
@@ -94,8 +122,8 @@ void run_backtest(int argc, const char* const* argv) {
         engine.equity(),
         elapsed,
         broker_config,
-        StrategyRunInfo{ "algo_trade", "AlgoTradeStrategy", {} },   // headless: no overrides
-        RunMeta{ "AlgoTradeStrategy", data_file,
+        StrategyRunInfo{ module, cls, overrides },
+        RunMeta{ cls, data_file,
                  std::filesystem::path{ data_file }.stem().string(), start, end, symbols },
         std::move(indicator_specs),
         engine.indicators(),
@@ -103,11 +131,25 @@ void run_backtest(int argc, const char* const* argv) {
     const ReportMetrics metrics = compute_metrics(input);
     print_report(std::cout, metrics);
 
-    const std::string path = timestamped_report_path();
+    const std::string path = flag_value(argc, argv, "--out", timestamped_report_path());
     std::filesystem::create_directories(std::filesystem::path{ path }.parent_path());
     std::ofstream out{ path };
     write_report_json(out, input, metrics);
     std::cout << "Report written to " << path << '\n';
+    return 0;
+}
+
+// A bad --strategy/--param, an unreadable feed, or a strategy that raises in
+// on_start all surface here rather than aborting the process: main() has no
+// handler of its own, and the sweep driver needs a non-zero exit plus a
+// readable reason to record the run as failed.
+int run_backtest(int argc, const char* const* argv) {
+    try {
+        return run_backtest_impl(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "backtest failed: " << e.what() << '\n';
+        return 2;
+    }
 }
 
 // Runs every Python strategy discovered in app/python/ sequentially against the
@@ -267,6 +309,55 @@ std::string flag_value(int argc, const char* const* argv, std::string_view flag,
     return fallback;
 }
 
+// Every value following `flag`, in command-line order. flag_value() returns
+// only the first, which is wrong for a repeatable flag like --param.
+std::vector<std::string> flag_values(int argc, const char* const* argv, std::string_view flag) {
+    std::vector<std::string> out;
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string_view{ argv[i] } == flag) { out.push_back(argv[i + 1]); }
+    }
+    return out;
+}
+
+// "name=value" pairs into the override map PythonStrategy takes. The strategy
+// validates the names against its declared params and coerces to the declared
+// type, so only the numeric parse belongs here.
+std::map<std::string, double> parse_params(const std::vector<std::string>& items) {
+    std::map<std::string, double> out;
+    for (const auto& item : items) {
+        const std::size_t eq = item.find('=');
+        if (eq == 0 || eq == std::string::npos) {
+            throw std::runtime_error{ "--param expects name=value, got '" + item + "'" };
+        }
+        const std::string name = item.substr(0, eq);
+        const std::string text = item.substr(eq + 1);
+        std::size_t consumed = 0;
+        double value = 0.0;
+        try {
+            value = std::stod(text, &consumed);
+        } catch (const std::exception&) {
+            throw std::runtime_error{ "--param " + name + ": '" + text + "' is not a number" };
+        }
+        if (consumed != text.size()) {
+            throw std::runtime_error{ "--param " + name + ": '" + text + "' is not a number" };
+        }
+        out[name] = value;
+    }
+    return out;
+}
+
+// Resolve "module" or "module:Class" to a (module, class) pair. A bare module
+// is looked up via strategy discovery. Shared by the backtest and live paths.
+std::pair<std::string, std::string> resolve_strategy(const std::string& arg) {
+    if (const auto colon = arg.find(':'); colon != std::string::npos) {
+        return { arg.substr(0, colon), arg.substr(colon + 1) };
+    }
+    for (const auto& info : discover_strategies("app/python")) {
+        if (info.module == arg) { return { arg, info.cls }; }
+    }
+    throw std::runtime_error{ "strategy module '" + arg + "' not found in app/python/" };
+}
+
 // Split "BTCUSDT,ETHUSDT" into {"BTCUSDT","ETHUSDT"}.
 std::vector<std::string> split_csv(const std::string& csv) {
     std::vector<std::string> out;
@@ -314,21 +405,13 @@ int run_live(int argc, const char* const* argv) {
         ::setenv("STONKS_PYTHONPATH", "app/python", 0);
         stonks::python::EmbeddedPython python{};
 
-        // Resolve "module" or "module:Class" to a (module, class) pair. A bare
-        // module is looked up via strategy discovery.
-        std::string module = strategy_arg;
+        std::string module;
         std::string cls;
-        if (const auto colon = strategy_arg.find(':'); colon != std::string::npos) {
-            module = strategy_arg.substr(0, colon);
-            cls = strategy_arg.substr(colon + 1);
-        } else {
-            for (const auto& info : discover_strategies("app/python")) {
-                if (info.module == module) { cls = info.cls; break; }
-            }
-            if (cls.empty()) {
-                std::cerr << "Strategy module '" << module << "' not found in app/python/.\n";
-                return 2;
-            }
+        try {
+            std::tie(module, cls) = resolve_strategy(strategy_arg);
+        } catch (const std::exception& e) {
+            std::cerr << e.what() << '\n';
+            return 2;
         }
 
         stonks::binance::BinanceConfig config =
@@ -374,10 +457,9 @@ int main(int argc, char* argv[]) {
         }
         if (stonks::app::has_flag(argc, argv, "--all")) {
             stonks::app::run_all_backtests();
-        } else {
-            stonks::app::run_backtest(argc, argv);
+            return 0;
         }
-        return 0;
+        return stonks::app::run_backtest(argc, argv);
     }
 
     QGuiApplication app{ argc, argv };

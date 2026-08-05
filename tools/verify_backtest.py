@@ -129,7 +129,15 @@ traded = {o["symbol"] for o in orders.values()} | {t["symbol"] for t in trades}
 
 df = pd.read_parquet(args.parquet)
 if df["timestamp"].dtype != "int64":
-    df["timestamp"] = df["timestamp"].astype("datetime64[ns, UTC]").astype("int64") // 1_000_000
+    # The equity/bist panels store tz-naive timestamps where binance_1d.parquet
+    # stores tz-aware ones, and .astype cannot add a zone. KLineFeed casts the
+    # column to timestamp[ms, UTC] regardless, so naive values are UTC already.
+    ts = pd.to_datetime(df["timestamp"])
+    if ts.dt.tz is None:
+        ts = ts.dt.tz_localize("UTC")
+    # Pin nanoseconds before the integer cast: these files store microseconds,
+    # and //1e6 on a microsecond count would yield seconds, not milliseconds.
+    df["timestamp"] = ts.astype("datetime64[ns, UTC]").astype("int64") // 1_000_000
 df = df[df["timestamp"].isin(timeline_set) & df["symbol"].isin(traded)]
 df = df.reset_index(drop=True)
 bars_by_ts = defaultdict(list)          # ts -> bars in file order
