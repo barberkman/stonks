@@ -321,6 +321,11 @@ QVariantList BacktestWorker::listStrategiesImpl()
                 pm["type"] = QString::fromStdString(p.type_name);
                 pm["doc"] = QString::fromStdString(p.doc);
                 pm["unit"] = QString::fromStdString(p.unit);
+                QStringList choices;
+                for (const auto& c : p.choices) {
+                    choices << QString::fromStdString(c);
+                }
+                pm["choices"] = choices;
                 params.append(pm);
             }
             entry["params"] = params;

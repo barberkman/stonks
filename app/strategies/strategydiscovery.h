@@ -14,6 +14,10 @@ struct ParamSpec
     std::string type_name;    // "float" | "int" | "bool"
     std::string doc;
     std::string unit;
+    // Named alternatives for an int param. Empty for an ordinary number; when
+    // present the value is the *index* into this list, so the override
+    // transport stays numeric and only the GUI needs to know the labels.
+    std::vector<std::string> choices;
 };
 
 // A selectable Python strategy: its file stem (the import module name), the

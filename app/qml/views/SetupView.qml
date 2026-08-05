@@ -119,7 +119,11 @@ Page {
     Rectangle {
         id: paramCard
         readonly property var paramSpecs: App.paramSpecsFor(App.strategy)
-        readonly property var numericSpecs: paramSpecs.filter(function (s) { return s.type !== "bool"; })
+        // A param carrying `choices` is a named selection whose value is the
+        // index, so it gets a dropdown rather than a number box — typing "137"
+        // to pick a chart pattern out of 212 is not a usable control.
+        readonly property var choiceSpecs: paramSpecs.filter(function (s) { return (s.choices || []).length > 0; })
+        readonly property var numericSpecs: paramSpecs.filter(function (s) { return s.type !== "bool" && (s.choices || []).length === 0; })
         readonly property var boolSpecs: paramSpecs.filter(function (s) { return s.type === "bool"; })
 
         width: view.innerWidth
@@ -141,6 +145,31 @@ Page {
                 height: Theme.sp(20)
                 Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "STRATEGY PARAMETERS"; color: Theme.t5; font.family: Theme.mono; font.weight: Font.Medium; font.pixelSize: Theme.fontCaption; font.letterSpacing: 1 * Theme.scale }
                 GhostButton { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "reset to defaults"; onClicked: App.resetParams(App.strategy) }
+            }
+
+            Repeater {
+                model: paramCard.choiceSpecs
+                delegate: Column {
+                    required property var modelData
+                    width: paramCol.width
+                    spacing: Theme.sp(7)
+                    Text {
+                        text: modelData.doc || modelData.name
+                        color: Theme.t4
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontCaption
+                    }
+                    StyledSelect {
+                        width: parent.width
+                        readonly property int picked: Math.round(App.paramValue(App.strategy, modelData.name, modelData.default))
+                        model: modelData.choices
+                        // the parameter travels as the index, so the label list
+                        // and the stored value stay in step by position
+                        values: modelData.choices
+                        currentIndex: (picked >= 0 && picked < modelData.choices.length) ? picked : modelData.default
+                        onActivated: function (index) { App.setParamEdit(App.strategy, modelData.name, index) }
+                    }
+                }
             }
 
             Flow {

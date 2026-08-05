@@ -87,12 +87,21 @@ def _resolve(modname):
                     } else {
                         default_value = d["default"].cast<double>();
                     }
+                    // `choices` is newer than this reader's oldest callers, so
+                    // a spec without it is still a valid spec.
+                    std::vector<std::string> choices;
+                    if (d.contains("choices")) {
+                        for (const auto& c : d["choices"].cast<py::list>()) {
+                            choices.push_back(c.cast<std::string>());
+                        }
+                    }
                     params.push_back(ParamSpec{
                         d["name"].cast<std::string>(),
                         default_value,
                         type_name,
                         d["doc"].cast<std::string>(),
                         d["unit"].cast<std::string>(),
+                        std::move(choices),
                     });
                 }
             }

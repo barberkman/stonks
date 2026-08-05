@@ -6,7 +6,7 @@ extension; see python/README.md for the full API and runtime setup.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 from stonks._core import (
     Context,
@@ -27,10 +27,17 @@ class Param:
     """Metadata for a class attribute exposed to the GUI as an editable
     per-run parameter. The plain class attribute (e.g. `risk_fraction = 0.02`)
     stays the single source of truth for the default value and its type;
-    Param only carries documentation."""
+    Param only carries documentation.
+
+    `choices` turns an int param into a named selection: the GUI renders a
+    dropdown of these labels and the parameter still travels as the *index*
+    into the list, so the override transport stays numeric. A strategy with
+    212 named alternatives (see `patterns.PatternsStrategy.pattern`) is
+    unusable as a free-text integer box; this is what makes it pickable."""
 
     doc: str = ""
     unit: str = ""
+    choices: Sequence[str] = ()
 
 
 @dataclass
@@ -79,8 +86,10 @@ class Strategy:
 
 def param_specs(cls: type) -> List[Dict[str, Any]]:
     """The GUI-facing spec for a strategy class's declared parameters, in
-    declaration order: [{name, default, type, doc, unit}]. Defaults (and their
-    types) are read from the class attributes the strategy actually uses."""
+    declaration order: [{name, default, type, doc, unit, choices}]. Defaults
+    (and their types) are read from the class attributes the strategy actually
+    uses. `choices` is empty unless the param declared named alternatives, in
+    which case the value is the index into that list."""
     out: List[Dict[str, Any]] = []
     for name, meta in cls.params.items():
         default = getattr(cls, name)   # AttributeError = author typo; let it propagate
@@ -93,8 +102,16 @@ def param_specs(cls: type) -> List[Dict[str, Any]]:
         else:
             raise TypeError(f"{cls.__name__}.{name}: param default must be "
                             f"float/int/bool, got {type(default).__name__}")
+        choices = [str(c) for c in meta.choices]
+        if choices:
+            if type_name != "int":
+                raise TypeError(f"{cls.__name__}.{name}: choices need an int "
+                                f"default (the index), got {type_name}")
+            if not 0 <= int(default) < len(choices):
+                raise ValueError(f"{cls.__name__}.{name}: default {default} is "
+                                 f"outside its {len(choices)} choices")
         out.append({"name": name, "default": default, "type": type_name,
-                    "doc": meta.doc, "unit": meta.unit})
+                    "doc": meta.doc, "unit": meta.unit, "choices": choices})
     return out
 
 

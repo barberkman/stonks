@@ -50,7 +50,7 @@ TEST_F(StrategyDiscoveryTest, ParamDeclaringStrategyExposesSpecs)
     ASSERT_NE(info, nullptr);
     EXPECT_EQ(info->cls, "ParamFixture");
 
-    ASSERT_EQ(info->params.size(), 3u);          // declaration order preserved
+    ASSERT_EQ(info->params.size(), 4u);          // declaration order preserved
     EXPECT_EQ(info->params[0].name, "risk");
     EXPECT_DOUBLE_EQ(info->params[0].default_value, 0.05);
     EXPECT_EQ(info->params[0].type_name, "float");
@@ -62,6 +62,35 @@ TEST_F(StrategyDiscoveryTest, ParamDeclaringStrategyExposesSpecs)
     EXPECT_EQ(info->params[2].name, "use_trend");
     EXPECT_DOUBLE_EQ(info->params[2].default_value, 0.0);   // False -> 0
     EXPECT_EQ(info->params[2].type_name, "bool");
+}
+
+// A param with named alternatives still travels as a number — the index — so
+// the override transport is unchanged and only the GUI needs the labels.
+TEST_F(StrategyDiscoveryTest, ChoiceParamCarriesItsLabelsAndStaysNumeric)
+{
+    const auto all = discover_strategies(STONKS_TEST_FIXTURES_DIR);
+    const auto* info = find(all, "paramfixture");
+    ASSERT_NE(info, nullptr);
+    ASSERT_EQ(info->params.size(), 4u);
+
+    const stonks::app::ParamSpec& mode = info->params[3];
+    EXPECT_EQ(mode.name, "mode");
+    EXPECT_EQ(mode.type_name, "int");
+    EXPECT_DOUBLE_EQ(mode.default_value, 1.0);   // the index, not the label
+    EXPECT_EQ(mode.choices,
+              (std::vector<std::string>{ "breakout", "pullback", "reversal" }));
+}
+
+// Everything that is not a named selection reports no choices, so the GUI can
+// use emptiness alone to decide between a dropdown and a number box.
+TEST_F(StrategyDiscoveryTest, OrdinaryParamsHaveNoChoices)
+{
+    const auto all = discover_strategies(STONKS_TEST_FIXTURES_DIR);
+    const auto* info = find(all, "paramfixture");
+    ASSERT_NE(info, nullptr);
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_TRUE(info->params[i].choices.empty()) << info->params[i].name;
+    }
 }
 
 TEST_F(StrategyDiscoveryTest, NonDeclaringStrategyHasEmptyParamsVector)

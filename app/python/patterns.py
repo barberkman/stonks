@@ -7262,7 +7262,7 @@ class PatternsStrategy(stonks.Strategy):
     use_measure_rule = True
 
     params = {
-        "pattern": stonks.Param("index into PATTERNS (see PATTERN_NAMES)"),
+        "pattern": stonks.Param("chart pattern to trade", choices=PATTERN_NAMES),
         "min_price": stonks.Param("minimum close price", unit="$"),
         "min_dollar_volume": stonks.Param("20-bar average close x volume floor", unit="$"),
         "trend_window": stonks.Param("bars used to judge the inbound price trend", unit="bars"),
