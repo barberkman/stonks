@@ -308,7 +308,7 @@ STONKS_PYTHONPATH=$HOME/strats \
 processes `.pth` files so editable installs work. `STONKS_PYTHONPATH`
 (colon-separated) is prepended to `sys.path`. Cwd is also added.
 
-## AlgoTrade — a strategy that loads a pre-trained model
+## AlgoTrade — a strategy that fits its own model mid-run
 
 `algo_trade.py` is the one strategy here that does not decide anything from
 price rules: `ManipulationModel` is a single XGBoost regressor over bist's 72
@@ -336,7 +336,8 @@ label counts as winners. It stays because it is the only exit that can act on an
 overnight gap. bist's +30% target is gone — it capped the winners and this label
 has no ceiling for it to correspond to.
 
-It needs two things the other strategies do not.
+It needs one thing the other strategies do not, and it has one constraint they
+do not.
 
 **xgboost in the venv.** It is a hard import, and strategy discovery imports
 every `app/python/*.py` to find strategies — a module that fails to import is
@@ -349,27 +350,23 @@ app/python/.venv/bin/pip install xgboost
 app/python/.venv/bin/python -c "import xgboost; print(xgboost.__version__)"
 ```
 
-**A trained artifact.** Training happens offline, not in the engine; the file is
-its own trainer. Roughly a minute over the full BIST panel:
+**No setup step, but the fit is part of the run.** There is no artifact to build
+and nothing to keep in sync: the strategy accumulates the engine's own bars from
+the first tick and, on the first bar at or after `train_on` (default `20241231`,
+a GUI param), fits one `ManipulationModel` and keeps it for the rest of the run.
+That costs roughly a minute of the run, plus one full-panel feature build on the
+training bar. Fitting from the run's own feed is what makes it impossible to
+score one dataset with a model trained on another.
 
-```sh
-app/python/.venv/bin/python app/python/algo_trade.py --train-end 2024-12-31
-```
-
-That writes `app/python/artifacts/algotrade/` — `model.json`, the winsorize
-bounds, and `meta.json` (which records `exit_ma` and `max_hold`, so an artifact
-says which trade it was fit for). It is gitignored — regenerate it rather than
-committing it.
-
-Note the trainer defaults to bist's **backtest** training window (full history),
-not its screen's 2024-01-01 — see `BACKTEST_TRAIN_START`. It mattered more under
+Note the fit defaults to bist's **backtest** training window (full history), not
+its screen's 2024-01-01 — see `BACKTEST_TRAIN_START`. It mattered more under
 bist's absolute gate, where a narrow fit never reached the threshold at all; it
 is kept because the trade label's entry gate already drops about half the panel
 and the remaining sample is worth having.
 
-Then mind the window — and here it is stricter than a 300-bar lookback. The
-artifact records its `train_end` and the strategy refuses to trade any bar the fit
-was allowed to see, so the backtest is only out-of-sample after that date. But two
+Then mind the window — and here it is stricter than a 300-bar lookback. `train`
+stamps `train_end` with the training bar and `on_tick` refuses any bar at or
+before it, so the backtest is only out-of-sample after that date. But two
 features (`obv` and `days_since_past_extreme`) accumulate from a symbol's *first*
 bar, so `--start` must sit at the **beginning of the feed**, not 300 bars before
 the signals:
@@ -379,7 +376,9 @@ the signals:
 ```
 
 A later `--start` silently reseeds both, because `KLineFeed` truncates at load
-time and nothing downstream can tell that history was cut. The run is not cheap —
+time and nothing downstream can tell that history was cut — and it now trains on
+less data than you think, since the fit only ever sees the bars the run ticked
+through. The run is not cheap —
 the strategy scores every bar from the 300th onward, in-sample ones included,
 because the carried state has to see them all.
 

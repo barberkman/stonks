@@ -18,8 +18,9 @@ Client surface is two methods:
                                       train_end="2024-12-31")
     scores = model.signal(ctx.history(ManipulationModel.LOOKBACK))
 
-plus `save`/`load`, because the strategy loads a pre-trained artifact rather
-than training inside the engine.
+There is no artifact on disk and nothing to persist: `AlgoTradeStrategy` fits
+its own model from the engine's feed at `TRAIN_ON`, and the two tools that score
+offline (`tools/daily_picks.py`, `tools/bist_alerts.py`) train fresh.
 
 The invariant everything rests on is that `train` and `signal` run the *same*
 feature code, and that code is window-bounded: for any i >= LOOKBACK - 1,
@@ -66,16 +67,12 @@ Requires xgboost in the venv (`app/python/.venv/bin/pip install xgboost`; on
 macOS also `brew install libomp`). A failed import makes this module invisible
 to strategy discovery, so check it before wondering where the strategy went.
 
-Train the artifact from the project root:
-
-    app/python/.venv/bin/python app/python/algo_trade.py --train-end 2024-12-31
+The strategy needs no setup step: it fits its own model partway through the run,
+at `TRAIN_ON`.
 """
 
-import argparse
-import json
 import logging
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -94,8 +91,8 @@ log = logging.getLogger(__name__)
 # override in the GUI to try one run.
 #
 # Everything else in this module belongs to the *model*, not the strategy.
-# Changing a feature, a label or a training constant invalidates the saved
-# artifact and needs a retrain; changing anything below does not.
+# Changing a feature, a label or a training constant changes what the run's own
+# fit produces; changing anything below does not.
 # ---------------------------------------------------------------------------
 
 # --- Entry -----------------------------------------------------------------
@@ -153,6 +150,45 @@ MAX_HOLD = 60
 # cuts trades the label counts as winners. It stays because it is the only exit
 # that can act on an overnight gap.
 STOP_PCT = 10.0
+
+# --- The in-run fit --------------------------------------------------------
+# The last bar the strategy's own fit may see. It accumulates the engine's bars
+# from the first tick, trains once on the first bar at or after this date, and
+# trades from the bar after that — `train` stamps `train_end` with the training
+# bar and the existing leak guard skips it, so nothing extra enforces the
+# boundary.
+#
+# YYYYMMDD as an int, not a date string, because it is a GUI param and the
+# override transport is numeric the whole way down: `--param` parses with
+# `std::stod` (app/src/main.cpp) and `pythonstrategy.h` coerces to the *current*
+# attribute's type. An int attribute keeps it exact and keeps the setup screen
+# showing a date rather than 20241231.0.
+TRAIN_ON = 20241231
+
+# --- The sigma gate (off by default) ---------------------------------------
+# `tools/workspace.ipynb` selects trades on a *predicted sigma* — its model fits
+# `log(exit/entry) / (vol60 * sqrt(bars_held))` — takes the top `ENTRY_TOP_PCT`
+# of each date on it, then keeps only what clears an absolute floor. This block
+# lets `AlgoTradeStrategy` select the same way without retraining anything: the
+# model still emits a log return and `_to_sigma` converts it at signal time.
+#
+# The denominator is the notebook's, verbatim. The floor on it matters: a name
+# frozen at one price for 60 bars has a realised vol near 1e-7, and dividing a
+# real move by that manufactures a several-million-sigma pick out of nothing.
+SIGMA_VOL_LEN = 60
+SIGMA_VOL_MIN = 30
+SIGMA_VOL_FLOOR = 0.002
+# The notebook divides by `sqrt(bars_held)`, which is not knowable at signal
+# time, so the conversion fixes it at the label distribution's median hold. This
+# is the one approximation in the port: winners run long and losers cut fast, so
+# a single divisor flatters short losers and understates long winners. The sigma
+# says "how big is this move against the name's own noise", not "how many sigma
+# will this trade realise".
+SIGMA_HOLD = 9
+# Off. Turning it on changes which names are picked, not just how many — see
+# `AlgoTradeStrategy._rank` and the measurement in the class docstring.
+USE_SIGMA_GATE = 0
+ENTRY_MIN_SCORE = 1.0
 
 # --- Sizing ----------------------------------------------------------------
 # Names held at once, and the sizing that follows from it. bist sizes at 5% of
@@ -260,7 +296,7 @@ TRAIN_START_DATE = "2024-01-01"
 
 # ...and bist's backtest deliberately does NOT use it: walk_forward_static.py:65
 # reassigns TRAIN_START_DATE to 2000-01-01 before fitting, i.e. full history.
-# That is what the artifact is trained from. It mattered more under bist's
+# That is what the strategy's in-run fit uses. It mattered more under bist's
 # absolute sigma gate, where a narrow fit never reached the threshold at all; a
 # cross-sectional slice fires every session at any scale. It stays because the
 # trade label drops roughly half the panel to the entry gate, and the remaining
@@ -312,100 +348,6 @@ FIELDS = ("open", "high", "low", "close", "volume")
 # horizon to become a magnitude, this is a direct conversion.
 SCORE = "score"
 EXPECTED_PCT = "expected_pct"
-
-
-# ---------------------------------------------------------------------------
-# VolatilityModel constants. Ported from ~/mltrend, whose eighteen
-# pre-registered evaluations found no directional edge in daily equity data but
-# did establish that relative volatility is strongly predictable. These are that
-# program's frozen settings; `VolatilityModel`'s docstring argues the one place
-# this port had to deviate (the label).
-# ---------------------------------------------------------------------------
-
-VOL_HORIZON = 21     # forward vol horizon in bars, mltrend's frozen h
-TRADING_DAYS = 252   # annualization factor for `sigma_ann`
-
-# Below this many rankable names a date is not scored at all. The model's inputs
-# ARE cross-sectional ranks, so a thin cross-section does not give a noisy
-# answer, it gives a meaningless one: ranking four names puts one of them at the
-# 100th percentile by arithmetic. mltrend's `min_names`.
-VOL_MIN_NAMES = 30
-
-# mltrend fits a fixed number of rounds and lets regularisation, not early
-# stopping, control capacity — see VOL_XGB_PARAMS. `ManipulationModel` stops
-# early against a purged validation split; reproducing that here would need the
-# purge rebuilt for a 21-bar overlapping label and would be a different model
-# from the one every mltrend gate was run against.
-VOL_NUM_ROUNDS = 200
-
-# The thirteen features, in the order `_vol_features` stacks them. Same contract
-# as FEATURE_NAMES: column order is part of a fitted booster's meaning.
-#
-# This is mltrend's full FEATURE_COLS, not the nine of its FEATURE_COLS_H4, and
-# the difference is worth recording because taking the nine looks more faithful
-# and measures far worse.
-#
-# mltrend dropped `vol_gk`, `vol_rs`, `vol_cc` and `vol_ratio` for hypotheses 3
-# and 4 specifically, whose label was the *residual* of forward vol on the
-# trailing vol term structure. Against a residual label a trailing-vol level is
-# a mechanical channel — the thing being residualized out — so leaving them in
-# manufactured IC from noise. That reasoning is entirely about the label.
-#
-# The label here is the vol *level*, and a level label wants level features:
-# tomorrow's volatility is mostly today's volatility, and persistence is the
-# workhorse of any vol forecast rather than a leak. Dropping them denies the
-# model every direct measurement of current vol. Measured on
-# app/data/bist_1d.parquet, fit to 2024-12-31 and scored on the 368 dates after
-# it, mean per-date rank-IC against realized forward 21-bar vol:
-#
-#     13 features                    +0.481
-#     trailing-vol blend, 0.7/0.3    +0.437     <- the baseline to beat
-#      9 features (H4's set)         +0.291
-#
-# The nine lose to a twelve-line rolling standard deviation, which for a model
-# whose entire job is forecasting sigma makes it worse than not existing.
-VOL_FEATURE_NAMES = (
-    "vol_gk", "vol_rs", "vol_cc", "vol_ratio", "vol_of_vol",
-    "ret_5", "ret_21", "ret_63", "ret_252_21",
-    "range_pos", "gap", "dvol_z", "amihud",
-)
-
-# Bars of history one feature row needs. `ret_252_21` binds: 252 returns need 253
-# closes, and the trailing `.shift(1)` needs one more. Asserted against LOOKBACK
-# rather than given its own constant so a future edit to either one fails loudly.
-VOL_DEPTH = 254
-assert VOL_DEPTH <= LOOKBACK, "VolatilityModel needs more history than LOOKBACK"
-
-# mltrend's evaluate.XGB_PARAMS, already in xgboost's native spelling — so unlike
-# XGB_PARAMS these need no XGB_NATIVE_NAMES translation.
-#
-# The regularisation is the point, not a default. mltrend's own charter puts the
-# effective sample at ~500-1000 rather than the row count: 21-bar labels overlap,
-# so ~50 independent dates, and equities correlate 0.3-0.5 cross-sectionally, so
-# ~10-20 independent bets per date rather than one per name. `max_depth=3` with
-# `min_child_weight=200` is calibrated to that, and its charter is explicit that
-# the model choice is the least important decision in the exercise.
-#
-# `nthread: 1` for the same reason XGB_PARAMS pins `n_jobs: 1` — with a threaded
-# fit the histogram reduction order, and therefore the model, stops being
-# reproducible.
-VOL_XGB_PARAMS = {
-    "objective": "reg:squarederror",
-    "max_depth": 3,
-    "min_child_weight": 200,
-    "reg_lambda": 10,
-    "eta": 0.05,
-    "tree_method": "hist",
-    "seed": 0,
-    "nthread": 1,
-}
-
-# The three columns `VolatilityModel.signal` emits. `sigma_d` is a forecast
-# standard deviation of daily log returns, which is the unit position sizing and
-# stop distances are denominated in.
-SIGMA_D = "sigma_d"
-SIGMA_ANN = "sigma_ann"
-VOL_PCT = "vol_pct"
 
 
 # ---------------------------------------------------------------------------
@@ -1283,6 +1225,43 @@ def _sma(packed, window, real):
                     np.nan)
 
 
+def _trailing_vol(tails, length=SIGMA_VOL_LEN, min_periods=SIGMA_VOL_MIN,
+                  floor=SIGMA_VOL_FLOOR):
+    """Realised log-return vol per symbol, over each name's last traded bars.
+
+    `tails` is the `{symbol: closes}` mapping `AlgoTradeStrategy._tail_closes`
+    already produces — newest last, and holding only bars that printed, so the
+    window is `length` *traded* bars rather than `length` calendar rows. That is
+    the same convention the notebook gets from packing, and the same one the exit
+    average uses; a halted day must not consume a window slot.
+
+    A symbol with fewer than `min_periods` returns is NaN: too little history to
+    say what its noise is. Everything else is floored — see `SIGMA_VOL_FLOOR`.
+    """
+    out = {}
+    for symbol, closes in tails.items():
+        closes = np.asarray(closes, dtype=float)
+        closes = closes[np.isfinite(closes) & (closes > 0.0)]
+        if len(closes) <= min_periods:
+            out[symbol] = np.nan
+            continue
+        returns = np.diff(np.log(closes))[-length:]
+        out[symbol] = max(float(np.std(returns, ddof=1)), floor)
+    return out
+
+
+def _to_sigma(score, vol, hold=SIGMA_HOLD):
+    """A predicted log return restated in the notebook's sigma units.
+
+    Reading only — the model is fit on the log return and stays that way, because
+    normalising the *target* measured worse out of sample (see `_labels`). This
+    divides the prediction by what the name's own noise would do over `hold`
+    bars, which is what makes an absolute floor mean the same thing across names
+    of different volatility.
+    """
+    return score / (vol * np.sqrt(hold))
+
+
 def _labels(panel, sma_len=EXIT_MA, max_hold=MAX_HOLD):
     """The outcome of one trade per cell. Reads forward — training only.
 
@@ -1446,8 +1425,7 @@ class ManipulationModel:
         self.train_start = train_start
         self.min_turnover_percentile = float(min_turnover_percentile)
         # The trade the fit is about. Stored because `signal` has to gate on the
-        # same average the label exited on, and a loaded artifact has to say
-        # which trade it was fit for.
+        # same average the label exited on.
         self.exit_ma = int(exit_ma)
         self.max_hold = int(max_hold)
         self.booster = None
@@ -1585,8 +1563,8 @@ class ManipulationModel:
         """Predicted trade log return for a (rows, 72) design matrix.
 
         `best_iteration` is passed explicitly rather than left to the booster: it
-        decides how many trees score a bar, and a JSON round-trip is not something
-        scoring should depend on.
+        decides how many trees score a bar, and which trees score is not something
+        to leave to an xgboost implementation detail.
         """
         matrix = xgb.DMatrix(rows, feature_names=list(FEATURE_NAMES))
         return self.booster.predict(
@@ -1638,7 +1616,7 @@ class ManipulationModel:
         else, `obv_slope_20` included, is window-bounded.
         """
         if self.booster is None:
-            raise RuntimeError("train() or load() before signal()")
+            raise RuntimeError("train() before signal()")
 
         panel = window if isinstance(window, dict) else _panel_from_window(window)
         F, carry = _features_and_carry(panel)
@@ -1698,887 +1676,6 @@ class ManipulationModel:
             last[i, DAYS_SINCE_COLUMN] = NO_EXTREME if since is None else since
         return last
 
-    # -- persistence --------------------------------------------------------
-
-    def save(self, directory):
-        """One booster, the winsorize bounds, and everything needed to score."""
-        d = Path(directory)
-        d.mkdir(parents=True, exist_ok=True)
-        self.booster.save_model(str(d / "model.json"))
-        np.savez(d / "bounds.npz", lower=self._bounds[0], upper=self._bounds[1])
-        (d / "meta.json").write_text(json.dumps({
-            "feature_names": list(FEATURE_NAMES),
-            "params": self.params,
-            "winsorize": list(self.winsorize),
-            "min_history": self.min_history,
-            "train_start": self.train_start,
-            "min_turnover_percentile": self.min_turnover_percentile,
-            # Which trade this was fit for. `signal` gates entries on the same
-            # average the label exited on, so an artifact that did not record it
-            # could be scored against the wrong one.
-            "exit_ma": self.exit_ma,
-            "max_hold": self.max_hold,
-            # best_iteration is carried explicitly rather than read back off the
-            # booster: it decides how many trees `signal` uses, and relying on a
-            # JSON round-trip to preserve it would make scoring depend on an
-            # xgboost implementation detail.
-            "best_iteration": self.best_iteration,
-            "train_end": self.train_end,
-            "liquid": sorted(self.liquid) if self.liquid is not None else None,
-        }, indent=2))
-
-    @classmethod
-    def load(cls, directory):
-        d = Path(directory)
-        meta_path = d / "meta.json"
-        if not meta_path.exists():
-            raise FileNotFoundError(
-                f"no trained model at {d}. Train one first:\n"
-                f"  app/python/.venv/bin/python app/python/algo_trade.py "
-                f"--out {d}")
-        meta = json.loads(meta_path.read_text())
-        if tuple(meta["feature_names"]) != FEATURE_NAMES:
-            raise RuntimeError("saved model was fit on a different feature set")
-
-        model = cls(params=meta["params"],
-                    winsorize=tuple(meta["winsorize"]),
-                    min_history=meta["min_history"],
-                    train_start=meta["train_start"],
-                    min_turnover_percentile=meta["min_turnover_percentile"],
-                    exit_ma=meta["exit_ma"], max_hold=meta["max_hold"])
-        model.best_iteration = int(meta["best_iteration"])
-        model.train_end = meta["train_end"]
-        model.liquid = None if meta["liquid"] is None else set(meta["liquid"])
-        bounds = np.load(d / "bounds.npz")
-        model._bounds = (bounds["lower"], bounds["upper"])
-        model.booster = xgb.Booster()
-        model.booster.load_model(str(d / "model.json"))
-        return model
-
-
-# ---------------------------------------------------------------------------
-# Qullamaggie momentum swing — the pine's long breakout, as a second model.
-#
-# Port of Setup 1 ("BO") from app/pines/qullamaggie_momentum_swing.pine (v15).
-# Nothing here touches ManipulationModel; the two share only the panel-packing
-# helpers above.
-#
-# The pine's breakout is a resting buy-stop parked at a pivot high, armed while a
-# flag is intact and good for `order_bars` bars. That level is knowable *before*
-# price trades through it, which is the whole reason this model exists: a caller
-# can park a real stop order in advance instead of reacting to the break.
-#
-# Deliberately NOT reusing `_panel` / `_packed_panel`: those apply bist's row
-# drops (`_drop_unusable`) and compute `_limit_hit` off BIST's price band, none of
-# which belongs in a momentum-breakout model. The row drops would shift the base
-# window and the order timer relative to the pine.
-# ---------------------------------------------------------------------------
-
-def _qm_sma(x, n, chunk=256):
-    """Rolling mean, window-invariant and correctly rounded — pine's `ta.sma`.
-
-    Not `x.rolling(n).mean()`, and not `_wsum(x, n, n) / n` either. The reason is
-    the one `_wsum`'s docstring gives, only sharper here. ManipulationModel
-    survives pandas' incremental accumulation because `_design_matrix` narrows to
-    float32 at the last step and rounds the drift away. This model emits booleans:
-    `close > sma20` and `sma10 > sma20` are strict comparisons that flip
-    discretely, so a last-bit difference becomes a *different armed order*.
-
-    And the ties are not hypothetical. On BIST dailies, where a 20-bar mean of
-    cent-quoted prices lands exactly on a cent often enough to matter, the true
-    value routinely equals the price being compared against — at which point the
-    answer is decided entirely by summation error. Measured over ~9,000 arm
-    events on 40 symbols, pandas' running sum and numpy's pairwise sum each
-    landed ~4e-16 off the true mean on three bars apiece, and each of those six
-    flipped a gate.
-
-    So the window is summed with Neumaier compensation: each window is summed
-    independently in a fixed order (window-invariant, unlike a running sum) and
-    the result is correctly rounded, so an exact tie compares equal instead of
-    resolving on noise. The loop runs over the window length, not the panel.
-
-    Requiring the whole window to be finite reproduces `ta.sma`'s na-until-n.
-    """
-    a = x.to_numpy(dtype=float)
-    T, N = a.shape
-    padded = np.vstack([np.full((n - 1, N), np.nan), a])
-    out = np.full((T, N), np.nan)
-
-    for lo in range(0, T, chunk):
-        hi = min(lo + chunk, T)
-        v = np.lib.stride_tricks.sliding_window_view(
-            padded[lo:hi + n - 1], n, axis=0)               # (hi-lo, N, n)
-        total = np.zeros(v.shape[:2])
-        comp = np.zeros(v.shape[:2])
-        for k in range(n):
-            term = np.nan_to_num(v[..., k])
-            moved = total + term
-            # the lost low-order bits go to `comp`, whichever operand dominates
-            comp += np.where(np.abs(total) >= np.abs(term),
-                             (total - moved) + term, (term - moved) + total)
-            total = moved
-        out[lo:hi] = np.where(np.isfinite(v).all(axis=2),
-                              (total + comp) / float(n), np.nan)
-
-    return pd.DataFrame(out, index=x.index, columns=x.columns)
-
-
-def _qm_extremes(H, L, w, chunk=128):
-    """(base_high, since_peak, pull_low) over a w-bar window. Pine's tie=recent.
-
-    Three pine series in one pass, because they share a window:
-
-        baseHigh   = ta.highest(high, w)
-        sincePk    = -ta.highestbars(high, w)          # 0 = the peak is this bar
-        pullLow    = ta.lowest(low, math.max(sincePk, 1))
-
-    The third is the awkward one — its window *length* depends on the second, so
-    it is a per-row variable-length reduction. But it is always a suffix of the
-    same w-bar window, so reversing the strided view once (index 0 = the current
-    bar) turns it into a cumulative minimum indexed at `sincePk - 1`. That window
-    spans [i - sincePk + 1, i], which correctly excludes the peak bar itself.
-
-    `argmax` returns the *first* maximal index, and on the reversed view that is
-    the most recent — TradingView's `highestbars` tie-break is undocumented, and
-    most-recent is what `tools/qm_pine_ref.py` uses by default, so a diff against
-    it is apples to apples. The choice is not cosmetic: ties on highs are common
-    at round numbers, and the other rule moves both the age gate and the depth
-    gate, in opposite directions, on exactly the bars that decide a signal.
-
-    Chunked like `_wsum` and `_moments`; smaller chunk because the cumulative
-    minimum materialises a second (chunk, N, w) array.
-    """
-    h = H.to_numpy(dtype=float)
-    l = L.to_numpy(dtype=float)
-    T, N = h.shape
-    pad = np.full((w - 1, N), np.nan)
-    ph = np.vstack([pad, h])
-    pl = np.vstack([pad, l])
-
-    base_high = np.full((T, N), np.nan)
-    since_peak = np.zeros((T, N))
-    pull_low = np.full((T, N), np.nan)
-
-    for lo in range(0, T, chunk):
-        hi = min(lo + chunk, T)
-        vh = np.lib.stride_tricks.sliding_window_view(
-            ph[lo:hi + w - 1], w, axis=0)[..., ::-1]     # (hi-lo, N, w), newest first
-        vl = np.lib.stride_tricks.sliding_window_view(
-            pl[lo:hi + w - 1], w, axis=0)[..., ::-1]
-        # pine's ta.* are na until the window is full, and on the packed view a
-        # short column's trailing slots are NaN, so this also kills dead region.
-        full = np.isfinite(vh).all(axis=2)
-        idx = np.argmax(np.nan_to_num(vh, nan=-np.inf), axis=2)
-        cum_min = np.minimum.accumulate(np.nan_to_num(vl, nan=np.inf), axis=2)
-        suffix = np.take_along_axis(
-            cum_min, np.maximum(idx - 1, 0)[..., None], axis=2)[..., 0]
-
-        base_high[lo:hi] = np.where(full, np.max(
-            np.nan_to_num(vh, nan=-np.inf), axis=2), np.nan)
-        since_peak[lo:hi] = np.where(full, idx, np.nan)
-        pull_low[lo:hi] = np.where(full, suffix, np.nan)
-
-    frame = lambda a: pd.DataFrame(a, index=H.index, columns=H.columns)
-    return frame(base_high), frame(since_peak), frame(pull_low)
-
-
-def _qm_register(bo_setup, entry_level, order_bars):
-    """(armed, level, bars_left) — pine's boArmed / boOrderPx / boArmedBar.
-
-    The pine is stateful here, but only nominally: all three variables are
-    assigned in exactly one place (pine:217-220), unconditionally, on every bar
-    `boSetup` holds. So the arm is a bounded-window function after all — at bar i
-    it is live iff some j <= i had a setup with i - j <= order_bars, carrying
-    `entry_level[j]` for the *largest* such j. That is why this model needs no
-    `ScoringState` analogue.
-
-    Two boundaries worth stating, both easy to get backwards:
-
-     * Expiry is pine's `bar_index - boArmedBar > boOrderBars` (pine:221), so the
-       order is live on order_bars + 1 bars and `bars_left == 0` is still
-       fillable. It is not "cancelled with zero bars left".
-     * Re-arming overwrites the level downward as happily as upward: `baseHigh`
-       falls when the old peak slides out of the base window, and the pine keeps
-       no memory of the higher level.
-    """
-    setup = bo_setup.to_numpy()
-    level = entry_level.to_numpy(dtype=float)
-    rows = np.arange(len(setup))[:, None]
-
-    last = np.maximum.accumulate(np.where(setup, rows, -1), axis=0)
-    age = rows - last
-    armed = (last >= 0) & (age <= order_bars)
-    live = np.take_along_axis(level, np.maximum(last, 0), axis=0)
-
-    frame = lambda a: pd.DataFrame(a, index=bo_setup.index,
-                                   columns=bo_setup.columns)
-    return (frame(armed),
-            frame(np.where(armed, live, np.nan)),
-            frame(np.where(armed, order_bars - age, np.nan)))
-
-
-class QullamaggieSwingModel:
-    """The pine's long momentum breakout, emitted before it triggers.
-
-    Port of Setup 1 from `app/pines/qullamaggie_momentum_swing.pine` (v15). Only
-    that setup: no opening-range breakout, no short breakdown, no episodic pivot,
-    no parabolic short, and none of the pine's trade management.
-
-    Same client surface as `ManipulationModel` minus everything training-related,
-    because a rule model has nothing to fit:
-
-        model = QullamaggieSwingModel()
-        candidates = model.signal(ctx.history(QullamaggieSwingModel.LOOKBACK))
-
-    `signal` returns one row per *live resting order* — the point of the port. A
-    caller reads `level` and parks a buy-stop there; `bars_left` says how long the
-    pine would leave it sitting.
-
-    Three things a consumer has to know:
-
-     1. **Position gating is dropped.** The pine's `boSetup` (pine:171) carries
-        `not inLong and not inShort`, so its arm state is a function of the
-        position's whole lifetime — unbounded, and invisible to a windowed model.
-        Everything here is computed as if flat. `bo_setup` is emitted per bar
-        precisely so a caller that wants pine fidelity can run the three-line
-        register from pine:217-223 against its own book. The `armed` / `level` /
-        `bars_left` columns are a convenience that is exact only while nothing is
-        held; they cannot be corrected by ANDing your own flat state onto them,
-        because the timer's *origin* is position-gated too.
-     2. **`stop` and `target` are planning numbers.** The pine computes both from
-        the realised fill, `max(open, level)`, and optionally tightens the stop to
-        the entry bar's low (pine:361-365). Neither is knowable while the order is
-        still resting, so these are anchored to `level`. A gap through the level
-        moves the real stop.
-     3. **Volume never gates.** Pine v15 made the break-bar volume check
-        information-only — `boFill` (pine:348) has no volume term and the tag is
-        applied after the fill (pine:376-378). `vol_ratio` and `vol_meets` are
-        reported and nothing is filtered on them. Note `tools/qm_pine_ref.py`
-        still ANDs volume into its fill: that file targets v12, so diff against it
-        with `--use-bo-vol false`.
-
-    Unlike `ManipulationModel` this model carries no cross-tick state, so a caller
-    may score any bar without having scored the ones before it.
-    """
-
-    # Deep enough for one row of the deepest series plus a full order life. At
-    # defaults the binding constraint is avgVol50[1] (51 bars), not the 40-bar
-    # base — and only because the informational volume ratio needs it:
-    #   max(sma20=20, mom_len+1=25, base_max_len=40, avgVol50[1]=51) + 10 = 61
-    # A maxed base (pine caps it at 80) needs 90. The headroom is slack: this is
-    # a count of *dates*, while the register runs on traded bars, so a symbol with
-    # missed sessions has fewer bars than the window has rows. `__init__` checks
-    # the configured params actually fit rather than trusting this comment.
-    LOOKBACK = 120
-
-    def __init__(self, *, min_price=5.0, min_avg_vol=0.0, adr_len=20,
-                 min_adr=0.1, mom_len=24, min_gain=0.5, require_mas=True,
-                 require_ma_stack=False, base_max_len=40, min_base_bars=3,
-                 max_depth=40.0, use_vol_dry=False, vol_dry_ratio=1.0,
-                 entry_buffer_bps=5.0, order_bars=10, bo_vol_mult=1.3,
-                 adr_stop_mult=1.0, target_rr=2.0):
-        # Pine's inputs, same defaults, with one deviation: the entry buffer is
-        # in basis points rather than `bufTicks * syminfo.mintick`. There is no
-        # mintick in the engine and a tick is not scale-free across a 4-lira and
-        # a 400-lira name; `qmmomentumswing.py` made the same substitution.
-        self.min_price = float(min_price)
-        self.min_avg_vol = float(min_avg_vol)
-        self.adr_len = int(adr_len)
-        self.min_adr = float(min_adr)
-        self.mom_len = int(mom_len)
-        self.min_gain = float(min_gain)
-        self.require_mas = bool(require_mas)
-        self.require_ma_stack = bool(require_ma_stack)
-        self.base_max_len = int(base_max_len)
-        self.min_base_bars = int(min_base_bars)
-        self.max_depth = float(max_depth)
-        self.use_vol_dry = bool(use_vol_dry)
-        self.vol_dry_ratio = float(vol_dry_ratio)
-        self.entry_buffer_bps = float(entry_buffer_bps)
-        self.order_bars = int(order_bars)
-        self.bo_vol_mult = float(bo_vol_mult)
-        self.adr_stop_mult = float(adr_stop_mult)
-        self.target_rr = float(target_rr)
-
-        if self.min_base_bars < 2:
-            # pine's minval (pine:67), and load-bearing: min_base_bars >= 2 with
-            # the most-recent tie-break is what makes high[j] < entry_level[j] on
-            # an arming bar, so an order can never arm and fill on the same bar.
-            raise ValueError("min_base_bars must be at least 2")
-        if self.depth() > self.LOOKBACK:
-            raise ValueError(
-                f"these params need {self.depth()} bars but LOOKBACK is "
-                f"{self.LOOKBACK}; lower base_max_len/mom_len/adr_len/order_bars")
-
-    def depth(self):
-        """Bars of history one scored row needs, including a full order life."""
-        series = [20, 51, self.adr_len, self.mom_len + 1, self.base_max_len]
-        if self.require_ma_stack:
-            series.append(50)
-        if self.use_vol_dry:
-            series.append(50)
-        return max(series) + self.order_bars
-
-    # -- panel --------------------------------------------------------------
-
-    @staticmethod
-    def _panel(source):
-        """Bars -> {field: (dates, symbols)}. Accepts a window, frame or panel.
-
-        Not `_panel`: that runs bist's `_drop_unusable`, and dropping rows here
-        would shift both the base window and the order timer off the pine's.
-        """
-        if isinstance(source, dict):
-            return source
-        frame = source if isinstance(source, pd.DataFrame) else pd.DataFrame({
-            "symbol": list(source.symbol),
-            "timestamp": np.asarray(source.timestamp),
-            **{f: np.asarray(getattr(source, f), dtype=float) for f in FIELDS},
-        })
-        return {f: frame.pivot(index="timestamp", columns="symbol", values=f)
-                .sort_index() for f in FIELDS}
-
-    # -- signal -------------------------------------------------------------
-
-    def setups(self, window):
-        """Per-bar, per-symbol frames for the whole window.
-
-        Returns a dict of (dates x symbols) DataFrames:
-
-            bo_setup     pine's boSetup, position gating removed
-            entry_level  the level an arm on that bar would carry
-            armed        is a resting order live on this bar
-            level        that order's price
-            bars_left    bars before it expires; 0 is still fillable
-            stop         planning stop, anchored to `level` — see caveat 2
-            target       planning target at `target_rr` R
-            adr_pct      pine's adrPct, the stop's basis
-            vol_ratio    volume / avgVol50[1], informational
-            vol_meets    vol_ratio >= bo_vol_mult, informational
-
-        Everything runs on the *packed* view, so a window covers a symbol's last
-        N **traded** bars the way pine's `bar_index` counts chart bars. On a dated
-        panel a symbol that missed three sessions would expire its order three
-        calendar rows early.
-        """
-        panel = self._panel(window)
-        index = panel["close"].index
-        printed = panel["close"].notna()
-        order = _pack_order(printed)
-        O, H, L, C, V = (_pack(panel[f], order) for f in FIELDS)
-
-        # ── gates (pine:117-142) ──
-        sma10 = _qm_sma(C, 10)
-        sma20 = _qm_sma(C, 20)
-        adr_pct = _qm_sma(100.0 * (H / L - 1.0), self.adr_len)
-        avg_vol20 = _qm_sma(V, 20)
-        avg_vol50 = _qm_sma(V, 50)
-        gain_pct = 100.0 * (C / C.shift(self.mom_len) - 1.0)
-
-        liq_ok = (C >= self.min_price) & (avg_vol20 >= self.min_avg_vol)
-        adr_ok = adr_pct >= self.min_adr
-        # A comparison against NaN is False in pandas, which is pine's `na >= x`.
-        ma_ok_up = ((C > sma20) & (sma10 > sma20)) if self.require_mas else True
-        if self.require_ma_stack:
-            sma50 = _qm_sma(C, 50)
-            stack_up_ok = sma50.notna() & (sma10 > sma20) & (sma20 > sma50)
-        else:
-            stack_up_ok = True
-        vol_dry_ok = ((_qm_sma(V, 5) < self.vol_dry_ratio * avg_vol50)
-                      if self.use_vol_dry else True)
-        universe_up = (liq_ok & adr_ok
-                       & (gain_pct >= self.min_gain) & ma_ok_up & stack_up_ok)
-
-        # ── base geometry and the armed level (pine:165-171) ──
-        base_high, since_peak, pull_low = _qm_extremes(H, L, self.base_max_len)
-        retrace_pct = 100.0 * (base_high - pull_low) / base_high
-        flag_up_ok = ((since_peak >= self.min_base_bars)
-                      & (retrace_pct <= self.max_depth) & vol_dry_ok)
-        entry_level = base_high * (1.0 + self.entry_buffer_bps / 10_000.0)
-        bo_setup = universe_up & flag_up_ok & base_high.notna()
-
-        armed, level, bars_left = _qm_register(bo_setup, entry_level,
-                                               self.order_bars)
-
-        # The pine's stop is ADR-based off the realised fill and then floored at
-        # 0.1% of it (pine:362-364); anchored to `level` here, because the fill is
-        # unknown while the order rests. `use_lod_stop` cannot apply for the same
-        # reason. Computed on the packed view like everything else — on the dated
-        # panel a single missed session NaNs the whole ADR window.
-        stop = np.minimum(level * (1.0 - self.adr_stop_mult * adr_pct / 100.0),
-                          level * 0.999)
-        target = level + self.target_rr * (level - stop)
-
-        # ── informational volume, never a gate (pine:146, v15) ──
-        prev = avg_vol50.shift(1)
-        vol_ratio = (V / prev).where(prev > 0)
-        vol_meets = (vol_ratio >= self.bo_vol_mult).fillna(False)
-
-        out = {
-            "bo_setup": bo_setup, "entry_level": entry_level.where(bo_setup),
-            "armed": armed, "level": level, "bars_left": bars_left,
-            "stop": stop, "target": target,
-            "adr_pct": adr_pct, "vol_ratio": vol_ratio, "vol_meets": vol_meets,
-        }
-        return {k: _unpack(v.astype(float), order, index, printed)
-                for k, v in out.items()}
-
-    def signal(self, window):
-        """Live resting orders on the window's last bar, one row each.
-
-        Columns: symbol, setup, side, action, level, stop, target, bars_left,
-        bo_setup, vol_ratio, vol_meets. Empty (with those columns) when nothing
-        is armed, so a caller can iterate unconditionally.
-        """
-        frames = self.setups(window)
-        last = {k: v.iloc[-1].to_numpy(dtype=float) for k, v in frames.items()}
-        live = np.nan_to_num(last["armed"]) > 0.0
-
-        def flag(key):
-            return np.nan_to_num(last[key])[live] > 0.0
-
-        return pd.DataFrame({
-            "symbol": np.asarray(frames["armed"].columns)[live],
-            "setup": "BO",
-            "side": "long",
-            "action": "arm",
-            "level": last["level"][live],
-            "stop": last["stop"][live],
-            "target": last["target"][live],
-            "bars_left": last["bars_left"][live],
-            "bo_setup": flag("bo_setup"),
-            "vol_ratio": last["vol_ratio"][live],
-            "vol_meets": flag("vol_meets"),
-        }, columns=["symbol", "setup", "side", "action", "level", "stop",
-                    "target", "bars_left", "bo_setup", "vol_ratio",
-                    "vol_meets"]).reset_index(drop=True)
-
-
-# ---------------------------------------------------------------------------
-# Cross-sectional volatility — how much a name will move, not which way.
-#
-# Ported from ~/mltrend, a research program that spent eighteen pre-registered
-# evaluations looking for cross-sectional predictability in daily equity data.
-# It found none that was directional and tradable — its own summary is "no
-# tradable cross-sectional alpha exists in this data" — but it did establish
-# that relative volatility is strongly predictable, and it froze the feature
-# set every one of its volatility gates was then run against.
-#
-# Nothing here touches `ManipulationModel`; the two share only the panel-packing
-# and rolling helpers above, and they answer different questions. That model
-# ranks names by expected return. This one forecasts dispersion, which is the
-# input position sizing, stop distances and regime gauges are denominated in.
-# ---------------------------------------------------------------------------
-
-def _vol_features(panel):
-    """mltrend's thirteen, as a dated (T, N, 13) float64 cube.
-
-    Ports `mltrend/pipeline.py::make_features` — all thirteen columns, in
-    `VOL_FEATURE_NAMES` order. Every one is a per-symbol rolling statistic, so they
-    are computed on the packed view — a halt shortens the window rather than
-    consuming a slot — then scattered back onto the dated grid.
-
-    Two details are load-bearing and neither is a preference:
-
-     1. **The rolling reductions go through `_std` and `_wsum`, never pandas
-        directly.** pandas advances rolling sums and variances incrementally, so
-        the answer carries the cancellation history of everything before it and
-        a window that starts elsewhere lands somewhere else. That breaks the
-        batch-equals-window contract this file rests on, which is what lets a
-        booster fit on a whole panel score one bar at a time. `_wsum` and
-        `_moments` argue it at length.
-     2. **The returns are logarithmic.** mltrend's `r` is `log(c).diff()`, which
-        is `packed["log_ret"]` here — *not* `panel["ret"]`, which is the simple
-        return bist's features use.
-
-    mltrend's guard style is reproduced rather than this file's `_div`. Where it
-    clips it clips, where it takes a maximum it takes a maximum, and on the five
-    `sd20`-denominated ratios it guards nothing at all: a flat window there
-    divides by zero and yields inf, deterministically, because `_std` snaps flat
-    windows to exact 0.0. Those infs become NaN and the row drops out, which is
-    mltrend's own construction (`replace([inf, -inf], nan)` then `dropna`) and
-    is the honest encoding for an undefined ratio. `_div`'s `+ EPS` belongs to
-    `ManipulationModel` because bist's trees were fit on the 1e10 values it
-    produces; nothing here was.
-
-    The trailing `.shift(1)` is mltrend's: a feature row uses only data from
-    strictly before its own bar. It is a shift on the *packed* view, so it means
-    the previous traded bar rather than the previous calendar row.
-    """
-    packed, order, printed = _packed_panel(panel)
-    index, columns = panel["close"].index, panel["close"].columns
-    O, H, L, C, V = (packed[f] for f in FIELDS)
-    r = packed["log_ret"]
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        sd20 = _std(r, 20, 20)
-        dv = np.log(C * V)
-        gk = 0.5 * np.log(H / L) ** 2 - (2 * np.log(2) - 1) * np.log(C / O) ** 2
-        rs = np.log(H / C) * np.log(H / O) + np.log(L / C) * np.log(L / O)
-        out = {
-            "vol_gk": np.log((_wsum(gk, 10, 10) / 10.0).clip(lower=1e-8)),
-            "vol_rs": np.log((_wsum(rs, 20, 20) / 20.0).clip(lower=1e-8)),
-            "vol_cc": np.log(sd20.clip(lower=1e-8)),
-            "vol_ratio": np.log(_std(r, 5, 5) / sd20.clip(lower=1e-8)),
-            "vol_of_vol": _std(sd20, 60, 60) / sd20.clip(lower=1e-8),
-            "ret_5": _wsum(r, 5, 5) / (sd20 * np.sqrt(5)),
-            "ret_21": _wsum(r, 21, 21) / (sd20 * np.sqrt(21)),
-            "ret_63": _wsum(r, 63, 63) / (sd20 * np.sqrt(63)),
-            "ret_252_21": ((_wsum(r, 252, 252) - _wsum(r, 21, 21))
-                           / (sd20 * np.sqrt(231))),
-            "range_pos": _wsum((C - L) / np.maximum(H - L, 1e-8), 5, 5) / 5.0,
-            "gap": (_wsum(np.log(O / C.shift(1)), 5, 5) / 5.0) / sd20,
-            "dvol_z": (dv - _wsum(dv, 60, 60) / 60.0) / _std(dv, 60, 60),
-            "amihud": np.log((_wsum(r.abs() / np.maximum(C * V, 1.0), 20, 20)
-                              / 20.0).clip(lower=1e-12)),
-        }
-
-    F = np.full((len(index), len(columns), len(VOL_FEATURE_NAMES)), np.nan)
-    for j, name in enumerate(VOL_FEATURE_NAMES):
-        F[:, :, j] = _unpack(out[name].shift(1), order, index,
-                             printed).to_numpy(dtype=float)
-    return F
-
-
-def _vol_rank(F, eligible):
-    """Per-date cross-sectional rank of every feature, onto [-0.5, 0.5].
-
-    mltrend's stage-2 transform. It is what makes the model purely
-    cross-sectional: a feature's level never reaches the trees, only its
-    standing among that date's peers, so nothing has to be comparable across
-    dates or across markets.
-
-    Ranking runs over `eligible` rows only, because mltrend drops
-    feature-invalid rows *before* it ranks. That ordering matters — it keeps the
-    population the ranks describe identical to the population that gets scored,
-    so a name that cannot be scored cannot move anyone else's rank either.
-
-    One function rather than two, called by both `train` and `signal`, which is
-    what makes them the same model. `signal` hands it the last bar as a
-    (1, N, 13) cube so the two go down a literally identical path.
-    """
-    ranked = np.full(F.shape, np.nan)
-    for j in range(F.shape[2]):
-        column = np.where(eligible, F[:, :, j], np.nan)
-        ranked[:, :, j] = pd.DataFrame(column).rank(
-            axis=1, pct=True).to_numpy() - 0.5
-    return ranked
-
-
-def _vol_labels(panel, horizon):
-    """Forward realized volatility, and the dated bar each label reads through.
-
-    `y[i] = log(std(log_ret[i+1 .. i+horizon]))` — the volatility a name is
-    about to have, in logs because volatility is roughly lognormal and the trees
-    fit a squared-error objective.
-
-    `end_row[i]` is the dated row of the last bar that label consumed, which is
-    what makes the training embargo exact rather than arithmetic. It is the same
-    device `_labels` uses with `exit_row`: a row is admissible only if its whole
-    label window closed before the cutoff. Arithmetic on a fixed horizon would
-    almost work, but the label is measured in *traded* bars and the cutoff is a
-    date, and across a halt those are not the same distance.
-
-    The `_real_slots` mask goes on before the shift, per its own docstring —
-    packing is top-aligned, so a column ends in dead slots, and a `shift(-h)`
-    pulls anything computed down there back onto real rows.
-    """
-    packed, order, printed = _packed_panel(panel)
-    real = _real_slots(printed)
-    index, columns = panel["close"].index, panel["close"].columns
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        fwd = np.log(_std(packed["log_ret"], horizon, horizon).where(real))
-    y = _unpack(fwd.shift(-horizon), order, index, printed)
-
-    # order[i] is the dated row of packed slot i, so the dated row this label
-    # reads through is order[i + horizon]. Rows with no such slot stay NaN, and
-    # NaN fails the `< end` test, which is the answer we want.
-    ahead = np.vstack([order[horizon:].astype(float),
-                       np.full((min(horizon, len(order)), order.shape[1]), np.nan)])
-    end_row = _unpack(pd.DataFrame(ahead[:len(order)], columns=columns),
-                      order, index, printed)
-    return {"y": y.to_numpy(dtype=float),
-            "end_row": end_row.to_numpy(dtype=float)}
-
-
-class VolatilityModel:
-    """One XGBoost regressor on forward realized volatility, over mltrend's 13.
-
-    Client surface mirrors `ManipulationModel`:
-
-        model = VolatilityModel().train(pd.read_parquet("app/data/bist_1d.parquet"),
-                                        train_end="2024-12-31")
-        forecast = model.signal(ctx.history(VolatilityModel.LOOKBACK))
-
-    plus `save`/`load`. Data in, volatility out; it knows nothing about the
-    engine, the portfolio or the training schedule.
-
-    **What it predicts, and what it does not.** `signal` returns a forecast
-    standard deviation of daily log returns — a magnitude. It carries no view on
-    direction, and none can be extracted from it: high forecast vol is not
-    "short this" and low is not "buy this". mltrend tested that question four
-    separate ways and every positive number traced back to a construction
-    artifact or to volatility persistence. Used as a risk layer this improves the
-    risk-adjusted outcome of whatever a caller already does; used as a signal it
-    is nothing.
-
-    **The one deviation from mltrend, which is not a small one.** That program's
-    volatility result that survived every gate (BIST, excess IC +0.048 over a
-    block-60 null, robust to a finer measurement ruler and to restriction to the
-    300 most liquid names) was fit on labels built from *15-minute realized
-    volatility*, and its target was the residual of forward vol on the trailing
-    vol term structure — vol beyond what a rolling std already implies. Neither
-    is available here. This engine's feed is daily only, the same constraint that
-    already cost `ManipulationModel` bist's seven intraday features; and the
-    close-to-close version of that residual label was measured on BIST and came
-    back null (excess -0.006, one-sided p = 0.91).
-
-    So this model predicts the volatility *level* instead. That target is
-    genuinely predictable — a name's vol rank today is close to its vol rank next
-    month, which is most of what any vol forecast is — and it is the quantity
-    sizing and stops actually consume.
-
-    The bar for that is not zero, and it is worth knowing where this clears it.
-    mltrend's operating manual calls a plain trailing term-structure blend "not a
-    naive baseline, it is the frontier for this data" on daily inputs, having
-    found its features added nothing over one on US names. On this feed, fit to
-    2024-12-31 and scored over the 368 dates after it, mean per-date rank-IC
-    against realized forward 21-bar volatility is **+0.481 for this model against
-    +0.437 for the blend** — a real but modest edge, on one market, over one
-    period, measured once. It is enough to prefer the model over the blend here.
-    It is not enough to call it validated, and it says nothing about US books,
-    where mltrend measured the opposite. See VOL_FEATURE_NAMES for the feature
-    choice this number depends on.
-
-    Two things are simpler here than in `ManipulationModel`, both structural:
-
-     * **No winsorizing.** Per-date ranks are bounded to [-0.5, 0.5] by
-       construction, so there are no quantile bounds to fit, carry or persist.
-     * **No `ScoringState`.** All thirteen features are window-bounded — none
-       accumulates from a symbol's first bar the way `obv` and
-       `days_since_past_extreme` do — so `signal` can be called on any bar, in
-       any order, without a carry. It does not need to see the start of the feed.
-    """
-
-    LOOKBACK = LOOKBACK
-
-    def __init__(self, *, params=None, horizon=VOL_HORIZON,
-                 min_history=MIN_HISTORY, train_start=TRAIN_START_DATE,
-                 min_turnover_percentile=0.0, min_names=VOL_MIN_NAMES,
-                 num_rounds=VOL_NUM_ROUNDS):
-        self.params = dict(params or VOL_XGB_PARAMS)
-        self.horizon = int(horizon)
-        self.min_history = int(min_history)
-        self.train_start = train_start
-        # Defaults to no filter, which is the universe mltrend's surviving
-        # result was measured on; its liquid-only variant was a separate run
-        # that found a smaller effect, so the knob is exposed rather than set.
-        self.min_turnover_percentile = float(min_turnover_percentile)
-        self.min_names = int(min_names)
-        self.num_rounds = int(num_rounds)
-        self.booster = None
-        self.train_end = None   # last timestamp the fit was allowed to see, ms
-        self.liquid = None      # symbols above the turnover cut, or None for all
-        if self.horizon < 2:
-            raise ValueError("horizon must be at least 2 bars")
-
-    # -- train --------------------------------------------------------------
-
-    def train(self, df, *, train_end=None):
-        """Fit on bars up to and including `train_end`.
-
-        `df` is long-format pandas with app/data/bist_1d.parquet's columns, or an
-        already-built panel dict. Bars after `train_end` are dropped *before*
-        labels are built, so a label still resolving at the cutoff resolves to
-        NaN and is dropped: the embargo is structural, not a convention the
-        caller has to remember.
-        """
-        panel = df if isinstance(df, dict) else _panel(df)
-        index = panel["close"].index
-        end = len(index)
-        if train_end is not None:
-            end = int(np.searchsorted(index.to_numpy(),
-                                      _as_index_value(train_end, index),
-                                      side="right"))
-        if end <= 0:
-            raise ValueError(f"train_end={train_end} precedes every bar")
-
-        panel = _truncate(panel, end)
-        index = panel["close"].index
-        last = index[-1]
-        self.train_end = (int(last) if isinstance(last, (int, np.integer))
-                          else int(pd.Timestamp(last).value // 1_000_000))
-
-        if self.min_turnover_percentile > 0.0:
-            self.liquid = _liquid_universe(panel, self.min_turnover_percentile)
-        F = _vol_features(panel)
-
-        # mltrend never imputes and never partially fills: a row is in or out on
-        # all thirteen. XGBoost would happily learn a direction for a missing
-        # feature, but a rank is only meaningful against a population, and a row
-        # that could not be ranked on one feature was never in that population.
-        printed = panel["close"].notna()
-        age = np.cumsum(printed.to_numpy(), axis=0)
-        eligible = np.isfinite(F).all(axis=2) & (age >= self.min_history)
-        # ...and the row has to be one a *window* could also produce. Features
-        # are measured in traded bars but `ctx.history` counts dates, so a name
-        # that halted 50 times carries only 250 traded bars inside a 300-date
-        # window and its 252-bar features go NaN there while the full panel
-        # computes them fine. Measured on app/data/bist_1d.parquet that is 3-4
-        # symbols per date, always in that direction. Training on rows scoring
-        # can never reach does not corrupt the fit, but it fits the model to a
-        # population it will never see, so they are dropped here instead.
-        eligible &= (printed.rolling(self.LOOKBACK, min_periods=1).sum()
-                     .to_numpy() >= VOL_DEPTH)
-        if self.train_start is not None:
-            start = np.searchsorted(index.to_numpy(), _as_index_value(
-                self.train_start, index), side="left")
-            eligible[:start] = False
-        if self.liquid is not None:
-            eligible &= np.array([s in self.liquid
-                                  for s in panel["close"].columns])
-        # Applied to the rankable count rather than the printed count: it is the
-        # ranks that need a population, and a date with 400 names of which 8 have
-        # 252 bars of history is as thin as a date with 8 names.
-        eligible &= (eligible.sum(axis=1) >= self.min_names)[:, None]
-        if not eligible.any():
-            raise ValueError(
-                f"no rows survive the training filters (train_start="
-                f"{self.train_start}, train_end={train_end}, "
-                f"min_names={self.min_names})")
-
-        X = _design_matrix(_vol_rank(F, eligible))
-
-        label = _vol_labels(panel, self.horizon)
-        y, end_row = label["y"], label["end_row"]
-        keep = eligible & np.isfinite(y) & (end_row < end)
-        if keep.sum() < 1000:
-            raise RuntimeError(f"only {int(keep.sum())} usable training rows")
-
-        self.booster = xgb.train(
-            dict(self.params),
-            xgb.DMatrix(X[keep], label=y[keep].astype(np.float32),
-                        feature_names=list(VOL_FEATURE_NAMES)),
-            num_boost_round=self.num_rounds,
-        )
-
-        sigma = np.exp(self._predict(X[eligible]))
-        log.info(
-            "%d rows over %d dates, newest label reads through row %d "
-            "(< end=%d), %d rounds, sigma/day q10=%.4f med=%.4f q90=%.4f",
-            int(keep.sum()), int(eligible.any(axis=1).sum()),
-            int(np.nanmax(end_row[keep])), end, self.num_rounds,
-            float(np.quantile(sigma, 0.10)), float(np.median(sigma)),
-            float(np.quantile(sigma, 0.90)),
-        )
-        return self
-
-    def _predict(self, rows):
-        """Predicted log forward volatility for a (rows, 13) design matrix.
-
-        No `iteration_range`: this model has no early stopping, so every tree it
-        was given is a tree it should score with.
-        """
-        return self.booster.predict(
-            xgb.DMatrix(rows, feature_names=list(VOL_FEATURE_NAMES)))
-
-    # -- score --------------------------------------------------------------
-
-    def signal(self, window):
-        """Volatility forecast for the current bar, one row per printing symbol.
-
-        Returns a DataFrame indexed by symbol with three columns:
-
-            sigma_d    forecast standard deviation of daily log returns
-            sigma_ann  the same annualized, sigma_d * sqrt(252)
-            vol_pct    where that forecast ranks among this bar's scored names
-
-        A symbol scores NaN rather than a number derived from missing or
-        out-of-sample inputs when it is below `min_history`, has any non-finite
-        feature, or sits outside the liquid universe. If fewer than `min_names`
-        survive, *every* row is NaN — see VOL_MIN_NAMES.
-
-        Two caveats worth stating at the call site rather than discovering:
-
-         1. `ctx.history` returns only the symbols that printed this tick, so the
-            peer set is narrower than the training panel's and the ranks shift
-            slightly against it. The same caveat applies to bist's own
-            cross-sectional features.
-         2. `sigma_d` is close-to-close and therefore *includes* overnight
-            variance. It is not the intraday-only quantity mltrend's operating
-            manual has to scale up before sizing; no overnight adjustment applies
-            to this number.
-        """
-        if self.booster is None:
-            raise RuntimeError("train() or load() before signal()")
-
-        panel = window if isinstance(window, dict) else _panel_from_window(window)
-        symbols = panel["close"].columns
-        last = _vol_features(panel)[-1:]                       # (1, N, 13)
-
-        listed = np.isfinite(panel["close"].to_numpy(dtype=float)).sum(axis=0)
-        usable = np.isfinite(last[0]).all(axis=1) & (listed >= self.min_history)
-        if self.liquid is not None:
-            usable &= np.array([s in self.liquid for s in symbols])
-        if usable.sum() < self.min_names:
-            usable[:] = False
-
-        X = _design_matrix(_vol_rank(last, usable[None, :]))[0]
-        sigma = np.where(usable, np.exp(self._predict(X)), np.nan)
-        return pd.DataFrame(
-            {SIGMA_D: sigma,
-             SIGMA_ANN: sigma * np.sqrt(TRADING_DAYS),
-             VOL_PCT: pd.Series(sigma, index=symbols).rank(pct=True).to_numpy()},
-            index=symbols)
-
-    # -- persistence --------------------------------------------------------
-
-    def save(self, directory):
-        """One booster plus everything needed to score. No bounds file — the
-        per-date ranks are bounded by construction, so there is nothing to fit."""
-        d = Path(directory)
-        d.mkdir(parents=True, exist_ok=True)
-        self.booster.save_model(str(d / "model.json"))
-        (d / "meta.json").write_text(json.dumps({
-            "feature_names": list(VOL_FEATURE_NAMES),
-            "params": self.params,
-            # The label this was fit for. A booster trained on 21-bar forward vol
-            # scored as though it were 5-bar is wrong by a factor nothing
-            # downstream would flag.
-            "horizon": self.horizon,
-            "min_history": self.min_history,
-            "train_start": self.train_start,
-            "min_turnover_percentile": self.min_turnover_percentile,
-            "min_names": self.min_names,
-            "num_rounds": self.num_rounds,
-            "train_end": self.train_end,
-            "liquid": sorted(self.liquid) if self.liquid is not None else None,
-        }, indent=2))
-
-    @classmethod
-    def load(cls, directory):
-        d = Path(directory)
-        meta_path = d / "meta.json"
-        if not meta_path.exists():
-            raise FileNotFoundError(
-                f"no trained volatility model at {d}. Train one first:\n"
-                f"  VolatilityModel().train(frame, train_end=...).save({d!r})")
-        meta = json.loads(meta_path.read_text())
-        if tuple(meta["feature_names"]) != VOL_FEATURE_NAMES:
-            raise RuntimeError("saved model was fit on a different feature set")
-
-        model = cls(params=meta["params"], horizon=meta["horizon"],
-                    min_history=meta["min_history"],
-                    train_start=meta["train_start"],
-                    min_turnover_percentile=meta["min_turnover_percentile"],
-                    min_names=meta["min_names"], num_rounds=meta["num_rounds"])
-        model.train_end = meta["train_end"]
-        model.liquid = None if meta["liquid"] is None else set(meta["liquid"])
-        model.booster = xgb.Booster()
-        model.booster.load_model(str(d / "model.json"))
-        return model
-
 
 class AlgoTradeStrategy(stonks.Strategy):
     """Long swings on the model's score, entered above a trend and exited on it.
@@ -2592,6 +1689,25 @@ class AlgoTradeStrategy(stonks.Strategy):
     with every retrain; and set high enough to be selective it fires almost only
     on bars that closed at the price band, which cannot be bought. `ENTRY_TOP_PCT`
     carries the measurements.
+
+    `sigma_gate` reopens that door, deliberately and **off by default**, because
+    `tools/workspace.ipynb` selects on an absolute floor and a backtest should be
+    able to describe the same trades. It changes two things at once: the ranking
+    moves from the raw score to `_to_sigma` of it, and `min_score` then cuts the
+    slice. Dividing by each name's own volatility is what makes an absolute
+    threshold comparable across names, which is the objection above answered —
+    it does not answer the second objection, that the meaning still moves with a
+    retrain.
+
+    Be clear about what it buys. Measured on the notebook's 2026 out-of-sample
+    stretch, the floor's headline is spectacular and almost entirely an artifact
+    of re-entry: `score >= 1.0` shows 62 trades at +28.6% mean and an 88.7% win
+    rate, but 50 of those are repeat entries into a name already held, which
+    `_rank` forbids. What survives the book constraint is **12 trades** at +6.9%
+    mean — *below* the unfiltered gate's +11.0% — against a median that turns
+    -2.2% -> +3.4% and a win rate that goes 40.9% -> 66.7%. So it trades mean
+    return for consistency, on a sample too small to settle the question. Hence
+    the default of 0.
 
     Both ends of the trade are the `exit_ma` average. A name is only enterable
     while its close sits at or above it — enforced in `ManipulationModel.signal`,
@@ -2619,21 +1735,37 @@ class AlgoTradeStrategy(stonks.Strategy):
        because its gate fires ~92 times in 18 months; a percentile gate fires
        every session and would exhaust cash in a handful of entries.
 
-    The model is pre-trained to a dated artifact and frozen, so the strategy
-    refuses to trade any bar the fit was allowed to see — though it still *scores*
-    them, because the carried state has to see every bar.
+    **The model is fit inside the run.** The strategy accumulates the engine's
+    own bars from the first tick, and on the first bar at or after `train_on`
+    trains one `ManipulationModel` and keeps it for the rest of the run. It
+    refuses to trade any bar the fit was allowed to see, which the fit itself
+    enforces: `train` stamps `train_end` with the training bar and the guard in
+    `on_tick` skips anything at or before it, so trading begins on the next bar.
+
+    Fitting here is what replaced loading a pre-trained artifact, and it removes
+    the one thing nothing else could reconcile — the fit and the run read the
+    same feed, so a model trained on one dataset can no longer be pointed at
+    another. It also means `exit_ma` cannot disagree between the two ends of the
+    trade: the model is constructed with the strategy's own value, where an
+    artifact carried its own and could silently enter on one average and leave
+    on another.
+
+    The cost is that every run pays for the fit — roughly a minute, plus one
+    full-panel feature build on the training bar — and that a run cannot start
+    part-way through the data (see caveat 1).
 
     Caveats worth carrying into the results:
 
-     1. **Start the run at the beginning of the data, not near `train_end`.**
-        `obv` and `days_since_past_extreme` accumulate from a symbol's first bar,
-        so `ScoringState` seeds them from the first window that covers the whole
-        history and advances them one bar at a time thereafter. The engine's
-        `--start` truncates the feed at load time, so a late start silently
-        reseeds both against a shorter history and scores bars on values the fit
-        never saw. Nothing can detect this from inside the strategy — the feed
-        simply begins where it begins.
-     2. `signal` runs on every tick from the moment the window fills, whether or
+     1. **Start the run at the beginning of the data, not near `train_on`.**
+        This now decides two things, not one. `obv` and `days_since_past_extreme`
+        accumulate from a symbol's first bar, so `ScoringState` seeds them from
+        the training bar's whole-history panel and advances one bar at a time
+        thereafter; and the fit itself only ever sees the bars the run has ticked
+        through. The engine's `--start` truncates the feed at load time, so a
+        late start both reseeds the carries against a shorter history *and*
+        trains the model on less data than you think. Nothing can detect this
+        from inside the strategy — the feed simply begins where it begins.
+     2. `signal` runs on every tick once the model exists, whether or
         not a slot is free, because `ScoringState` has to see every bar in order.
         Building 72 features over a 300 x ~600 window is far and away the run's
         dominant cost, and there is no way to skip it.
@@ -2663,9 +1795,11 @@ class AlgoTradeStrategy(stonks.Strategy):
         constraints much of this book is not buyable at this account size.
         Separately, a stop is not a floor — the worst round trip was -48%, filled
         through the -10% stop on a gap.
-     7. The liquid universe comes from the artifact and is computed from training
-        turnover only. bist takes the median over its whole frame, future
-        included; see `_liquid_universe`.
+     7. The liquid universe is computed from training turnover only — the bars up
+        to `train_on`, which is all the fit has seen. bist takes the median over
+        its whole frame, future included; see `_liquid_universe`. A name that had
+        not listed by `train_on` is therefore outside the universe for the whole
+        run, and `signal` scores it NaN however it trades later.
      8. A moving-average exit fills one bar after it is decided, where the stop
         fills intrabar on the bar it is breached. The rule gives back more on a
         sharp reversal than the fixed target it replaced.
@@ -2676,16 +1810,22 @@ class AlgoTradeStrategy(stonks.Strategy):
         queues an order it cannot fund.
     """
 
-    artifact = "app/python/artifacts/algotrade"
     # Bound to the tunables block at the top of this module — change them there.
+    train_on = TRAIN_ON
     top_pct = ENTRY_TOP_PCT
     stop_pct = STOP_PCT
     exit_ma = EXIT_MA
     max_positions = MAX_POSITIONS
     cash_buffer = CASH_BUFFER
     skip_limit_locked = SKIP_LIMIT_LOCKED
+    sigma_gate = USE_SIGMA_GATE
+    min_score = ENTRY_MIN_SCORE
 
     params = {
+        "train_on": stonks.Param(
+            "last bar the in-run fit may see; the strategy accumulates until "
+            "this date, trains once, and trades from the next bar",
+            unit="YYYYMMDD"),
         "top_pct": stonks.Param(
             "enter the day's top slice of the model's cross-sectional ranking",
             unit="%"),
@@ -2699,6 +1839,12 @@ class AlgoTradeStrategy(stonks.Strategy):
         "skip_limit_locked": stonks.Param(
             "1 to refuse names that closed at the +10% band; bist's backtest "
             "uses 0 and every one of its entries is such a name"),
+        "sigma_gate": stonks.Param(
+            "1 to rank on the score divided by the name's own volatility and "
+            "apply min_score; 0 ranks on the raw score with no floor"),
+        "min_score": stonks.Param(
+            "lowest sigma an entry may have, applied after the top_pct cut. "
+            "Ignored unless sigma_gate is 1", unit="sigma"),
     }
 
     indicators = {
@@ -2706,17 +1852,14 @@ class AlgoTradeStrategy(stonks.Strategy):
     }
 
     def on_start(self, ctx):
-        self.model = ManipulationModel.load(self.artifact)
-        # Both ends of the trade are this average, but they read it from two
-        # places: the exit below uses the strategy's own `exit_ma`, which the GUI
-        # can override per run, while the entry gate lives in `signal` and uses
-        # the artifact's. Overriding one without retraining silently enters on
-        # one average and leaves on another, which no result would flag.
-        if self.exit_ma != self.model.exit_ma:
-            log.warning("exit_ma=%s but the artifact was fit for %s — entries "
-                        "gate on the artifact's average and exits use yours; "
-                        "retrain to make them agree",
-                        self.exit_ma, self.model.exit_ma)
+        # Fit on the first bar at or after `train_on`; until then every tick's
+        # rows are accumulated and nothing else happens. `_bars` is released the
+        # moment the model exists — it is the whole feed and there is no second
+        # fit to keep it for.
+        self.model = None
+        self._bars = []
+        self._train_on = int(pd.Timestamp(str(int(self.train_on))).value
+                             // 1_000_000)
         # symbols we believe we hold; a filled stop closes them behind our back
         self.book = set()
         # exit order placed, position not yet flat — kept so the rule does not
@@ -2731,19 +1874,29 @@ class AlgoTradeStrategy(stonks.Strategy):
         w = ctx.history(LOOKBACK)
         if len(w) == 0:
             return
-        # `ScoringState` must see every bar in order, so scoring starts as soon as
-        # the window is full and continues through the in-sample stretch. Skipping
-        # the in-sample bars would leave obv and the extreme counter seeded at
-        # train_end instead of at the symbol's first bar.
+        now = int(np.max(w.timestamp))
+
+        if self.model is None:
+            # Every bar goes into the fit, so it is collected before anything
+            # else can return early.
+            self._collect(ctx)
+        # A fit needs history, not just a date: `train_on` earlier than
+        # LOOKBACK bars into the feed would hand `train` a panel with nothing
+        # surviving its row filters, which raises rather than trades badly.
         if np.unique(w.timestamp).size < LOOKBACK:
             return
 
+        if self.model is None:
+            if now < self._train_on:
+                return
+            sig = self._fit(now)
+        else:
+            sig = self.model.signal(w, state=self.state)
         self._ret = self._returns_this_tick(w)
-        sig = self.model.signal(w, state=self.state)
 
-        # The artifact saw every bar up to train_end during training; trading
-        # them is not a backtest result.
-        now = int(np.max(w.timestamp))
+        # The fit saw every bar up to train_end; trading them is not a backtest
+        # result. `train` stamps it with the training bar, so this is also what
+        # keeps the strategy off the bar it just fit on.
         if self.model.train_end is not None and now <= self.model.train_end:
             return
 
@@ -2758,7 +1911,14 @@ class AlgoTradeStrategy(stonks.Strategy):
         free = self.max_positions - len(self.book)
         if free <= 0:
             return
-        picks = self._rank(sig).iloc[:free]
+        # The gate needs each candidate's own volatility, over its last traded
+        # bars. `_tail_closes` already slices the ragged window that way for the
+        # exit average, so it serves both; only the scored names are asked for.
+        vol = None
+        if self.sigma_gate:
+            names = set(sig.index[np.isfinite(sig[SCORE])])
+            vol = _trailing_vol(self._tail_closes(w, names, SIGMA_VOL_LEN + 1))
+        picks = self._rank(sig, vol).iloc[:free]
         if picks.empty:
             return
 
@@ -2801,12 +1961,65 @@ class AlgoTradeStrategy(stonks.Strategy):
                                  parent=entry, reduce_only=True)
             self.book.add(symbol)
             self._print_entry(now, symbol, picks.loc[symbol], close, quantity,
-                              stop)
+                              stop, None if vol is None
+                              else _to_sigma(picks.at[symbol, SCORE], vol[symbol]))
             value = sig.at[symbol, SCORE]
             if np.isfinite(value):
                 ctx.plot(SCORE, symbol, float(value))
 
-    def _print_entry(self, ts, symbol, row, close, quantity, stop):
+    def _collect(self, ctx):
+        """Keep this tick's bars for the fit.
+
+        `ctx.history(1)` is the current bar of every symbol that printed — one
+        row each. Accumulating them tick by tick is what lets the fit see the
+        whole feed: a single `history(n)` call at the training bar would carry
+        only the symbols that happened to print *that* day, and since
+        `_liquid_universe` is computed from the training panel, every other name
+        would be scored NaN for the rest of the run.
+        """
+        bar = ctx.history(1)
+        if len(bar) == 0:
+            return
+        self._bars.append((
+            list(bar.symbol),
+            np.asarray(bar.timestamp),
+            np.asarray(bar.open, dtype=float),
+            np.asarray(bar.high, dtype=float),
+            np.asarray(bar.low, dtype=float),
+            np.asarray(bar.close, dtype=float),
+            np.asarray(bar.volume, dtype=float),
+        ))
+
+    def _fit(self, now):
+        """Train on everything accumulated so far, and return this bar's signal.
+
+        The panel is scored here rather than left to the next tick because
+        `_carry` takes its seed from the first window it is ever handed, and that
+        window has to be the whole history or `obv` and `days_since_past_extreme`
+        start from the wrong place. Scoring it twice would advance the state
+        twice for one bar, so the training bar gets exactly this one call and
+        `on_tick` does not score again.
+        """
+        parts, self._bars = self._bars, None
+        frame = pd.DataFrame({
+            "symbol": [s for part in parts for s in part[0]],
+            "timestamp": np.concatenate([part[1] for part in parts]),
+            "open": np.concatenate([part[2] for part in parts]),
+            "high": np.concatenate([part[3] for part in parts]),
+            "low": np.concatenate([part[4] for part in parts]),
+            "close": np.concatenate([part[5] for part in parts]),
+            "volume": np.concatenate([part[6] for part in parts]),
+        })
+        panel = _panel(frame)
+        log.info("fitting on %d bars, %d symbols, through %s", len(frame),
+                 frame["symbol"].nunique(),
+                 pd.Timestamp(now, unit="ms").date())
+        self.model = ManipulationModel(train_start=BACKTEST_TRAIN_START,
+                                       exit_ma=self.exit_ma, max_hold=MAX_HOLD)
+        self.model.train(panel)
+        return self.model.signal(panel, state=self.state)
+
+    def _print_entry(self, ts, symbol, row, close, quantity, stop, sigma=None):
         """One line per entry: the order, and the signal that produced it.
 
         The score is the number the gate was applied to, so the line can be read
@@ -2815,11 +2028,16 @@ class AlgoTradeStrategy(stonks.Strategy):
         is that score as a return, and the model's caveat travels with it: rank
         on the score, treat the percent as a magnitude check and not a calibrated
         forecast.
+
+        Under `sigma_gate` the ranking key is no longer the raw score, so the
+        sigma is printed too — otherwise the line would not say what the pick was
+        actually chosen on.
         """
         self._print(ts, symbol, (
             f"enter market @ {close:.4f} | qty {quantity:.6g} | "
             f"SL {stop:.4f} ({-self.stop_pct:+.2f}%) | exit < MA{self.exit_ma} | "
-            f"score {row[SCORE]:.4f} ({row[EXPECTED_PCT]:+.2f}%)"))
+            f"score {row[SCORE]:.4f} ({row[EXPECTED_PCT]:+.2f}%)"
+            + ("" if sigma is None else f" | {sigma:.4f} sigma")))
 
     @staticmethod
     def _print(ts, symbol, msg):
@@ -2923,7 +2141,7 @@ class AlgoTradeStrategy(stonks.Strategy):
             return False
         return self._ret.get(symbol, 0.0) >= LIMIT_HIT
 
-    def _rank(self, sig):
+    def _rank(self, sig, vol=None):
         """The day's top `top_pct` of the scored universe, best score first.
 
         Indexed by symbol, carrying the raw score and its expected percent, so a
@@ -2939,6 +2157,26 @@ class AlgoTradeStrategy(stonks.Strategy):
         A symbol the model declined to score is NaN and drops out of the ranking
         rather than sorting to one end. That includes every name trading below
         its exit average, which `signal` refuses outright.
+
+        With `vol` — the sigma gate — the ranking key becomes `_to_sigma` of the
+        score and `min_score` cuts the result. Three details are load-bearing:
+
+         1. **The gate's width is still measured on the whole scored universe.**
+            `keep` counts every symbol the model scored, exactly as it does
+            without the gate, so turning the gate on cannot quietly narrow or
+            widen the slice — it only changes which names fill it.
+         2. **A non-positive score is not a candidate at all.** Sigma divides by
+            vol, so among negatives a *larger* vol gives a *smaller* negative and
+            the order inverts — the noisiest name would float to the top on a day
+            the model likes nothing. Refusing them outright keeps that inversion
+            out of the ranking, and it is what the model is saying anyway: a
+            negative predicted return is not a trade. `min_score` above zero
+            would also remove them, but the ranking must not depend on the floor
+            being set that way.
+         3. **The floor is applied after the `top_pct` cut, not before.** That is
+            the notebook's order, and the conservative one: a weak day yields
+            nothing rather than reaching further down the ranking to fill the
+            slice.
         """
         columns = [SCORE, EXPECTED_PCT]
         scored = sig[SCORE].dropna()
@@ -2946,45 +2184,20 @@ class AlgoTradeStrategy(stonks.Strategy):
             return sig.iloc[:0][columns]
 
         keep = max(1, int(len(scored) * self.top_pct / 100.0))
-        order = sorted(scored.index, key=lambda s: (-scored[s], s))
-        order = [s for s in order[:keep] if s not in self.book]
+        if vol is None:
+            order = sorted(scored.index, key=lambda s: (-scored[s], s))[:keep]
+        else:
+            # A name with too little history has no vol and so no sigma. It stays
+            # in `keep`'s count above — removing it there would widen the gate —
+            # but it cannot be picked.
+            sigma = {s: _to_sigma(scored[s], vol[s]) for s in scored.index
+                     if scored[s] > 0.0 and np.isfinite(vol.get(s, np.nan))}
+            order = sorted(sigma, key=lambda s: (-sigma[s], s))[:keep]
+            order = [s for s in order if sigma[s] >= self.min_score]
+        order = [s for s in order if s not in self.book]
         return sig.loc[order, columns]
 
     @classmethod
     def _closes(cls, w):
         """This tick's close per symbol."""
         return {w.symbol[i]: float(w.close[i]) for i in cls._segments(w)[1]}
-
-
-# ---------------------------------------------------------------------------
-# Offline trainer. The strategy loads what this writes.
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--data", default="app/data/bist_1d.parquet")
-    parser.add_argument("--train-end", default="2024-12-31",
-                        help="last bar the fit may see; the backtest starts after it")
-    parser.add_argument("--out", default=AlgoTradeStrategy.artifact)
-    parser.add_argument("--train-start", default=BACKTEST_TRAIN_START,
-                        help="first bar the fit may see. Defaults to bist's "
-                             "backtest setting (full history), NOT its screen's "
-                             "2024-01-01 — see BACKTEST_TRAIN_START")
-    parser.add_argument("--rounds", type=int, default=XGB_PARAMS["n_estimators"])
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    frame = pd.read_parquet(args.data)
-    log.info("%s: %d rows, %d symbols, %s to %s", args.data, len(frame),
-             frame["symbol"].nunique(), frame["timestamp"].min(),
-             frame["timestamp"].max())
-
-    params = {**XGB_PARAMS, "n_estimators": args.rounds}
-    model = ManipulationModel(params=params, train_start=args.train_start).train(
-        frame, train_end=args.train_end)
-    model.save(args.out)
-    log.info("wrote %s (train_end=%s)", args.out, args.train_end)
-
-
-if __name__ == "__main__":
-    main()

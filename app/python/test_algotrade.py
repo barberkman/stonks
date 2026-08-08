@@ -16,7 +16,6 @@ fill mechanics (next-open market fills, bracket arming, reduce-only) are pinned
 by the C++ suite under tests/core/.
 """
 
-import json
 from unittest.mock import patch
 
 import numpy as np
@@ -38,9 +37,6 @@ from algo_trade import (
     SCORE,
     AlgoTradeStrategy,
     ManipulationModel,
-    QullamaggieSwingModel,
-    _qm_extremes,
-    _qm_sma,
 )
 
 # Every column except the two that accumulate from a symbol's first bar ever:
@@ -715,55 +711,6 @@ def test_train_fills_the_design_matrix(trained):
     assert np.isfinite(filled).all()
 
 
-def test_save_load_round_trip_is_exact(trained, tmp_path):
-    model, frame, cutoff = trained
-    window = _window_from_frame(frame, cutoff)
-
-    model.save(tmp_path)
-    reloaded = ManipulationModel.load(tmp_path)
-    assert reloaded.train_end == model.train_end
-    assert reloaded.liquid == model.liquid
-    assert reloaded.params == model.params
-    pd.testing.assert_frame_equal(model.signal(window), reloaded.signal(window))
-
-
-def test_the_artifact_records_which_trade_it_was_fit_for(trained, tmp_path):
-    """`signal` gates entries on the same average the label exited on.
-
-    An artifact that did not carry `exit_ma` could be scored against a different
-    one after a constant moved, and nothing would report it — the scores would
-    just quietly describe a trade the strategy is not taking.
-    """
-    model, _, _ = trained
-    model.save(tmp_path)
-    meta = json.loads((tmp_path / "meta.json").read_text())
-
-    assert meta["exit_ma"] == model.exit_ma
-    assert meta["max_hold"] == model.max_hold
-    # One booster, not one per head.
-    assert (tmp_path / "model.json").exists()
-    assert isinstance(meta["best_iteration"], int)
-
-    reloaded = ManipulationModel.load(tmp_path)
-    assert reloaded.exit_ma == model.exit_ma
-    assert reloaded.max_hold == model.max_hold
-    assert reloaded.best_iteration == model.best_iteration
-
-
-def test_load_rejects_a_stale_feature_set(trained, tmp_path, monkeypatch):
-    """A booster is only valid against the column order it was trained on."""
-    model, _, _ = trained
-    model.save(tmp_path)
-    monkeypatch.setattr(algo_trade, "FEATURE_NAMES", FEATURE_NAMES[:-1])
-    with pytest.raises(RuntimeError, match="different feature set"):
-        ManipulationModel.load(tmp_path)
-
-
-def test_load_without_an_artifact_names_the_fix(tmp_path):
-    with pytest.raises(FileNotFoundError, match="algo_trade.py"):
-        ManipulationModel.load(tmp_path / "nothing")
-
-
 def _window_from_frame(frame, cutoff):
     """The trailing LOOKBACK bars ending at `cutoff`, as a window-shaped panel."""
     dates = np.sort(frame["timestamp"].unique())
@@ -867,9 +814,12 @@ class StubModel:
 
     LOOKBACK = LOOKBACK
 
-    def __init__(self, frame, train_end=TRAIN_END, exit_ma=algo_trade.EXIT_MA):
+    def __init__(self, frame=None, train_end=TRAIN_END, exit_ma=algo_trade.EXIT_MA,
+                 **kwargs):
         self.frame = frame
         self.train_end = train_end
+        self.trained = None
+        self.kwargs = kwargs
         # The strategy compares this against its own `exit_ma`: the entry gate is
         # the artifact's average and the exit is the run's, so a mismatch means
         # the two ends of the trade disagree.
@@ -881,6 +831,33 @@ class StubModel:
         self.calls += 1
         self.states.append(state)
         return self.frame
+
+    def train(self, panel, *, train_end=None):
+        """The strategy fits in-run, so the harness intercepts that too.
+
+        What was trained on is the model's business and is tested above; the
+        panel is kept only so the accumulation tests can assert what the
+        strategy actually handed over.
+        """
+        self.trained = panel
+        return self
+
+
+def yyyymmdd(timestamp_ms):
+    """The `train_on` param's units — see algo_trade.TRAIN_ON."""
+    return int(pd.Timestamp(timestamp_ms, unit="ms").strftime("%Y%m%d"))
+
+
+def stub_model(stub):
+    """Patch the class the strategy constructs, not the loader it no longer calls.
+
+    The factory records what the strategy asked for, so a test can assert the fit
+    was configured for the trade the run is actually holding.
+    """
+    def factory(**kwargs):
+        stub.kwargs = kwargs
+        return stub
+    return patch.object(algo_trade, "ManipulationModel", factory)
 
 
 def signal_frame(rows):
@@ -936,16 +913,16 @@ def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
               train_end=TRAIN_END, paths=None, **overrides):
     """A strategy driven to just past the cutoff, with a stub model attached.
 
-    Always goes through the real `on_start` with `load` patched, rather than
-    setting up the strategy's state by hand — hand-rolled setup silently rots
-    the moment `on_start` grows another attribute.
+    Always goes through the real `on_start` with the model class patched, rather
+    than setting up the strategy's state by hand — hand-rolled setup silently
+    rots the moment `on_start` grows another attribute.
 
-    Warmup is skipped by advancing without ticking: the strategy provably does
-    nothing until it has LOOKBACK distinct timestamps (asserted separately), and
-    driving 300 idle ticks through FakeContext's O(bars) history is pure cost.
-    The cost of that shortcut is that `self._obv` starts empty here, which is
-    exactly the hazard caveat 1 in the class docstring describes; the obv tests
-    below drive from the first bar instead.
+    Warmup is really ticked, not skipped. It used to be skipped as pure cost,
+    but the strategy now fits from the bars it has accumulated, so a warmup that
+    never called `on_tick` would hand `_fit` an empty accumulator. `train_on`
+    defaults to the last warmup bar, so the fit happens on the final warmup tick
+    — inside the patch — and every driven tick afterwards takes the ordinary
+    already-fitted path.
     """
     if bars is None:
         # LOOKBACK bars up to the cutoff, then a few past it.
@@ -963,18 +940,20 @@ def start_run(rows=ALL_PASS, *, bars=None, ticks_after_cutoff=1, cash=100_000.0,
     # keeps those tests measuring what they claim to; the slice width has its own
     # tests below.
     overrides.setdefault("top_pct", 100.0)
+    stamps = sorted({b.timestamp for b in bars})
+    warmup = len(stamps) - ticks_after_cutoff
+    overrides.setdefault("train_on", yyyymmdd(stamps[warmup - 1]))
     # Applied BEFORE on_start, which is where the engine applies them — see
     # pythonstrategy.h, "set on the instance ... before on_start, so strategies
     # see final values". Setting them afterwards would hide anything on_start
     # decides from a param.
     for name, value in overrides.items():
         setattr(strategy, name, value)
-    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
+    with stub_model(stub):
         strategy.on_start(ctx)
-
-    stamps = sorted({b.timestamp for b in bars})
-    for _ in range(len(stamps) - ticks_after_cutoff):
-        ctx.advance()
+        for _ in range(warmup):
+            ctx.advance()
+            strategy.on_tick(ctx)
     return ctx, strategy, stub
 
 
@@ -1008,7 +987,7 @@ def fill_entries(ctx):
             order.symbol, FakePosition(quantity=order.quantity, price=100.0))
 
 
-def test_on_start_loads_the_artifact_and_clears_state():
+def test_on_start_clears_state():
     ctx, strategy, stub = start_run()
     assert strategy.model is stub
     assert strategy.book == set()
@@ -1017,37 +996,44 @@ def test_on_start_loads_the_artifact_and_clears_state():
 
 
 def test_warmup_takes_no_positions():
-    """Fewer than LOOKBACK distinct timestamps means no signal is even asked for."""
+    """Fewer than LOOKBACK distinct timestamps means nothing is fit or scored.
+
+    The date alone does not license a fit: `train_on` here is long past, and the
+    strategy still refuses, because `train` handed a panel this short raises
+    rather than returning a bad model.
+    """
     stamps = sessions(20, start="2025-01-02")
     ctx = FakeContext(feed(stamps), cash=100_000.0)
     strategy = AlgoTradeStrategy()
+    strategy.train_on = yyyymmdd(stamps[0])
     stub = StubModel(signal_frame(ALL_PASS), train_end=0)
-    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
+    with stub_model(stub):
         strategy.on_start(ctx)
+        drive(strategy, ctx, ticks=20)
 
-    drive(strategy, ctx, ticks=20)
     assert ctx.orders == []
     assert stub.calls == 0
+    assert strategy.model is None
 
 
 def test_no_trading_on_bars_the_model_was_trained_on():
-    """The artifact saw those bars; trading them is not a backtest result.
+    """The fit saw those bars; trading them is not a backtest result.
 
-    `signal` IS still called on them, unlike an earlier version of this strategy:
-    ScoringState has to see every bar in order, so scoring runs from the moment the
-    window fills and only *trading* waits for train_end.
+    The fit stamps `train_end` with its own bar, so this is what keeps the
+    strategy off the bar it just trained on as well as everything before it.
     """
     before = sessions(LOOKBACK + 5, start="2023-10-02")
-    train_end = before[-1]
     ctx = FakeContext(feed(before), cash=100_000.0)
     strategy = AlgoTradeStrategy()
-    stub = StubModel(signal_frame(ALL_PASS), train_end=train_end)
-    with patch.object(ManipulationModel, "load", classmethod(lambda cls, d: stub)):
+    # Fit on the last bar, so every bar of the run is in-sample.
+    strategy.train_on = yyyymmdd(before[-1])
+    stub = StubModel(signal_frame(ALL_PASS), train_end=before[-1])
+    with stub_model(stub):
         strategy.on_start(ctx)
+        drive(strategy, ctx, ticks=len(before))
 
-    drive(strategy, ctx, ticks=len(before))
     assert ctx.orders == [], "in-sample bars must not be traded"
-    assert stub.calls == 6, "but they must still be scored, to advance the state"
+    assert stub.calls == 1, "but the fit still scores, to seed the state"
 
 
 def test_enters_the_qualifying_names():
@@ -1484,10 +1470,305 @@ def test_entries_are_plotted_with_their_score():
         assert (SCORE, symbol) in plotted
 
 
+# ---------------------------------------------------------------------------
+# The in-run fit — no artifact, trained from the bars the run has seen
+# ---------------------------------------------------------------------------
+
+def fit_run(train_on_index, *, extra=0, symbols=SYMBOLS, bars=None, **overrides):
+    """Tick a feed to its end, fitting on `train_on_index` (negative = from end)."""
+    stamps = sessions(LOOKBACK + extra, start="2023-10-02")
+    if bars is None:
+        bars = feed(stamps, symbols=symbols)
+    ctx = FakeContext(bars, cash=100_000.0)
+    strategy = AlgoTradeStrategy()
+    strategy.train_on = yyyymmdd(stamps[train_on_index])
+    strategy.top_pct = 100.0
+    for name, value in overrides.items():
+        setattr(strategy, name, value)
+    stub = StubModel(signal_frame({s: 0.4 for s in symbols}),
+                     train_end=stamps[train_on_index])
+    with stub_model(stub):
+        strategy.on_start(ctx)
+        drive(strategy, ctx, ticks=len(stamps))
+    return ctx, strategy, stub
+
+
+def test_nothing_is_fit_or_scored_before_the_train_date():
+    """Accumulating is all that happens; no model, no scoring, no orders."""
+    ctx, strategy, stub = fit_run(-1, extra=5)
+    # train_on is the final bar, so every earlier bar only collected.
+    assert stub.calls == 1
+    assert ctx.orders == []
+
+
+def test_the_fit_happens_once_on_the_first_bar_at_or_after_the_date():
+    ctx, strategy, stub = fit_run(-6, extra=5)
+    assert strategy.model is stub
+    # One seeding score at the fit, then one per bar for the five bars after it.
+    assert stub.calls == 6
+
+
+def test_the_training_bar_is_not_traded_but_the_next_one_is():
+    """`train` stamps train_end with its own bar, and the guard skips it.
+
+    No separate rule enforces the boundary — this is the same leak guard that
+    kept the strategy off a loaded artifact's in-sample bars.
+    """
+    stamps = sessions(LOOKBACK + 2, start="2023-10-02")
+    ctx = FakeContext(feed(stamps), cash=100_000.0)
+    strategy = AlgoTradeStrategy()
+    strategy.train_on = yyyymmdd(stamps[LOOKBACK - 1])
+    strategy.top_pct = 100.0
+    stub = StubModel(signal_frame(ALL_PASS), train_end=stamps[LOOKBACK - 1])
+    with stub_model(stub):
+        strategy.on_start(ctx)
+        drive(strategy, ctx, ticks=LOOKBACK)        # up to and incl. the fit bar
+        assert strategy.model is not None, "the fit ran"
+        assert buys(ctx) == [], "the bar it trained on must not be traded"
+        drive(strategy, ctx, ticks=1)
+    assert buys(ctx), "the bar after the fit does trade"
+
+
+def test_the_fit_is_handed_every_symbol_including_one_halted_that_day():
+    """The reason bars are accumulated rather than pulled in one history() call.
+
+    A single `history(n)` at the training bar carries only the symbols that
+    printed *that* bar, and `_liquid_universe` is computed from whatever it is
+    given — so a name halted on the training day would be scored NaN for the
+    rest of the run.
+    """
+    stamps = sessions(LOOKBACK, start="2023-10-02")
+    bars = feed(stamps, symbols=["AAA", "BBB"])
+    # BBB does not print on the final (training) bar.
+    bars = [b for b in bars if not (b.symbol == "BBB" and b.timestamp == stamps[-1])]
+
+    ctx, strategy, stub = fit_run(-1, bars=bars, symbols=["AAA", "BBB"])
+    assert stub.trained is not None, "the fit ran"
+    assert set(stub.trained["close"].columns) == {"AAA", "BBB"}
+
+
+def test_the_accumulator_is_released_once_the_model_exists():
+    """It is the whole feed, and there is no second fit to keep it for."""
+    _, strategy, _ = fit_run(-2, extra=5)
+    assert strategy.model is not None
+    assert strategy._bars is None
+
+
+def test_the_fit_scores_the_panel_it_trained_on_exactly_once():
+    """The seeding call and the bar's own signal are the same call.
+
+    Scoring the panel and then also scoring the window would advance
+    `ScoringState` twice for one bar, silently corrupting `obv` and
+    `days_since_past_extreme` from the first bar onward.
+    """
+    _, _, stub = fit_run(-1)
+    assert stub.calls == 1
+
+
+def test_the_seeding_call_gets_the_whole_history_not_a_window():
+    """`_carry` seeds from the first window it is handed, so it must be the lot.
+
+    A LOOKBACK-bounded window would rebase the two carried features; the panel
+    the fit trains on is the whole accumulated feed, and it is that panel which
+    is scored.
+    """
+    extra = 5
+    _, _, stub = fit_run(-(extra + 1), extra=extra)
+    seeded = stub.states[0]
+    assert seeded is not None
+    # The panel handed to `train` spans every bar collected so far, not LOOKBACK.
+    assert len(stub.trained["close"]) == LOOKBACK
+
+
+def test_train_on_is_an_int_so_the_gui_round_trips_it():
+    """Param transport is numeric and `pythonstrategy.h` coerces to the current
+    attribute's type — a float default would come back as 20241231.0."""
+    assert isinstance(AlgoTradeStrategy.train_on, int)
+    assert not isinstance(AlgoTradeStrategy.train_on, bool)
+    assert AlgoTradeStrategy.train_on == algo_trade.TRAIN_ON
+
+
+def test_moving_train_on_moves_the_bar_the_fit_happens_on():
+    """The point of exposing it: a different date is a different fit."""
+    early = fit_run(-6, extra=5)[2]
+    late = fit_run(-2, extra=5)[2]
+    assert len(early.trained["close"]) < len(late.trained["close"])
+
+
+# ---------------------------------------------------------------------------
+# The sigma gate — workspace.ipynb's selection, off by default
+# ---------------------------------------------------------------------------
+
+def wobble(vol, bars=algo_trade.SIGMA_VOL_LEN + 1, price=100.0):
+    """`bars` closes whose log returns alternate +/-`vol`, so realised vol ~= vol.
+
+    Kept well under the +10% band: a path that ends on a limit-up move would be
+    refused by `skip_limit_locked` and the test would pass for the wrong reason.
+    """
+    steps = np.array([vol if i % 2 else -vol for i in range(bars - 1)])
+    return list(price * np.exp(np.concatenate([[0.0], np.cumsum(steps)])))
+
+
+def sigma_run(scores, vols, **overrides):
+    """Drive one bar with per-symbol scores and per-symbol realised vols."""
+    overrides.setdefault("sigma_gate", 1)
+    overrides.setdefault("min_score", 0.0)
+    ctx, strategy, _ = start_run(
+        scores, paths={s: wobble(v) for s, v in vols.items()}, **overrides)
+    drive(strategy, ctx)
+    return ctx
+
+
+def test_trailing_vol_is_the_std_of_the_windows_log_returns():
+    closes = wobble(0.03)
+    got = algo_trade._trailing_vol({"AAA": closes})["AAA"]
+    want = float(np.std(np.diff(np.log(closes)), ddof=1))
+    assert got == pytest.approx(want)
+
+
+def test_trailing_vol_uses_only_the_last_length_returns():
+    """A long tail must not drag in history the notebook's window excludes."""
+    quiet = wobble(0.01, bars=algo_trade.SIGMA_VOL_LEN + 1)
+    loud = wobble(0.09, bars=40, price=quiet[-1])
+    combined = quiet + loud[1:]
+    assert (algo_trade._trailing_vol({"AAA": combined})["AAA"]
+            > algo_trade._trailing_vol({"AAA": quiet})["AAA"])
+
+
+def test_trailing_vol_is_nan_below_min_periods():
+    """Too little history to say what a name's noise is, so no sigma for it."""
+    short = wobble(0.03, bars=algo_trade.SIGMA_VOL_MIN)
+    assert np.isnan(algo_trade._trailing_vol({"AAA": short})["AAA"])
+
+
+def test_trailing_vol_is_floored():
+    """A price frozen across the window has ~0 vol; unfloored, `_to_sigma` would
+    divide by nothing and manufacture a several-million-sigma pick."""
+    frozen = [100.0] * (algo_trade.SIGMA_VOL_LEN + 1)
+    assert (algo_trade._trailing_vol({"AAA": frozen})["AAA"]
+            == algo_trade.SIGMA_VOL_FLOOR)
+
+
+def test_to_sigma_divides_by_the_names_own_noise():
+    assert algo_trade._to_sigma(0.06, 0.02) == pytest.approx(
+        0.06 / (0.02 * np.sqrt(algo_trade.SIGMA_HOLD)))
+
+
+def test_the_vol_window_counts_traded_bars_not_calendar_rows():
+    """A halted day must not consume a slot of the volatility window.
+
+    Same invariant the exit average relies on: `_tail_closes` slices the ragged
+    window, so a name that missed sessions is measured over its own last traded
+    bars rather than over a window shortened by its absences.
+    """
+    window = algo_trade.SIGMA_VOL_LEN + 1
+    stamps = sessions(LOOKBACK, start="2023-10-02")
+    stamps = [t for t in stamps if t <= TRAIN_END][-LOOKBACK:]
+    path = wobble(0.03, bars=len(stamps))
+    dense = feed(stamps, symbols=["AAA"], paths={"AAA": path})
+    # BBB prints AAA's last `window` closes, but spread over twice as many
+    # sessions — it sat out every other one. Both must still measure the same
+    # noise, because both traded the same bars.
+    absent = stamps[-(2 * window - 1)::2]
+    sparse = [FakeKLine(t, "BBB", c, c, c, c, 1_000.0)
+              for t, c in zip(absent, path[-window:])]
+    assert len(sparse) == window and sparse[-1].timestamp == stamps[-1]
+
+    ctx, strategy, _ = start_run({"AAA": 0.4, "BBB": 0.4},
+                                 bars=dense + sparse, ticks_after_cutoff=0)
+    w = ctx.history(LOOKBACK)
+    tails = AlgoTradeStrategy._tail_closes(w, {"AAA", "BBB"},
+                                           algo_trade.SIGMA_VOL_LEN + 1)
+    vol = algo_trade._trailing_vol(tails)
+    assert vol["AAA"] == pytest.approx(vol["BBB"])
+
+
+def test_the_gate_is_off_by_default():
+    """The opt-in promise: an untouched strategy ranks on the raw score."""
+    assert AlgoTradeStrategy.sigma_gate == 0
+    ctx = sigma_run({"AAA": 0.05, "BBB": 0.10},
+                    {"AAA": 0.01, "BBB": 0.05}, sigma_gate=0)
+    # BBB has the higher raw score and the lower sigma; without the gate it wins.
+    assert [o.symbol for o in buys(ctx)][0] == "BBB"
+
+
+def test_min_score_is_ignored_when_the_gate_is_off():
+    ctx = sigma_run(ALL_PASS, {s: 0.02 for s in SYMBOLS},
+                    sigma_gate=0, min_score=1e6)
+    assert buys(ctx)
+
+
+def test_the_gate_ranks_on_volatility_adjusted_score():
+    """A quiet name with a smaller predicted move beats a loud name with a
+    bigger one — the whole point of the notebook's unit."""
+    ctx = sigma_run({"AAA": 0.05, "BBB": 0.10},
+                    {"AAA": 0.01, "BBB": 0.05})
+    assert [o.symbol for o in buys(ctx)][0] == "AAA"
+
+
+def test_the_floor_can_empty_the_day():
+    """Nothing clearing `min_score` means no entries, not a best-of-a-bad-lot."""
+    ctx = sigma_run(ALL_PASS, {s: 0.05 for s in SYMBOLS}, min_score=1e6)
+    assert buys(ctx) == []
+
+
+def test_the_floor_admits_what_clears_it():
+    ctx = sigma_run({"AAA": 0.05, "BBB": 0.001},
+                    {"AAA": 0.01, "BBB": 0.05}, min_score=1.0)
+    # AAA is 0.05/(0.01*3) ~= 1.67 sigma; BBB is ~0.007 and is cut.
+    assert [o.symbol for o in buys(ctx)] == ["AAA"]
+
+
+def test_the_gate_does_not_change_how_wide_the_slice_is():
+    """`keep` counts every scored name, gate or no gate.
+
+    Sizing the cut on the surviving subset instead would silently narrow the
+    gate on any day with negative scores — three of the five below — and the
+    slice would still look full.
+    """
+    scores = {"AAA": 0.05, "BBB": 0.04, "CCC": -0.1, "DDD": -0.2, "EEE": -0.3}
+    vols = {s: 0.02 for s in scores}
+    assert len(buys(sigma_run(scores, vols, top_pct=40.0, sigma_gate=0))) == 2
+    assert len(buys(sigma_run(scores, vols, top_pct=40.0,
+                              min_score=-1e6))) == 2
+
+
+def test_a_negative_score_is_never_entered_under_the_gate():
+    """Only the positive name trades, however low the floor is set.
+
+    A negative predicted return is not a trade, and admitting one would also let
+    the sigma inversion in: BBB's sigma (-0.33) beats AAA's (-1.33) purely
+    because BBB is ten times noisier, even though BBB's predicted return is the
+    worse of the two.
+    """
+    ctx = sigma_run({"AAA": -0.02, "BBB": -0.05, "CCC": 0.001},
+                    {"AAA": 0.005, "BBB": 0.05, "CCC": 0.05},
+                    min_score=-1e6)
+    assert [o.symbol for o in buys(ctx)] == ["CCC"]
+
+
+def test_a_board_with_no_positive_score_buys_nothing():
+    """The anti-inversion guarantee, stated as an outcome: on a day the model
+    likes nothing, the gate does not promote the noisiest name to fill a slot."""
+    ctx = sigma_run({"AAA": -0.02, "BBB": -0.05},
+                    {"AAA": 0.005, "BBB": 0.05}, min_score=-1e6)
+    assert buys(ctx) == []
+
+
+def test_the_gate_still_refuses_names_already_held():
+    ctx = sigma_run({"AAA": 0.05, "BBB": 0.04}, {"AAA": 0.01, "BBB": 0.01})
+    assert [o.symbol for o in buys(ctx)][0] == "AAA"
+    fill_entries(ctx)
+    before = len(buys(ctx))
+    ctx.advance()
+    assert len(buys(ctx)) == before
+
+
 def test_declared_params_and_indicators():
     names = {p["name"] for p in stonks.param_specs(AlgoTradeStrategy)}
-    assert names == {"top_pct", "stop_pct", "exit_ma",
-                     "max_positions", "cash_buffer", "skip_limit_locked"}
+    assert names == {"train_on", "top_pct", "stop_pct", "exit_ma",
+                     "max_positions", "cash_buffer", "skip_limit_locked",
+                     "sigma_gate", "min_score"}
     assert {i["name"] for i in stonks.indicator_specs(AlgoTradeStrategy)} == {
         SCORE}
 
@@ -1506,23 +1787,24 @@ def test_the_entry_gate_is_a_percentage_of_the_universe():
     assert value > 0.05, "a fraction in [0,1] would read as a near-empty slice"
 
 
-def test_a_mismatched_exit_average_is_reported(caplog):
-    """Both ends of the trade are one average, read from two places.
+def test_the_fit_takes_the_runs_own_exit_average():
+    """Both ends of the trade are one average, and now they cannot disagree.
 
-    The entry gate lives in `signal` and uses the artifact's `exit_ma`; the exit
-    uses the run's, which the GUI can override. Overriding without retraining
-    enters on one average and leaves on another, and nothing in a report would
-    show it — so it has to say so out loud.
+    This used to be a warning: the entry gate read the loaded artifact's
+    `exit_ma` while the exit read the run's, so overriding one without
+    retraining entered on one average and left on another, and no report would
+    show it. Fitting in-run removes the failure mode instead of reporting it —
+    the model is constructed with whatever the run is using — so the test that
+    asserted the warning is now a test that the two are the same object's value.
     """
-    with caplog.at_level("WARNING"):
-        start_run(exit_ma=10)          # the stub artifact stays at EXIT_MA
-    assert any("exit_ma" in r.getMessage() for r in caplog.records)
+    _, _, stub = start_run(exit_ma=10)
+    assert stub.kwargs["exit_ma"] == 10
 
 
-def test_a_matching_exit_average_is_silent(caplog):
-    with caplog.at_level("WARNING"):
-        start_run(exit_ma=algo_trade.EXIT_MA)
-    assert not [r for r in caplog.records if "exit_ma" in r.getMessage()]
+def test_the_fit_is_told_the_trade_it_is_for():
+    _, strategy, stub = start_run()
+    assert stub.kwargs["exit_ma"] == strategy.exit_ma
+    assert stub.kwargs["max_hold"] == MAX_HOLD
 
 
 def test_the_stop_is_risk_management_not_a_mirror_of_the_label():
@@ -1545,12 +1827,15 @@ def test_every_tunable_binds_to_the_block_at_the_top_of_the_module():
     ignore the block, which is the one failure this arrangement can have.
     """
     bound = {
+        "train_on": "TRAIN_ON",
         "top_pct": "ENTRY_TOP_PCT",
         "stop_pct": "STOP_PCT",
         "exit_ma": "EXIT_MA",
         "max_positions": "MAX_POSITIONS",
         "cash_buffer": "CASH_BUFFER",
         "skip_limit_locked": "SKIP_LIMIT_LOCKED",
+        "sigma_gate": "USE_SIGMA_GATE",
+        "min_score": "ENTRY_MIN_SCORE",
     }
     declared = {p["name"] for p in stonks.param_specs(AlgoTradeStrategy)}
     assert declared == set(bound), "every param must come from the block"
@@ -1666,11 +1951,15 @@ def test_carried_scoring_matches_batch_scoring(trained):
 
 
 def test_the_strategy_hands_its_state_to_the_model():
-    """One object, passed every bar, owned by the strategy."""
+    """One object, passed every bar, owned by the strategy.
+
+    Two calls, not one: the fit scores the panel it trained on to seed the
+    carries, then the driven bar scores its window.
+    """
     ctx, strategy, stub = start_run()
     drive(strategy, ctx)
-    assert stub.calls == 1
-    assert stub.states[-1] is strategy.state
+    assert stub.calls == 2
+    assert {id(s) for s in stub.states} == {id(strategy.state)}
 
 
 def test_the_model_is_fit_for_the_trade_the_strategy_holds():
@@ -1682,233 +1971,3 @@ def test_the_model_is_fit_for_the_trade_the_strategy_holds():
     assert algo_trade.EXIT_MA == AlgoTradeStrategy.exit_ma
     assert ManipulationModel().exit_ma == algo_trade.EXIT_MA
     assert ManipulationModel().max_hold == MAX_HOLD
-
-
-# ---------------------------------------------------------------------------
-# QullamaggieSwingModel — the pine's long breakout, emitted before it triggers
-#
-# The contract that matters is batch-equals-window: the model has no carried
-# state, so a bar scored from a 120-bar window must equal the same bar scored
-# from the whole panel, exactly. A stray `.rolling().mean()` anywhere in the
-# gate path breaks it, and because this model emits booleans rather than
-# float32-rounded features the breakage is a different armed order, not a
-# rounding error. Nothing else here would catch that.
-# ---------------------------------------------------------------------------
-
-def qm_bars(closes, symbol="AAA", start=0, highs=None, lows=None):
-    """Flat OHLC bars at `closes`, one per consecutive day."""
-    n = len(closes)
-    return pd.DataFrame({
-        "timestamp": pd.to_datetime(
-            [np.datetime64("2024-01-01") + np.timedelta64(start + i, "D")
-             for i in range(n)]),
-        "symbol": symbol,
-        "open": closes,
-        "high": closes if highs is None else highs,
-        "low": closes if lows is None else lows,
-        "close": closes,
-        "volume": [1_000_000.0] * n,
-    })
-
-
-def qm_setup_feed(base_bars=6, tail=0, symbol="AAA", start=0):
-    """A momentum run, a pivot high, then a tight base — enough to arm."""
-    run = list(np.linspace(10.0, 30.0, 60))
-    closes = run + [31.0] + [30.2 + 0.05 * (i % 2) for i in range(base_bars)]
-    return qm_bars(closes + [30.2] * tail, symbol=symbol, start=start)
-
-
-QM = dict(min_price=1.0, min_adr=0.0)
-
-
-def test_qm_arms_a_resting_order_after_a_base_forms():
-    model = QullamaggieSwingModel(**QM)
-    sig = model.signal(qm_setup_feed())
-    assert len(sig) == 1
-    row = sig.iloc[0]
-    assert row["setup"] == "BO" and row["side"] == "long" and row["action"] == "arm"
-    assert row["level"] == pytest.approx(31.0 * (1.0 + 5.0 / 10_000.0))
-    assert row["stop"] < row["level"] < row["target"]
-
-
-def qm_walk(n=400, seed=7, start=20.0):
-    """A cent-quoted random walk — the shape that exposes summation drift.
-
-    Smooth synthetic ramps do not: a 20-bar mean of `linspace` values never lands
-    exactly on the price it is compared against, so every gate is decided by a
-    comfortable margin and any summation gives the same answer. Real quotes are
-    multiples of 0.01, their rolling means land on a cent constantly, and there
-    the comparison is decided by the last bit. Tests that want to catch that have
-    to be built on prices of this shape.
-    """
-    rng = np.random.default_rng(seed)
-    px = np.maximum(np.round(np.cumsum(rng.normal(0.0, 0.03, n)) + start, 2), 1.0)
-    return qm_bars(list(px))
-
-
-def test_qm_rolling_mean_is_exactly_rounded():
-    """`_qm_sma` must equal the exactly-rounded window mean, not merely be close.
-
-    This is the load-bearing property, and it is not pedantry. The model emits
-    booleans — `close > sma20`, `sma10 > sma20` — and on cent-quoted prices the
-    true mean lands exactly on the compared price often enough that a last-bit
-    difference flips the gate and arms a different order. Measured against the
-    pine reference over ~9,000 arm events, pandas' running sum and numpy's
-    pairwise sum each got three bars wrong; compensated summation got none.
-
-    pandas' `.rolling(n).mean()` fails this on roughly a fifth of windows below,
-    which is exactly what makes the test worth having.
-    """
-    import math
-
-    frame = qm_walk(n=1_200)[["close"]].rename(columns={"close": 0})
-    px = frame[0].to_numpy()
-    for n in (10, 20, 50):
-        got = _qm_sma(frame, n).iloc[:, 0].to_numpy()
-        for i in range(n - 1, len(px)):
-            assert got[i] == math.fsum(px[i - n + 1:i + 1]) / n, \
-                f"n={n} row={i} is not the exactly-rounded mean"
-        assert np.isnan(got[:n - 1]).all(), "na until the window fills, like ta.sma"
-
-
-def test_qm_is_window_bounded():
-    """The contract the whole model rests on: no carried state, so a bar scored
-    from a LOOKBACK window must equal the same bar scored from the whole panel.
-
-    Built on a cent-quoted walk rather than a smooth ramp so that the gates sit
-    on real float boundaries — see `qm_walk`.
-    """
-    model = QullamaggieSwingModel(**QM)
-    feed = qm_walk(n=400)
-    whole = model.setups(feed)
-    stamps = feed["timestamp"].unique()
-    L = model.LOOKBACK
-    assert len(stamps) > L
-    assert np.nan_to_num(whole["bo_setup"].to_numpy(dtype=float)).any(), \
-        "a feed that never arms would make this test vacuous"
-
-    checked = 0
-    for i in range(L - 1, len(stamps)):
-        window = feed[(feed["timestamp"] >= stamps[i - L + 1])
-                      & (feed["timestamp"] <= stamps[i])]
-        tail = model.setups(window)
-        for key in ("bo_setup", "entry_level", "armed", "level", "bars_left"):
-            np.testing.assert_array_equal(
-                whole[key].iloc[i].to_numpy(dtype=float),
-                tail[key].iloc[-1].to_numpy(dtype=float),
-                err_msg=f"{key} differs at row {i}")
-        checked += 1
-    assert checked > 0
-
-
-def test_qm_order_lives_for_order_bars_plus_one():
-    """pine:221 expires on a strict `>`, so bars_left == 0 is still fillable."""
-    model = QullamaggieSwingModel(**QM, order_bars=10)
-    # after the base, drift down hard enough that no new setup can fire
-    run = list(np.linspace(10.0, 30.0, 60)) + [31.0] + [30.2] * 5
-    frames = model.setups(qm_bars(run + list(np.linspace(29.0, 24.0, 20))))
-    setup = np.nan_to_num(frames["bo_setup"].iloc[:, 0].to_numpy()) > 0
-    armed = np.nan_to_num(frames["armed"].iloc[:, 0].to_numpy()) > 0
-    left = frames["bars_left"].iloc[:, 0].to_numpy(dtype=float)
-
-    assert setup.any()
-    j = int(np.flatnonzero(setup)[-1])
-    assert np.flatnonzero(armed).max() == j + 10
-    assert left[j] == 10 and left[j + 10] == 0
-    assert not armed[j + 11]
-
-
-def test_qm_arming_bar_never_pierces_its_own_level():
-    """Structural, and it is what makes an arm safe to read as next-bar.
-
-    With the most-recent tie-break, `since_peak >= min_base_bars >= 2` forces the
-    arming bar's high strictly below the pivot, so no bar can both arm and fill.
-    `min_base_bars < 2` would break that, which is why the constructor refuses it.
-    """
-    model = QullamaggieSwingModel(**QM)
-    feed = qm_setup_feed(base_bars=30)
-    frames = model.setups(feed)
-    fired = np.nan_to_num(frames["bo_setup"].iloc[:, 0].to_numpy()) > 0
-    level = frames["entry_level"].iloc[:, 0].to_numpy(dtype=float)
-    high = feed["high"].to_numpy()
-    assert fired.any()
-    for i in np.flatnonzero(fired):
-        assert high[i] < level[i], f"bar {i} arms at {level[i]} and reaches {high[i]}"
-
-
-def test_qm_expiry_counts_traded_bars_not_calendar_rows():
-    """Two identical bar sequences on different calendars must behave identically.
-
-    pine's `bar_index` counts chart bars, so the register has to run on the
-    packed view. On a dated panel a symbol that misses sessions would expire its
-    order early — this fails loudly if the packing is ever skipped.
-    """
-    model = QullamaggieSwingModel(**QM)
-    dense = qm_setup_feed(base_bars=20)
-    sparse = dense.copy()
-    sparse["symbol"] = "BBB"
-    sparse["timestamp"] = pd.to_datetime(
-        [np.datetime64("2024-01-01") + np.timedelta64(2 * i, "D")
-         for i in range(len(sparse))])
-    frames = model.setups(pd.concat([dense, sparse]).sort_values("timestamp"))
-
-    armed = frames["armed"]
-    a = np.nan_to_num(armed["AAA"].to_numpy(dtype=float)) > 0
-    b = np.nan_to_num(armed["BBB"].to_numpy(dtype=float)) > 0
-    assert a.sum() == b.sum() and a.sum() > 0
-    span = lambda m: (armed.index[np.flatnonzero(m)].max()
-                      - armed.index[np.flatnonzero(m)].min()).days
-    assert span(b) == 2 * span(a), "same bars, twice the calendar"
-
-
-def test_qm_extremes_matches_a_naive_pine_loop():
-    """The strided kernel against the definition, including the tie-break."""
-    rng = np.random.default_rng(0)
-    n, w = 160, 40
-    high = pd.DataFrame(rng.uniform(10.0, 20.0, (n, 3)))
-    low = high - rng.uniform(0.1, 2.0, (n, 3))
-    base_high, since_peak, pull_low = _qm_extremes(high, low, w)
-
-    for i in range(w - 1, n):
-        for c in range(3):
-            window = high.iloc[i - w + 1:i + 1, c].to_numpy()
-            peak_off = int(np.argmax(window[::-1]))      # ties -> most recent
-            k = max(peak_off, 1)
-            assert base_high.iat[i, c] == pytest.approx(window.max())
-            assert since_peak.iat[i, c] == peak_off
-            assert pull_low.iat[i, c] == pytest.approx(
-                low.iloc[i - k + 1:i + 1, c].to_numpy().min())
-    # warmup is na until the window fills, as ta.highest is
-    assert base_high.iloc[:w - 1].isna().all().all()
-
-
-def test_qm_volume_never_gates():
-    """pine v15 demoted the break-bar volume check to an informational tag.
-
-    `bo_vol_mult` must move `vol_meets` and nothing else — if it ever re-enters
-    the fill condition the port has silently reverted to v12.
-    """
-    feed = qm_setup_feed(base_bars=10)
-    strict = QullamaggieSwingModel(**QM, bo_vol_mult=1e9).setups(feed)
-    loose = QullamaggieSwingModel(**QM, bo_vol_mult=0.0).setups(feed)
-    for key in ("bo_setup", "entry_level", "armed", "level", "bars_left"):
-        pd.testing.assert_frame_equal(strict[key], loose[key])
-    assert not strict["vol_meets"].to_numpy(dtype=float).any()
-
-
-def test_qm_rejects_params_that_do_not_fit_the_lookback():
-    with pytest.raises(ValueError, match="LOOKBACK"):
-        QullamaggieSwingModel(base_max_len=200)
-    with pytest.raises(ValueError, match="min_base_bars"):
-        QullamaggieSwingModel(min_base_bars=1)
-
-
-def test_qm_signal_is_empty_but_shaped_when_nothing_is_armed():
-    """A caller must be able to iterate the frame unconditionally."""
-    model = QullamaggieSwingModel(**QM)
-    flat = qm_bars([10.0] * 150)          # no momentum, no base, no arm
-    out = model.signal(flat)
-    assert out.empty
-    assert list(out.columns) == ["symbol", "setup", "side", "action", "level",
-                                 "stop", "target", "bars_left", "bo_setup",
-                                 "vol_ratio", "vol_meets"]
